@@ -1,6 +1,6 @@
 # OpenAI Chat Application
 
-A desktop application for interacting with OpenAI's language models with advanced conversation management, including conversation branches, retry functionality, and persistent storage.
+A desktop application for interacting with OpenAI's language models with advanced conversation management, including conversation branches, retry functionality, and persistent storage. Entirely written by Claude 3.7 Sonnet 
 
 ## Features
 
@@ -83,33 +83,6 @@ openai-chat-app/
 ├── requirements.txt        # Dependencies
 └── README.md               # Documentation
 ```
-
-## Development
-
-### Code Style
-
-The project uses:
-- [Black](https://black.readthedocs.io/) for code formatting
-- [isort](https://pycqa.github.io/isort/) for import sorting
-- [flake8](https://flake8.pycqa.org/) for linting
-
-To format the code:
-```bash
-black src
-isort src
-flake8 src
-```
-
-### Testing
-
-To run the tests:
-```bash
-pytest
-```
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Acknowledgments
 
