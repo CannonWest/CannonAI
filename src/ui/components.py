@@ -1,7 +1,7 @@
 """
 Reusable UI components for the OpenAI Chat application.
 """
-
+from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple, Callable
 from functools import partial
 
@@ -10,8 +10,8 @@ from PyQt6.QtWidgets import (
     QPushButton, QFormLayout, QComboBox, QScrollArea, QGroupBox, QSpinBox,
     QDoubleSpinBox, QCheckBox, QLineEdit, QGridLayout, QMessageBox, QDialog, QTabWidget
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor
 
 from src.utils import (
     DARK_MODE, MODEL_CONTEXT_SIZES, MODEL_OUTPUT_LIMITS,
@@ -611,3 +611,220 @@ class SettingsDialog(QDialog):
             settings["reasoning_effort"] = self.reasoning_effort_combo.currentText()
 
         return settings
+
+
+# First, let's add a SearchDialog component to src/ui/components.py
+
+class SearchDialog(QDialog):
+    """Dialog for searching through conversations"""
+
+    message_selected = pyqtSignal(str)  # Signal emitted when a message is selected from search results
+
+    def __init__(self, conversation_manager, parent=None):
+        super().__init__(parent)
+        self.conversation_manager = conversation_manager
+        self.setWindowTitle("Search Conversations")
+        self.setMinimumWidth(600)
+        self.setMinimumHeight(400)
+
+        # Main layout
+        layout = QVBoxLayout(self)
+
+        # Search input
+        search_layout = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Enter search term...")
+        self.search_input.returnPressed.connect(self.perform_search)
+        search_button = QPushButton("Search")
+        search_button.clicked.connect(self.perform_search)
+
+        search_layout.addWidget(self.search_input, 1)
+        search_layout.addWidget(search_button, 0)
+        layout.addLayout(search_layout)
+
+        # Filter options
+        filter_layout = QHBoxLayout()
+
+        self.current_conversation_only = QCheckBox("Current conversation only")
+        filter_layout.addWidget(self.current_conversation_only)
+
+        self.filter_by_role = QComboBox()
+        self.filter_by_role.addItem("All messages")
+        self.filter_by_role.addItem("User messages")
+        self.filter_by_role.addItem("Assistant messages")
+        self.filter_by_role.addItem("System messages")
+        filter_layout.addWidget(QLabel("Filter by:"))
+        filter_layout.addWidget(self.filter_by_role)
+
+        filter_layout.addStretch()
+        layout.addLayout(filter_layout)
+
+        # Results list
+        self.results_list = QTreeWidget()
+        self.results_list.setHeaderLabels(["Conversation", "Message", "Role", "Date"])
+        self.results_list.setColumnWidth(0, 150)  # Conversation name
+        self.results_list.setColumnWidth(1, 250)  # Message preview
+        self.results_list.setColumnWidth(2, 80)  # Role
+        self.results_list.setColumnWidth(3, 120)  # Date
+        self.results_list.itemDoubleClicked.connect(self.on_result_selected)
+        layout.addWidget(self.results_list, 1)
+
+        # Status bar
+        self.status_label = QLabel("Enter a search term to begin")
+        layout.addWidget(self.status_label)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.reject)
+        button_layout.addStretch()
+        button_layout.addWidget(close_button)
+        layout.addLayout(button_layout)
+
+        # Apply dark mode styling
+        self.apply_style()
+
+    def apply_style(self):
+        """Apply dark mode styling to the dialog"""
+        self.setStyleSheet(f"""
+            QDialog {{ background-color: {DARK_MODE["background"]}; color: {DARK_MODE["foreground"]}; }}
+            QLineEdit {{ 
+                background-color: {DARK_MODE["highlight"]}; 
+                color: {DARK_MODE["foreground"]}; 
+                padding: 6px; 
+                border-radius: 4px;
+                border: 1px solid {DARK_MODE["accent"]};
+            }}
+            QPushButton {{ 
+                background-color: {DARK_MODE["highlight"]}; 
+                color: {DARK_MODE["foreground"]}; 
+                padding: 8px; 
+                border-radius: 4px; 
+                border: none;
+            }}
+            QPushButton:hover {{ 
+                background-color: {DARK_MODE["accent"]}; 
+            }}
+            QTreeWidget {{ 
+                background-color: {DARK_MODE["highlight"]}; 
+                color: {DARK_MODE["foreground"]}; 
+                border-radius: 4px;
+                border: 1px solid {DARK_MODE["accent"]};
+            }}
+            QLabel {{ color: {DARK_MODE["foreground"]}; }}
+            QComboBox, QCheckBox {{ 
+                background-color: {DARK_MODE["highlight"]}; 
+                color: {DARK_MODE["foreground"]}; 
+            }}
+        """)
+
+    def perform_search(self):
+        """Search through conversations based on the input term"""
+        search_term = self.search_input.text().strip().lower()
+        if not search_term:
+            self.status_label.setText("Please enter a search term")
+            return
+
+        self.results_list.clear()
+
+        # Determine which conversations to search
+        if self.current_conversation_only.isChecked():
+            conversations = [self.conversation_manager.active_conversation]
+        else:
+            conversations = list(self.conversation_manager.conversations.values())
+
+        # Determine role filter
+        role_filter = None
+        role_index = self.filter_by_role.currentIndex()
+        if role_index == 1:
+            role_filter = "user"
+        elif role_index == 2:
+            role_filter = "assistant"
+        elif role_index == 3:
+            role_filter = "system"
+
+        # Search for matches
+        total_results = 0
+        for conversation in conversations:
+            if conversation is None:
+                continue
+
+            matches = self.search_conversation(conversation, search_term, role_filter)
+            total_results += len(matches)
+
+            if matches:
+                conversation_item = QTreeWidgetItem([conversation.name, "", "", ""])
+                conversation_item.setExpanded(True)
+                self.results_list.addTopLevelItem(conversation_item)
+
+                for node, path_to_root in matches:
+                    # Create preview text (truncated message content)
+                    preview = node.content
+                    if len(preview) > 50:
+                        preview = preview[:47] + "..."
+
+                    # Format the date
+                    date_str = ""
+                    if hasattr(node, 'timestamp') and node.timestamp:
+                        try:
+                            date_obj = datetime.fromisoformat(node.timestamp)
+                            date_str = date_obj.strftime("%Y-%m-%d %H:%M")
+                        except (ValueError, TypeError):
+                            pass
+
+                    # Create list item
+                    item = QTreeWidgetItem([
+                        "",  # Conversation name (already in parent)
+                        preview,  # Message preview
+                        node.role,  # Role
+                        date_str  # Date
+                    ])
+
+                    # Store node ID and conversation ID as data
+                    item.setData(0, Qt.ItemDataRole.UserRole, node.id)
+                    item.setData(1, Qt.ItemDataRole.UserRole, conversation.id)
+
+                    # Store full path to node for navigation
+                    item.setData(2, Qt.ItemDataRole.UserRole, [n.id for n in path_to_root])
+
+                    # Add to tree
+                    conversation_item.addChild(item)
+
+        # Update status
+        if total_results == 0:
+            self.status_label.setText(f"No results found for '{search_term}'")
+        else:
+            self.status_label.setText(f"Found {total_results} result{'s' if total_results != 1 else ''} for '{search_term}'")
+
+    def search_conversation(self, conversation, search_term, role_filter=None):
+        """
+        Search a conversation tree for nodes containing the search term.
+        Returns a list of (node, path_to_root) tuples for matches.
+        """
+        matches = []
+
+        def search_node(node, path_so_far):
+            # Check if this node matches the search criteria
+            if (search_term in node.content.lower() and
+                    (role_filter is None or node.role == role_filter)):
+                matches.append((node, path_so_far + [node]))
+
+            # Recursively search children
+            for child in node.children:
+                search_node(child, path_so_far + [node])
+
+        # Start search from the root
+        search_node(conversation.root, [])
+        return matches
+
+    def on_result_selected(self, item, column):
+        """Handle double-click on a search result"""
+        # Get the node ID and conversation ID
+        node_id = item.data(0, Qt.ItemDataRole.UserRole)
+        conversation_id = item.data(1, Qt.ItemDataRole.UserRole)
+
+        if node_id and conversation_id:
+            # Prepare data to signal which message was selected
+            path_ids = item.data(2, Qt.ItemDataRole.UserRole)
+            self.message_selected.emit(f"{conversation_id}:{node_id}")
+            self.accept()

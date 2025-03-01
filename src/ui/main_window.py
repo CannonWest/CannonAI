@@ -16,7 +16,7 @@ from src.utils import DARK_MODE
 from src.models import ConversationManager, ConversationTree
 from src.services import OpenAIChatWorker, SettingsManager
 from src.ui.conversation import ConversationBranchTab
-from src.ui.components import SettingsDialog
+from src.ui.components import SettingsDialog, SearchDialog
 
 
 class MainWindow(QMainWindow):
@@ -112,12 +112,58 @@ class MainWindow(QMainWindow):
         rename_action.triggered.connect(self.rename_current_conversation)
         edit_menu.addAction(rename_action)
 
+        # Add search action
+        search_action = QAction("Search Conversations", self)
+        search_action.setShortcut("Ctrl+F")
+        search_action.triggered.connect(self.search_conversations)
+        edit_menu.addAction(search_action)
+
         # Help menu
         help_menu = menu_bar.addMenu("Help")
 
         about_action = QAction("About", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
+
+    # Add the search_conversations method to the MainWindow class
+    def search_conversations(self):
+        """Open the search dialog to search through conversations"""
+        dialog = SearchDialog(self.conversation_manager, self)
+
+        # Connect the message_selected signal to navigate to the message
+        dialog.message_selected.connect(self.navigate_to_message)
+
+        dialog.exec()
+
+    def navigate_to_message(self, message_data):
+        """Navigate to a specific message from search results"""
+        # Parse the message data (format: "conversation_id:node_id")
+        conversation_id, node_id = message_data.split(":")
+
+        # Find the conversation tab
+        for i in range(self.tabs.count()):
+            tab = self.tabs.widget(i)
+            if tab.conversation_tree.id == conversation_id:
+                # Switch to this tab
+                self.tabs.setCurrentIndex(i)
+
+                # Navigate to the node
+                tab.navigate_to_node(node_id)
+                break
+        else:
+            # If the conversation isn't currently open, open it
+            if conversation_id in self.conversation_manager.conversations:
+                conversation = self.conversation_manager.conversations[conversation_id]
+                self.add_conversation_tab(conversation)
+
+                # Get the newly added tab
+                tab = self.tabs.widget(self.tabs.count() - 1)
+
+                # Navigate to the node
+                tab.navigate_to_node(node_id)
+            else:
+                QMessageBox.warning(self, "Navigation Error",
+                                    "Could not find the conversation for this message.")
 
     def create_add_tab_button(self) -> QWidget:
         """Create a button to add new conversation tabs"""
