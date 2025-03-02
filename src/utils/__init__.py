@@ -32,3 +32,11 @@ from src.utils.file_utils import (
     read_text_file,
     format_size
 )
+
+# Import logging utilities
+from src.utils.logging_utils import (
+    configure_logging,
+    get_logger,
+    log_exception,
+    LOGS_DIR
+)

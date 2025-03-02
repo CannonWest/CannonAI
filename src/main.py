@@ -5,25 +5,25 @@ Main entry point for the OpenAI Chat application.
 
 import sys
 import os
-import logging
 from PyQt6.QtWidgets import QApplication
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("openai_chat.log"),
-        logging.StreamHandler()
-    ]
-)
+# Import logging utilities first to set up logging early
+from src.utils.logging_utils import configure_logging, get_logger
+
+# Configure logging for the application
+configure_logging()
+
+# Get a logger for this module
+logger = get_logger(__name__)
+
 # Import the main application components
 from src.ui import MainWindow
-
 from dotenv import load_dotenv
 
 # Load environment variables from .env file if it exists
 load_dotenv()
+
+logger.info("Starting OpenAI Chat application")
 
 
 def main():
@@ -35,14 +35,18 @@ def main():
         app = QApplication(sys.argv)
         app.setStyle("Fusion")  # Use Fusion style for consistent cross-platform look
 
+        logger.debug("Created Qt application")
+
         # Create and show the main window
         window = MainWindow()
         window.show()
 
+        logger.info("Application UI initialized and displayed")
+
         # Run the application event loop
         return app.exec()
     except Exception as e:
-        logging.error(f"Application error: {e}", exc_info=True)
+        logger.critical(f"Application failed to start: {e}", exc_info=True)
         return 1
 
 
