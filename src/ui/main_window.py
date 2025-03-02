@@ -9,11 +9,11 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTabWidget, QMessageBox, QFileDialog, QMenu
 )
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QUuid
 from PyQt6.QtGui import QFont, QIcon, QColor, QPalette, QAction
 
 from src.utils import DARK_MODE
-from src.models import ConversationManager, ConversationTree
+from src.models import ConversationManager, ConversationTree, MessageNode
 from src.services import OpenAIChatWorker, SettingsManager
 from src.ui.conversation import ConversationBranchTab
 from src.ui.components import SettingsDialog, SearchDialog
@@ -71,6 +71,10 @@ class MainWindow(QMainWindow):
         self.tabs.setTabsClosable(True)
         self.tabs.tabCloseRequested.connect(self.close_tab)
 
+        # Enable context menu for tabs
+        self.tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tabs.customContextMenuRequested.connect(self.show_tab_context_menu)
+
         # Add a "+" button to create new tabs
         self.tabs.setCornerWidget(self.create_add_tab_button())
 
@@ -111,6 +115,13 @@ class MainWindow(QMainWindow):
         rename_action = QAction("Rename Conversation", self)
         rename_action.triggered.connect(self.rename_current_conversation)
         edit_menu.addAction(rename_action)
+        rename_action.setShortcut("F2")
+
+        # Add duplicate action
+        duplicate_action = QAction("Duplicate Conversation", self)
+        duplicate_action.setShortcut("Ctrl+D")
+        duplicate_action.triggered.connect(self.duplicate_current_conversation)
+        edit_menu.addAction(duplicate_action)
 
         # Add search action
         search_action = QAction("Search Conversations", self)
@@ -176,6 +187,129 @@ class MainWindow(QMainWindow):
 
         button.clicked.connect(create_new_tab)
         return button
+
+    #########NEW CODE###########
+    def show_tab_context_menu(self, position):
+        """Show context menu for tabs"""
+        # Get the tab index at the position
+        tab_index = self.tabs.tabBar().tabAt(position)
+        if tab_index >= 0:
+            # Create context menu
+            context_menu = QMenu(self)
+
+            # Add actions
+            rename_action = QAction("Rename", self)
+            rename_action.triggered.connect(lambda: self.rename_conversation_at_index(tab_index))
+
+            duplicate_action = QAction("Duplicate", self)
+            duplicate_action.triggered.connect(lambda: self.duplicate_conversation_at_index(tab_index))
+
+            close_action = QAction("Close", self)
+            close_action.triggered.connect(lambda: self.close_tab(tab_index))
+
+            # Add actions to menu
+            context_menu.addAction(rename_action)
+            context_menu.addAction(duplicate_action)
+            context_menu.addSeparator()
+            context_menu.addAction(close_action)
+
+            # Show the menu
+            context_menu.exec(self.tabs.mapToGlobal(position))
+
+    def duplicate_current_conversation(self):
+        """Duplicate the current conversation tab"""
+        current_index = self.tabs.currentIndex()
+        if current_index >= 0:
+            self.duplicate_conversation_at_index(current_index)
+
+    def duplicate_conversation_at_index(self, index):
+        """Duplicate the conversation at the given tab index"""
+        if index < 0 or index >= self.tabs.count():
+            return
+
+        # Get the source conversation
+        source_tab = self.tabs.widget(index)
+        source_conversation = source_tab.conversation_tree
+
+        # Create a new conversation with the same name but with "Copy" appended
+        new_name = f"{source_conversation.name} (Copy)"
+        new_conversation = self.conversation_manager.create_conversation(name=new_name)
+
+        # Copy the root system message
+        new_conversation.root.content = source_conversation.root.content
+
+        # Duplicate the conversation tree structure
+        # We'll duplicate the most recent branch path for simplicity
+        branch_path = source_conversation.get_current_branch()
+
+        # Skip the root node (system message) as we've already set it
+        current_parent = new_conversation.root
+
+        for node in branch_path[1:]:  # Skip the first node (root/system message)
+            if node.role == "user":
+                # Add user message
+                child = new_conversation.add_user_message(node.content)
+            elif node.role == "assistant":
+                # Add assistant response with the same metadata
+                child = new_conversation.add_assistant_response(
+                    node.content,
+                    model_info=node.model_info.copy() if node.model_info else None,
+                    parameters=node.parameters.copy() if node.parameters else None,
+                    token_usage=node.token_usage.copy() if node.token_usage else None
+                )
+            else:
+                # For any other role, create a generic node
+                child = MessageNode(
+                    id=str(QUuid.createUuid()),
+                    role=node.role,
+                    content=node.content,
+                    parent=current_parent
+                )
+                current_parent.add_child(child)
+                new_conversation.current_node = child
+
+            current_parent = child
+
+        # Create a tab for the new conversation
+        self.add_conversation_tab(new_conversation)
+
+        # Save the new conversation
+        self.save_conversation(new_conversation.id)
+
+        # Show success message
+        QMessageBox.information(
+            self,
+            "Conversation Duplicated",
+            f"Conversation has been duplicated as '{new_name}'."
+        )
+
+    def rename_conversation_at_index(self, index):
+        """Rename the conversation at the given tab index"""
+        if index < 0 or index >= self.tabs.count():
+            return
+
+        tab = self.tabs.widget(index)
+        conversation = tab.conversation_tree
+
+        # Ask for a new name using an input dialog instead of file dialog
+        from PyQt6.QtWidgets import QInputDialog
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Rename Conversation",
+            "Enter new conversation name:",
+            text=conversation.name
+        )
+
+        if ok and new_name:
+            # Update the conversation name
+            conversation.name = new_name
+
+            # Update the tab title
+            self.tabs.setTabText(index, new_name)
+
+            # Save the conversation
+            self.save_conversation(conversation.id)
+
 
     def setup_style(self):
         """Set up the application styling"""
@@ -458,24 +592,7 @@ class MainWindow(QMainWindow):
         if index < 0:
             return
 
-        tab = self.tabs.widget(index)
-        conversation = tab.conversation_tree
-
-        # Ask for a new name
-        new_name, ok = QFileDialog.getSaveFileName(
-            self, "Rename Conversation",
-            conversation.name, "Conversations"
-        )
-
-        if ok and new_name:
-            # Update the conversation name
-            conversation.name = new_name
-
-            # Update the tab title
-            self.tabs.setTabText(index, new_name)
-
-            # Save the conversation
-            self.save_conversation(conversation.id)
+        self.rename_conversation_at_index(index)
 
     def save_conversation(self, conversation_id):
         """Save a specific conversation"""
