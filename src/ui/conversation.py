@@ -7,14 +7,15 @@ from functools import partial
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
-    QTreeWidget, QTreeWidgetItem, QSplitter, QMessageBox
+    QTreeWidget, QTreeWidgetItem, QSplitter, QMessageBox, QDialogButtonBox, QFileDialog, QDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QColor, QTextCursor
+from PyQt6.QtGui import QColor, QTextCursor, QDragEnterEvent, QDropEvent
 
 from src.utils import DARK_MODE
 from src.models import ConversationTree, MessageNode
 from src.ui.components import ConversationTreeWidget, BranchNavBar
+from src.utils.file_utils import get_file_info, format_size
 
 
 class ConversationBranchTab(QWidget):
@@ -24,11 +25,18 @@ class ConversationBranchTab(QWidget):
     send_message = pyqtSignal(str)  # Signal to send a new message
     retry_request = pyqtSignal()  # Signal to retry the current response
     branch_changed = pyqtSignal()  # Signal that the active branch has changed
+    file_attached = pyqtSignal(str)  # Signal emitted when a file is attached
 
     def __init__(self, conversation_tree: Optional[ConversationTree] = None, parent=None):
         super().__init__(parent)
         self.conversation_tree = conversation_tree
         self.layout = QVBoxLayout(self)
+
+        # Enable drag and drop
+        self.setAcceptDrops(True)
+
+        # Initialize empty attachments list
+        self.current_attachments = []
 
         # Branch navigation bar
         self.branch_nav = BranchNavBar()
@@ -101,6 +109,12 @@ class ConversationBranchTab(QWidget):
         self.info_layout.addWidget(self.info_header)
         self.info_layout.addWidget(self.info_content)
 
+        # File attachments display area
+        self.attachments_container = QWidget()
+        self.attachments_layout = QHBoxLayout(self.attachments_container)
+        self.attachments_layout.setContentsMargins(5, 2, 5, 2)
+        self.attachments_container.setVisible(False)  # Hidden by default
+
         # Input area with retry button
         self.input_container = QWidget()
         self.input_layout = QHBoxLayout(self.input_container)
@@ -129,8 +143,16 @@ class ConversationBranchTab(QWidget):
         )
         self.retry_button.clicked.connect(self.on_retry)
 
+        self.attach_button = QPushButton("📎")
+        self.attach_button.setToolTip("Attach file")
+        self.attach_button.setStyleSheet(
+            f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
+        )
+        self.attach_button.clicked.connect(self.on_attach_file)
+
         self.button_layout.addWidget(self.send_button)
         self.button_layout.addWidget(self.retry_button)
+        self.button_layout.addWidget(self.attach_button)
 
         self.input_layout.addWidget(self.text_input, 5)
         self.input_layout.addWidget(self.button_container, 1)
@@ -162,6 +184,7 @@ class ConversationBranchTab(QWidget):
         self.conversation_layout.addWidget(self.usage_container, 0)
         self.conversation_layout.addWidget(self.cot_container, 1)
         self.conversation_layout.addWidget(self.info_container, 1)
+        self.conversation_layout.addWidget(self.attachments_container, 0)
         self.conversation_layout.addWidget(self.input_container, 0)
 
         # Add widgets to splitter
@@ -234,6 +257,14 @@ class ConversationBranchTab(QWidget):
             self.chat_display.setTextColor(QColor(color))
             self.chat_display.append(f"{prefix}{content}\n")
 
+            # Add file attachment indicators if present
+            if hasattr(node, 'attached_files') and node.attached_files:
+                self.chat_display.setTextColor(QColor(DARK_MODE["accent"]))
+                for file_info in node.attached_files:
+                    file_text = f"📎 Attached: {file_info['file_name']} ({file_info['token_count']} tokens)"
+                    self.chat_display.append(file_text)
+                self.chat_display.append("")  # Add an empty line after attachments
+
         # Scroll to bottom
         cursor = self.chat_display.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
@@ -302,11 +333,34 @@ class ConversationBranchTab(QWidget):
             return
 
         message = self.text_input.toPlainText().strip()
+
+        # Add file attachment references to the message if present
+        attachments_copy = None
+        if self.current_attachments:
+            files_text = "\n\nAttached files:\n"
+            for file_info in self.current_attachments:
+                files_text += f"- {file_info['file_name']} ({file_info['token_count']} tokens)\n"
+
+            if message:
+                message += files_text
+            else:
+                message = files_text.strip()
+
+            # Copy attachments before clearing
+            attachments_copy = self.current_attachments.copy()
+
         if not message:
             return
 
         self.text_input.clear()
+
+        # Store attachments for use in the main window's send_message method
+        self._pending_attachments = attachments_copy
+
         self.send_message.emit(message)
+
+        # Clear attachments after sending
+        self.clear_attachments()
 
     def on_retry(self):
         """Handle retry button click"""
@@ -352,3 +406,157 @@ class ConversationBranchTab(QWidget):
     def clear_cot(self):
         """Clear the chain of thought visualization"""
         self.cot_content.clear()
+
+    # Drag and drop event handlers
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """Handle drag enter events for file drops"""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dragOverEvent(self, event):
+        """Handle drag over events"""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent):
+        """Handle file drop events"""
+        for url in event.mimeData().urls():
+            file_path = url.toLocalFile()
+            self.add_attachment(file_path)
+        event.acceptProposedAction()
+
+    def on_attach_file(self):
+        """Open file dialog to attach files"""
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Attach Files",
+            "",
+            "Text Files (*.txt *.py *.js *.c *.cpp *.h *.json *.md);;All Files (*)"
+        )
+
+        for file_path in file_paths:
+            self.add_attachment(file_path)
+
+    def add_attachment(self, file_path: str):
+        """Add a file attachment to the current message"""
+        try:
+            # Use the current model from settings to count tokens accurately
+            from src.services.storage import SettingsManager
+            settings = SettingsManager().get_settings()
+            model = settings.get("model", "gpt-4o")
+
+            file_info = get_file_info(file_path, model)
+
+            # Check if file is already attached
+            for attachment in self.current_attachments:
+                if attachment["file_name"] == file_info["file_name"]:
+                    return  # Skip if already attached
+
+            # Add to current attachments
+            self.current_attachments.append(file_info)
+
+            # Update UI
+            self.update_attachments_ui()
+
+            # Emit signal
+            self.file_attached.emit(file_path)
+
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Attachment Error",
+                f"Error attaching file: {str(e)}"
+            )
+
+    def update_attachments_ui(self):
+        """Update the attachments UI with current files"""
+        # Clear current widgets
+        while self.attachments_layout.count():
+            item = self.attachments_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not self.current_attachments:
+            self.attachments_container.setVisible(False)
+            return
+
+        self.attachments_container.setVisible(True)
+
+        # Add label
+        label = QLabel("Attached Files:")
+        label.setStyleSheet(f"color: {DARK_MODE['foreground']};")
+        self.attachments_layout.addWidget(label)
+
+        # Add file buttons
+        for file_info in self.current_attachments:
+            file_button = QPushButton(f"{file_info['file_name']} ({file_info['token_count']} tokens)")
+            file_button.setStyleSheet(
+                f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
+            )
+            file_button.setToolTip(f"Click to preview: {file_info['file_name']}")
+
+            # Use lambda with default argument to capture the current file_info
+            file_button.clicked.connect(lambda checked=False, fi=file_info: self.preview_file(fi))
+
+            # Add delete button
+            delete_button = QPushButton("×")
+            delete_button.setFixedSize(20, 20)
+            delete_button.setToolTip(f"Remove {file_info['file_name']}")
+            delete_button.setStyleSheet(
+                f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
+            )
+
+            # Use lambda with default argument
+            delete_button.clicked.connect(lambda checked=False, fi=file_info: self.remove_attachment(fi))
+
+            self.attachments_layout.addWidget(file_button)
+            self.attachments_layout.addWidget(delete_button)
+
+        # Add stretch to push everything to the left
+        self.attachments_layout.addStretch()
+
+    def preview_file(self, file_info):
+        """Show a preview dialog for the file"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"File Preview: {file_info['file_name']}")
+        dialog.setMinimumSize(700, 500)
+
+        layout = QVBoxLayout(dialog)
+
+        # File info label
+        info_label = QLabel(
+            f"File: {file_info['file_name']}\n"
+            f"Size: {format_size(file_info['size'])}\n"
+            f"Token count: {file_info['token_count']} tokens"
+        )
+        layout.addWidget(info_label)
+
+        # Content display
+        content_display = QTextEdit()
+        content_display.setReadOnly(True)
+        content_display.setPlainText(file_info["content"])
+        content_display.setStyleSheet(
+            f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
+        )
+        layout.addWidget(content_display)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        dialog.setStyleSheet(f"background-color: {DARK_MODE['background']}; color: {DARK_MODE['foreground']};")
+        dialog.exec()
+
+    def remove_attachment(self, file_info):
+        """Remove a file attachment"""
+        self.current_attachments = [
+            attachment for attachment in self.current_attachments
+            if attachment["file_name"] != file_info["file_name"]
+        ]
+        self.update_attachments_ui()
+
+    def clear_attachments(self):
+        """Clear all attachments"""
+        self.current_attachments = []
+        self.update_attachments_ui()

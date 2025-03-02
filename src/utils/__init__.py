@@ -24,3 +24,11 @@ from src.utils.constants import (
     CONFIG_DIR,
     SETTINGS_FILE,
 )
+
+# Import file utilities
+from src.utils.file_utils import (
+    get_file_info,
+    count_tokens,
+    read_text_file,
+    format_size
+)

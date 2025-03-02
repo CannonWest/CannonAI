@@ -432,8 +432,11 @@ class MainWindow(QMainWindow):
         # Get the active conversation
         conversation = tab.conversation_tree
 
+        # Check if there are file attachments to include
+        attached_files = getattr(tab, '_pending_attachments', None)
+
         # Add the user message
-        conversation.add_user_message(message)
+        conversation.add_user_message(message, attached_files=attached_files)
 
         # Update the UI
         tab.update_ui()

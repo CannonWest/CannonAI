@@ -41,10 +41,13 @@ class OpenAIChatWorker(QThread):
 
             client = OpenAI(**client_kwargs)
 
+            # Process messages to include file content
+            processed_messages = self.prepare_messages(self.messages)
+
             # Extract model parameters from settings
             params = {
                 "model": self.settings.get("model"),
-                "messages": self.messages,
+                "messages": processed_messages,
                 "temperature": self.settings.get("temperature"),
                 "top_p": self.settings.get("top_p"),
                 "frequency_penalty": self.settings.get("frequency_penalty"),
@@ -177,6 +180,39 @@ class OpenAIChatWorker(QThread):
 
         except Exception as e:
             self.error_occurred.emit(str(e))
+
+    def prepare_messages(self, messages):
+        """Prepare messages for API call, including file attachments"""
+        prepared_messages = []
+
+        for message in messages:
+            prepared_message = {
+                "role": message["role"],
+                "content": message["content"]
+            }
+
+            # Check for attachments
+            if "attached_files" in message and message["attached_files"]:
+                # For messages with attachments, include file content
+                file_contents = []
+
+                for file_info in message["attached_files"]:
+                    file_name = file_info["file_name"]
+                    file_content = file_info["content"]
+
+                    # Add file content to the message
+                    file_contents.append(f"\n\n```{file_name}\n{file_content}\n```")
+
+                # Append file contents to the message content
+                if file_contents:
+                    # Ensure there's a visual separator
+                    if not prepared_message["content"].endswith("\n\n"):
+                        prepared_message["content"] += "\n\n"
+                    prepared_message["content"] += "Attached files:\n" + "\n".join(file_contents)
+
+            prepared_messages.append(prepared_message)
+
+        return prepared_messages
 
     def _is_reasoning_step(self, content: str) -> bool:
         """Detect if a chunk appears to be a reasoning step"""

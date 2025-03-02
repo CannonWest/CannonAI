@@ -26,7 +26,8 @@ class MessageNode:
             parent=None,
             model_info: Dict = None,
             parameters: Dict = None,
-            token_usage: Dict = None
+            token_usage: Dict = None,
+            attached_files: List[Dict] = None  # New parameter for attached files
     ):
         self.id = id  # Unique identifier for the node
         self.role = role  # 'system', 'user', 'assistant'
@@ -39,6 +40,9 @@ class MessageNode:
         self.model_info = model_info or {}  # Model used, system fingerprint, etc.
         self.parameters = parameters or {}  # Temperature, top_p, etc.
         self.token_usage = token_usage or {}  # Token usage statistics
+
+        # For attached files
+        self.attached_files = attached_files or []  # List of dictionaries with file information
 
     def add_child(self, child_node):
         """Add a child node to this node"""
@@ -60,10 +64,16 @@ class MessageNode:
         messages = []
         for node in self.get_path_to_root():
             if node.role in ['system', 'user', 'assistant', 'developer']:
-                messages.append({
+                message = {
                     "role": node.role,
                     "content": node.content
-                })
+                }
+
+                # Include attached files if present
+                if hasattr(node, 'attached_files') and node.attached_files:
+                    message["attached_files"] = node.attached_files
+
+                messages.append(message)
         return messages
 
     def to_dict(self):
@@ -76,6 +86,7 @@ class MessageNode:
             "model_info": self.model_info,
             "parameters": self.parameters,
             "token_usage": self.token_usage,
+            "attached_files": self.attached_files if hasattr(self, 'attached_files') else [],
             "children": [child.to_dict() for child in self.children]
         }
 
@@ -89,7 +100,8 @@ class MessageNode:
             parent=parent,
             model_info=data.get("model_info"),
             parameters=data.get("parameters"),
-            token_usage=data.get("token_usage")
+            token_usage=data.get("token_usage"),
+            attached_files=data.get("attached_files")
         )
         node.timestamp = data.get("timestamp")
 
@@ -122,17 +134,20 @@ class ConversationTree:
         # Currently active node (for UI focus)
         self.current_node = self.root
 
-    def add_user_message(self, content):
+    def add_user_message(self, content, attached_files=None):
         """Add a user message as child of current node"""
         node = MessageNode(
             id=str(QUuid.createUuid()),
             role="user",
-            content=content
+            content=content,
+            attached_files=attached_files
         )
         self.current_node.add_child(node)
         self.current_node = node
         self.modified_at = datetime.now().isoformat()
         return node
+
+
 
     def add_assistant_response(self, content, model_info=None, parameters=None, token_usage=None):
         """Add an assistant response as child of current node"""
