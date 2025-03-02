@@ -14,6 +14,7 @@ from src.utils.constants import (
     RESPONSE_FORMATS,
     MODEL_CONTEXT_SIZES,
     MODEL_OUTPUT_LIMITS,
+    MODEL_PRICING,
     DEFAULT_PARAMS,
     DARK_MODE,
 
@@ -23,20 +24,4 @@ from src.utils.constants import (
     CONVERSATIONS_DIR,
     CONFIG_DIR,
     SETTINGS_FILE,
-)
-
-# Import file utilities
-from src.utils.file_utils import (
-    get_file_info,
-    count_tokens,
-    read_text_file,
-    format_size
-)
-
-# Import logging utilities
-from src.utils.logging_utils import (
-    configure_logging,
-    get_logger,
-    log_exception,
-    LOGS_DIR
 )

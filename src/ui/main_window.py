@@ -310,7 +310,6 @@ class MainWindow(QMainWindow):
             # Save the conversation
             self.save_conversation(conversation.id)
 
-
     def setup_style(self):
         """Set up the application styling"""
         # Set application-wide dark mode palette
@@ -403,6 +402,10 @@ class MainWindow(QMainWindow):
         tab.send_message.connect(lambda message: self.send_message(tab, message))
         tab.retry_request.connect(lambda: self.retry_message(tab))
         tab.branch_changed.connect(lambda: self.on_branch_changed(tab))
+
+        # Initialize model info
+        current_model = self.settings.get("model", "")
+        tab.update_model_info(current_model)
 
         # Add the tab
         index = self.tabs.addTab(tab, conversation.name)
@@ -588,6 +591,13 @@ class MainWindow(QMainWindow):
             self.settings = dialog.get_settings()
             self.settings_manager.update_settings(self.settings)
 
+            # Update model info in all open tabs
+            current_model = self.settings.get("model", "")
+            for i in range(self.tabs.count()):
+                tab = self.tabs.widget(i)
+                if hasattr(tab, 'update_model_info'):
+                    tab.update_model_info(current_model)
+
     def rename_current_conversation(self):
         """Rename the current conversation"""
         # Get the current tab
@@ -616,7 +626,7 @@ class MainWindow(QMainWindow):
             self.add_conversation_tab(conversation)
 
     def show_about(self):
-        """Show the about dialog"""
+        """Show the 'about' dialog"""
         QMessageBox.about(
             self, "About OpenAI Chat",
             "OpenAI Chat Interface\n\n"

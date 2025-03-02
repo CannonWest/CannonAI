@@ -293,7 +293,8 @@ class ConversationManager:
             return False
 
         conversation = self.conversations[conversation_id]
-        file_path = os.path.join(self.save_dir, f"{conversation_id}.json")
+
+        file_path = os.path.join(self.save_dir, f"{conversation.name}.json")
 
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(conversation.to_dict(), f, ensure_ascii=False, indent=2)

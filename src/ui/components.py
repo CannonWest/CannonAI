@@ -13,10 +13,11 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 
+import sys
 from src.utils import (
     DARK_MODE, MODEL_CONTEXT_SIZES, MODEL_OUTPUT_LIMITS,
     MODELS, MODEL_SNAPSHOTS, REASONING_MODELS, REASONING_EFFORT,
-    RESPONSE_FORMATS, DEFAULT_PARAMS
+    RESPONSE_FORMATS, DEFAULT_PARAMS, MODEL_PRICING
 )
 from src.models import MessageNode, ConversationTree
 
@@ -542,10 +543,26 @@ class SettingsDialog(QDialog):
         context_size = MODEL_CONTEXT_SIZES.get(model_id, 0)
         output_limit = MODEL_OUTPUT_LIMITS.get(model_id, 0)
 
+        # Get pricing information safely
+        pricing_info = MODEL_PRICING.get(model_id, {})
+
+        input_price = pricing_info.get("input", 0)
+        output_price = pricing_info.get("output", 0)
+
+        # Format pricing for display (per 1000 tokens)
+        input_price_per_k = input_price / 1000 if input_price else 0  # Convert from per 1M to per 1K
+        output_price_per_k = output_price / 1000 if output_price else 0  # Convert from per 1M to per 1K
+
         # Set max tokens based on model
         self.max_tokens.setMaximum(output_limit)
 
+        # Update model info display
         model_info_text = f"Context window: {context_size:,} tokens | Max output: {output_limit:,} tokens"
+
+        # Add pricing info if available
+        if input_price > 0 or output_price > 0:
+            model_info_text += f" | Pricing: ${input_price_per_k:.4f}/1K input, ${output_price_per_k:.4f}/1K output"
+
         self.model_info.setText(model_info_text)
 
         # Enable/disable reasoning effort based on model

@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QColor, QTextCursor, QDragEnterEvent, QDropEvent
 
-from src.utils import DARK_MODE
+from src.utils import DARK_MODE, MODEL_CONTEXT_SIZES, MODEL_OUTPUT_LIMITS, MODEL_PRICING
 from src.models import ConversationTree, MessageNode
 from src.ui.components import ConversationTreeWidget, BranchNavBar
 from src.utils.file_utils import get_file_info, format_size
@@ -109,6 +109,26 @@ class ConversationBranchTab(QWidget):
         self.info_layout.addWidget(self.info_header)
         self.info_layout.addWidget(self.info_content)
 
+        # Model information display
+        self.model_info_container = QWidget()
+        self.model_info_layout = QHBoxLayout(self.model_info_container)
+        self.model_info_layout.setContentsMargins(5, 2, 5, 2)
+
+        self.model_name_label = QLabel("Model: -")
+        self.model_name_label.setStyleSheet(f"color: {DARK_MODE['accent']};")
+
+        self.model_pricing_label = QLabel("Pricing: -")
+        self.model_pricing_label.setStyleSheet(f"color: {DARK_MODE['accent']};")
+
+        self.model_token_limit_label = QLabel("Limits: -")
+        self.model_token_limit_label.setStyleSheet(f"color: {DARK_MODE['accent']};")
+
+        self.model_info_layout.addWidget(self.model_name_label)
+        self.model_info_layout.addStretch()
+        self.model_info_layout.addWidget(self.model_pricing_label)
+        self.model_info_layout.addStretch()
+        self.model_info_layout.addWidget(self.model_token_limit_label)
+
         # File attachments display area
         self.attachments_container = QWidget()
         self.attachments_layout = QHBoxLayout(self.attachments_container)
@@ -178,7 +198,6 @@ class ConversationBranchTab(QWidget):
         self.conversation_container = QWidget()
         self.conversation_layout = QVBoxLayout(self.conversation_container)
 
-        # Add components to conversation layout
         self.conversation_layout.addWidget(self.branch_nav)
         self.conversation_layout.addWidget(self.chat_display, 4)
         self.conversation_layout.addWidget(self.usage_container, 0)
@@ -186,6 +205,7 @@ class ConversationBranchTab(QWidget):
         self.conversation_layout.addWidget(self.info_container, 1)
         self.conversation_layout.addWidget(self.attachments_container, 0)
         self.conversation_layout.addWidget(self.input_container, 0)
+        self.conversation_layout.addWidget(self.model_info_container, 0)  # Add model info container
 
         # Add widgets to splitter
         self.splitter.addWidget(self.conversation_container)
@@ -223,6 +243,30 @@ class ConversationBranchTab(QWidget):
 
         # Update retry button state
         self.update_retry_button()
+
+    def update_model_info(self, model_id):
+        """Update the model information display with the current model details"""
+        if not model_id:
+            # Reset labels if no model is specified
+            self.model_name_label.setText("Model: -")
+            self.model_pricing_label.setText("Pricing: -")
+            self.model_token_limit_label.setText("Limits: -")
+            return
+
+        # Get model information
+        context_size = MODEL_CONTEXT_SIZES.get(model_id, 0)
+        output_limit = MODEL_OUTPUT_LIMITS.get(model_id, 0)
+
+        # Get pricing information (display per 1K tokens)
+        pricing_info = MODEL_PRICING.get(model_id, {"input": 0, "output": 0})
+        input_price = pricing_info.get("input", 0) / 1000  # Convert from per 1M to per 1K
+        output_price = pricing_info.get("output", 0) / 1000  # Convert from per 1M to per 1K
+
+        # Update labels
+        self.model_name_label.setText(f"Model: {model_id}")
+        self.model_pricing_label.setText(f"Pricing: ${input_price:.4f}/1K in, ${output_price:.4f}/1K out")
+        self.model_token_limit_label.setText(f"Limits: {context_size:,} ctx, {output_limit:,} out")
+
 
     def update_chat_display(self):
         """Update the chat display with the current branch messages"""
