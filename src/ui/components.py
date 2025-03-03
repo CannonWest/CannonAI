@@ -19,7 +19,7 @@ from src.utils import (
     MODELS, MODEL_SNAPSHOTS, REASONING_MODELS, REASONING_EFFORT,
     RESPONSE_FORMATS, DEFAULT_PARAMS, MODEL_PRICING
 )
-from src.models import MessageNode, ConversationTree
+from src.models import DBMessageNode, DBConversationTree
 
 
 class ConversationTreeWidget(QTreeWidget):
@@ -49,7 +49,7 @@ class ConversationTreeWidget(QTreeWidget):
             }}
         """)
 
-    def update_tree(self, conversation_tree: ConversationTree):
+    def update_tree(self, conversation_tree: DBConversationTree):
         """Update the tree view with the conversation structure"""
         self.clear()
 
@@ -67,7 +67,7 @@ class ConversationTreeWidget(QTreeWidget):
         # Expand all items
         self.expandAll()
 
-    def create_items_recursive(self, node: MessageNode, current_ids: set) -> QTreeWidgetItem:
+    def create_items_recursive(self, node: DBMessageNode, current_ids: set) -> QTreeWidgetItem:
         """Recursively create QTreeWidgetItems for the conversation tree"""
         if node.role == "system":
             label = "System"
@@ -148,7 +148,7 @@ class BranchNavBar(QWidget):
             }}
         """)
 
-    def update_branch(self, branch: List[MessageNode]):
+    def update_branch(self, branch: List[DBMessageNode]):
         """Update the navigation bar with the current branch"""
         # Clear existing buttons
         self.clear()

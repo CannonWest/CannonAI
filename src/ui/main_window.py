@@ -13,11 +13,10 @@ from PyQt6.QtCore import Qt, QSettings, QUuid
 from PyQt6.QtGui import QFont, QIcon, QColor, QPalette, QAction
 
 from src.utils import DARK_MODE
-from src.models import ConversationManager, ConversationTree, MessageNode, DBConversationManager
+from src.models import DBConversationManager, DBMessageNode
 from src.services import OpenAIChatWorker, SettingsManager
 from src.ui.conversation import ConversationBranchTab
 from src.ui.components import SettingsDialog, SearchDialog
-from src.utils.migration_utils import migrate_json_to_db
 
 
 class MainWindow(QMainWindow):
@@ -40,8 +39,6 @@ class MainWindow(QMainWindow):
 
         # Set up styling
         self.setup_style()
-
-        migrate_json_to_db(self)
 
         # Load saved conversations
         self.load_conversations()
@@ -263,7 +260,7 @@ class MainWindow(QMainWindow):
                 )
             else:
                 # For any other role, create a generic node
-                child = MessageNode(
+                child = DBMessageNode(
                     id=str(QUuid.createUuid()),
                     role=node.role,
                     content=node.content,

@@ -11,14 +11,12 @@ DEFAULT_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 # Application paths
 APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 DATA_DIR = os.path.join(APP_DIR, "data")
-CONVERSATIONS_DIR = os.path.join(DATA_DIR, "conversations")
 CONFIG_DIR = os.path.join(APP_DIR, "config")
 SETTINGS_FILE = os.path.join(CONFIG_DIR, "settings.json")
 DATABASE_DIR = os.path.join(DATA_DIR, "database")
 DATABASE_FILE = os.path.join(DATABASE_DIR, "conversations.db")
 
 # Ensure directories exist
-os.makedirs(CONVERSATIONS_DIR, exist_ok=True)
 os.makedirs(CONFIG_DIR, exist_ok=True)
 os.makedirs(DATABASE_DIR, exist_ok=True)
 

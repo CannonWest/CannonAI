@@ -13,7 +13,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QColor, QTextCursor, QDragEnterEvent, QDropEvent
 
 from src.utils import DARK_MODE, MODEL_CONTEXT_SIZES, MODEL_OUTPUT_LIMITS, MODEL_PRICING
-from src.models import ConversationTree, MessageNode
+from src.models import DBConversationTree, DBMessageNode
 from src.ui.components import ConversationTreeWidget, BranchNavBar
 from src.utils.file_utils import get_file_info, format_size
 
@@ -27,7 +27,7 @@ class ConversationBranchTab(QWidget):
     branch_changed = pyqtSignal()  # Signal that the active branch has changed
     file_attached = pyqtSignal(str)  # Signal emitted when a file is attached
 
-    def __init__(self, conversation_tree: Optional[ConversationTree] = None, parent=None):
+    def __init__(self, conversation_tree: Optional[DBConversationTree] = None, parent=None):
         super().__init__(parent)
         self.conversation_tree = conversation_tree
         self.layout = QVBoxLayout(self)
@@ -221,7 +221,7 @@ class ConversationBranchTab(QWidget):
         if self.conversation_tree:
             self.update_ui()
 
-    def set_conversation_tree(self, conversation_tree: ConversationTree):
+    def set_conversation_tree(self, conversation_tree: DBConversationTree):
         """Set the conversation tree and update the UI"""
         self.conversation_tree = conversation_tree
         self.update_ui()
