@@ -13,10 +13,11 @@ from PyQt6.QtCore import Qt, QSettings, QUuid
 from PyQt6.QtGui import QFont, QIcon, QColor, QPalette, QAction
 
 from src.utils import DARK_MODE
-from src.models import ConversationManager, ConversationTree, MessageNode
+from src.models import ConversationManager, ConversationTree, MessageNode, DBConversationManager
 from src.services import OpenAIChatWorker, SettingsManager
 from src.ui.conversation import ConversationBranchTab
 from src.ui.components import SettingsDialog, SearchDialog
+from src.utils.migration_utils import migrate_json_to_db
 
 
 class MainWindow(QMainWindow):
@@ -31,13 +32,16 @@ class MainWindow(QMainWindow):
         self.settings_manager = SettingsManager()
         self.settings = self.settings_manager.get_settings()
 
-        self.conversation_manager = ConversationManager()
+        # Use the new database-backed conversation manager
+        self.conversation_manager = DBConversationManager()
 
         # Initialize UI components
         self.setup_ui()
 
         # Set up styling
         self.setup_style()
+
+        migrate_json_to_db(self)
 
         # Load saved conversations
         self.load_conversations()

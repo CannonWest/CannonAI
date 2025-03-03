@@ -24,4 +24,6 @@ from src.utils.constants import (
     CONVERSATIONS_DIR,
     CONFIG_DIR,
     SETTINGS_FILE,
+    DATABASE_DIR,
+    DATABASE_FILE
 )
