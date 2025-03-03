@@ -21,7 +21,6 @@ from src.utils.constants import (
     # Paths
     APP_DIR,
     DATA_DIR,
-    CONVERSATIONS_DIR,
     CONFIG_DIR,
     SETTINGS_FILE,
     DATABASE_DIR,
