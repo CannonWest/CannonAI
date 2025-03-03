@@ -39,5 +39,5 @@ openai_chat.log
 .env
 *.env
 .env.local
-/data/conversations
+#/data/conversations
 test.py
