@@ -41,3 +41,4 @@ openai_chat.log
 .env.local
 /data/conversations
 test.py
+data/database/conversations.db
