@@ -103,10 +103,7 @@ class OpenAIChatWorker(QThread):
                 # Set up streaming options if needed
                 if params["stream"]:
                     # Always include reasoning for o1/o3 models
-                    if is_reasoning_model:
-                        params["stream_options"] = {"include_usage": True, "include_reasoning": True,}
-                    else:
-                        params["stream_options"] = {"include_usage": True}
+                    params["stream_options"] = {"include_usage": True}
 
                     full_response = ""
                     stream = client.chat.completions.create(**params)
