@@ -259,14 +259,13 @@ class ConversationBranchTab(QWidget):
 
         # Get pricing information (display per 1K tokens)
         pricing_info = MODEL_PRICING.get(model_id, {"input": 0, "output": 0})
-        input_price = pricing_info.get("input", 0) / 1000  # Convert from per 1M to per 1K
-        output_price = pricing_info.get("output", 0) / 1000  # Convert from per 1M to per 1K
+        input_price = pricing_info.get("input", 0)
+        output_price = pricing_info.get("output", 0)
 
         # Update labels
         self.model_name_label.setText(f"Model: {model_id}")
-        self.model_pricing_label.setText(f"Pricing: ${input_price:.4f}/1K in, ${output_price:.4f}/1K out")
+        self.model_pricing_label.setText(f"Pricing: ${input_price:.2f}/1M in, ${output_price:.2f}/1M out")
         self.model_token_limit_label.setText(f"Limits: {context_size:,} ctx, {output_limit:,} out")
-
 
     def update_chat_display(self):
         """Update the chat display with the current branch messages"""
@@ -277,6 +276,7 @@ class ConversationBranchTab(QWidget):
 
         # Get the current branch messages
         branch = self.conversation_tree.get_current_branch()
+        current_node = self.conversation_tree.current_node
 
         for node in branch:
             role = node.role
@@ -291,6 +291,9 @@ class ConversationBranchTab(QWidget):
             elif role == "assistant":
                 color = DARK_MODE["assistant_message"]
                 prefix = "🤖 Assistant: "
+                # Add model info to the prefix if available
+                if node.model_info and "model" in node.model_info:
+                    prefix = f"🤖 Assistant ({node.model_info['model']}): "
             elif role == "developer":
                 color = DARK_MODE["system_message"]
                 prefix = "👩‍💻 Developer: "
@@ -314,22 +317,60 @@ class ConversationBranchTab(QWidget):
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.chat_display.setTextCursor(cursor)
 
-        # Update token usage if available
-        if branch and branch[-1].role == "assistant" and branch[-1].token_usage:
-            usage = branch[-1].token_usage
+        # Update token usage and model info based on the current node
+        if current_node.role == "assistant":
+            if current_node.token_usage:
+                usage = current_node.token_usage
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                total_tokens = usage.get("total_tokens", 0)
+
+                # For debugging
+                print(f"Assistant node token usage: {usage}")
+
+                self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens}")
+            else:
+                # No token usage data available
+                self.token_label.setText("Tokens: - / -")
+                print(f"No token usage for assistant node ID: {current_node.id}")
+
+            # Update model info
+            if current_node.model_info and "model" in current_node.model_info:
+                model_name = current_node.model_info["model"]
+                self.model_label.setText(f"Model: {model_name}")
+                print(f"Model info: {current_node.model_info}")
+            else:
+                self.model_label.setText("Model: -")
+                print(f"No model info for assistant node ID: {current_node.id}")
+
+        elif current_node.role == "user":
+            # For user messages, estimate token count from content and attachments
+            token_estimate = 0
+
+            # Approximate tokens as words/0.75 for English text (rough approximation)
+            if current_node.content:
+                token_estimate += len(current_node.content.split())
+
+            # Add tokens from attachments if present
+            if hasattr(current_node, 'attached_files') and current_node.attached_files:
+                for file_info in current_node.attached_files:
+                    token_estimate += file_info.get('token_count', 0)
+
+            self.token_label.setText(f"Tokens: {token_estimate} / -")
+            self.model_label.setText("Model: -")  # No model for user messages
+        else:
+            # For system or other messages
+            self.token_label.setText("Tokens: - / -")
+            self.model_label.setText("Model: -")
+        #########END BLOCK ALTER###########
+
+        # Update response details
+        if current_node.role == "assistant" and current_node.token_usage:
+            usage = current_node.token_usage
             prompt_tokens = usage.get("prompt_tokens", 0)
             completion_tokens = usage.get("completion_tokens", 0)
             total_tokens = usage.get("total_tokens", 0)
 
-            self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens}")
-
-            # Update model info
-            if branch[-1].model_info and "model" in branch[-1].model_info:
-                self.model_label.setText(f"Model: {branch[-1].model_info['model']}")
-            else:
-                self.model_label.setText("Model: -")
-
-            # Update response details
             details_text = f"Token Usage:\n"
             details_text += f"  • Prompt tokens: {prompt_tokens}\n"
             details_text += f"  • Completion tokens: {completion_tokens}\n"
@@ -344,12 +385,14 @@ class ConversationBranchTab(QWidget):
                 details_text += f"  • Rejected prediction tokens: {details.get('rejected_prediction_tokens', 0)}\n\n"
 
             # Add model info
-            if branch[-1].model_info:
+            if current_node.model_info:
                 details_text += "Model Information:\n"
-                for key, value in branch[-1].model_info.items():
+                for key, value in current_node.model_info.items():
                     details_text += f"  • {key}: {value}\n"
 
             self.info_content.setText(details_text)
+        else:
+            self.info_content.setText("")
 
     def update_retry_button(self):
         """Enable/disable retry button based on current node"""

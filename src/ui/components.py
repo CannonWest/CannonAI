@@ -549,9 +549,9 @@ class SettingsDialog(QDialog):
         input_price = pricing_info.get("input", 0)
         output_price = pricing_info.get("output", 0)
 
-        # Format pricing for display (per 1000 tokens)
-        input_price_per_k = input_price / 1000 if input_price else 0  # Convert from per 1M to per 1K
-        output_price_per_k = output_price / 1000 if output_price else 0  # Convert from per 1M to per 1K
+        # Format pricing for display
+        input_price_per_k = input_price if input_price else 0
+        output_price_per_k = output_price if output_price else 0
 
         # Set max tokens based on model
         self.max_tokens.setMaximum(output_limit)
@@ -561,7 +561,7 @@ class SettingsDialog(QDialog):
 
         # Add pricing info if available
         if input_price > 0 or output_price > 0:
-            model_info_text += f" | Pricing: ${input_price_per_k:.4f}/1K input, ${output_price_per_k:.4f}/1K output"
+            model_info_text += f" | Pricing: ${input_price_per_k:.2f}/1M input, ${output_price_per_k:.2f}/1M output"
 
         self.model_info.setText(model_info_text)
 

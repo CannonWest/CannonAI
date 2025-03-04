@@ -1,7 +1,7 @@
 """
 Main window UI for the OpenAI Chat application.
 """
-
+import json
 from typing import Optional, Dict, Any
 from functools import partial
 
@@ -17,6 +17,7 @@ from src.models import DBConversationManager, DBMessageNode
 from src.services import OpenAIChatWorker, SettingsManager
 from src.ui.conversation import ConversationBranchTab
 from src.ui.components import SettingsDialog, SearchDialog
+from src.models.db_manager import DatabaseManager
 
 
 class MainWindow(QMainWindow):
@@ -33,6 +34,9 @@ class MainWindow(QMainWindow):
 
         # Use the new database-backed conversation manager
         self.conversation_manager = DBConversationManager()
+
+        # Initialize database manager for direct database operations
+        self.db_manager = DatabaseManager()
 
         # Initialize UI components
         self.setup_ui()
@@ -510,8 +514,14 @@ class MainWindow(QMainWindow):
         # Get the conversation
         conversation = tab.conversation_tree
 
-        # Add the assistant response
-        conversation.add_assistant_response(content)
+        # We need to save token usage and model info along with the response
+        # This will be updated later when we receive usage_info and system_info signals
+        # For now, create with empty dictionaries that will be updated
+        conversation.add_assistant_response(
+            content,
+            model_info={},
+            token_usage={}
+        )
 
         # Update the UI
         tab.update_ui()
@@ -548,10 +558,44 @@ class MainWindow(QMainWindow):
 
         # Update the token usage for the current node
         if conversation.current_node.role == "assistant":
-            conversation.current_node.token_usage = info
+            # Get a database connection to update the metadata
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
 
-            # Update the UI
-            tab.update_ui()
+            try:
+                # Delete existing token usage records for this node
+                cursor.execute(
+                    'DELETE FROM message_metadata WHERE message_id = ? AND metadata_type LIKE ?',
+                    (conversation.current_node.id, 'token_usage.%')
+                )
+
+                # Insert new token usage records
+                for key, value in info.items():
+                    cursor.execute(
+                        '''
+                        INSERT INTO message_metadata (message_id, metadata_type, metadata_value)
+                        VALUES (?, ?, ?)
+                        ''',
+                        (conversation.current_node.id, f"token_usage.{key}", json.dumps(value))
+                    )
+
+                # Commit the changes
+                conn.commit()
+
+                # Update the in-memory object
+                conversation.current_node.token_usage = info
+
+                # Update the UI
+                tab.update_ui()
+
+                # Save the conversation
+                self.save_conversation(conversation.id)
+
+            except Exception as e:
+                self.logger.error(f"Error updating token usage: {e}")
+                conn.rollback()
+            finally:
+                conn.close()
 
     def handle_system_info(self, tab, info):
         """Handle system information from the API"""
@@ -560,10 +604,44 @@ class MainWindow(QMainWindow):
 
         # Update the model info for the current node
         if conversation.current_node.role == "assistant":
-            conversation.current_node.model_info = info
+            # Get a database connection to update the metadata
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
 
-            # Update the UI
-            tab.update_ui()
+            try:
+                # Delete existing model info records for this node
+                cursor.execute(
+                    'DELETE FROM message_metadata WHERE message_id = ? AND metadata_type LIKE ?',
+                    (conversation.current_node.id, 'model_info.%')
+                )
+
+                # Insert new model info records
+                for key, value in info.items():
+                    cursor.execute(
+                        '''
+                        INSERT INTO message_metadata (message_id, metadata_type, metadata_value)
+                        VALUES (?, ?, ?)
+                        ''',
+                        (conversation.current_node.id, f"model_info.{key}", json.dumps(value))
+                    )
+
+                # Commit the changes
+                conn.commit()
+
+                # Update the in-memory object
+                conversation.current_node.model_info = info
+
+                # Update the UI
+                tab.update_ui()
+
+                # Save the conversation
+                self.save_conversation(conversation.id)
+
+            except Exception as e:
+                self.logger.error(f"Error updating model info: {e}")
+                conn.rollback()
+            finally:
+                conn.close()
 
     def handle_error(self, error_message):
         """Handle API errors"""
