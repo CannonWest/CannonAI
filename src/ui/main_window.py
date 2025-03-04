@@ -466,8 +466,17 @@ class MainWindow(QMainWindow):
 
         # Connect other signals
         self.worker.thinking_step.connect(lambda step, content: tab.add_cot_step(step, content))
-        # NEW: Connect the reasoning_steps signal
-        self.worker.reasoning_steps.connect(lambda steps: tab.set_reasoning_steps(steps))
+
+        # Connect reasoning steps signal with better error handling
+        def handle_reasoning_steps(steps):
+            print(f"DEBUG: Received {len(steps) if steps else 0} reasoning steps")
+            try:
+                tab.set_reasoning_steps(steps)
+            except Exception as e:
+                print(f"ERROR handling reasoning steps: {str(e)}")
+
+        self.worker.reasoning_steps.connect(handle_reasoning_steps)
+
         self.worker.error_occurred.connect(self.handle_error)
         self.worker.usage_info.connect(lambda info: self.handle_usage_info(tab, info))
         self.worker.system_info.connect(lambda info: self.handle_system_info(tab, info))
@@ -538,66 +547,75 @@ class MainWindow(QMainWindow):
         if not chunk:
             return
 
-        # Get the conversation
-        conversation = tab.conversation_tree
-
-        # Check current message content for debugging
-        conn = self.db_manager.get_connection()
-        cursor = conn.cursor()
-
         try:
-            # Check if we already have an assistant node
-            is_first_chunk = False
+            # Get the conversation
+            conversation = tab.conversation_tree
 
-            if conversation.current_node.role == "assistant":
-                # Debug output before update
-                # print(f"DEBUG: Existing assistant node content (before): '{conversation.current_node.content[:30]}'")
+            # Database operations in a separate try-except block
+            try:
+                # Check current message content for debugging
+                conn = self.db_manager.get_connection()
+                cursor = conn.cursor()
 
-                # Update the existing node directly in database
-                cursor.execute(
-                    '''
-                    UPDATE messages SET content = content || ? WHERE id = ?
-                    ''',
-                    (chunk, conversation.current_node.id)
-                )
-                conn.commit()
+                try:
+                    # Check if we already have an assistant node
+                    is_first_chunk = False
 
-                # Also update the in-memory version
-                conversation.current_node.content += chunk
+                    if conversation.current_node.role == "assistant":
+                        # Update the existing node directly in database
+                        cursor.execute(
+                            '''
+                            UPDATE messages SET content = content || ? WHERE id = ?
+                            ''',
+                            (chunk, conversation.current_node.id)
+                        )
+                        conn.commit()
 
-                # Debug output after update
-                # print(f"DEBUG: Updated assistant node content (after): '{conversation.current_node.content[:30]}'")
-            else:
-                # First chunk - create a new assistant node
-                is_first_chunk = True
-                new_node = conversation.add_assistant_response(chunk)
-                # print(f"DEBUG: Created new assistant node with content: '{chunk}'")
+                        # Also update the in-memory version
+                        conversation.current_node.content += chunk
+                    else:
+                        # First chunk - create a new assistant node
+                        is_first_chunk = True
+                        new_node = conversation.add_assistant_response(chunk)
 
-            # For first chunk, do a full UI update; otherwise, stream the update
-            if is_first_chunk:
-                # Update the whole UI to ensure assistant prefix appears
-                tab.update_ui()
-            else:
-                # Update the streaming display
-                tab.update_chat_streaming(chunk)
+                        # Store an empty reasoning_steps list on the node
+                        if not hasattr(new_node, 'reasoning_steps'):
+                            setattr(new_node, 'reasoning_steps', [])
 
-            # Fetch current content from database to verify
-            cursor.execute(
-                'SELECT content FROM messages WHERE id = ?',
-                (conversation.current_node.id,)
-            )
-            # db_content = cursor.fetchone()[0]
-            # print(f"DEBUG: DB content after update: '{db_content[:50]}'")
+                except Exception as db_error:
+                    print(f"DEBUG: Database error in handle_chunk: {str(db_error)}")
+                    if conn:
+                        conn.rollback()
+                    # Continue with UI updates even if DB fails
+                    is_first_chunk = False
+                finally:
+                    if conn:
+                        conn.close()
 
-        except Exception as e:
-            print(f"DEBUG: Error in handle_chunk: {str(e)}")
-            conn.rollback()
-        finally:
-            conn.close()
+                # UI updates in a separate try block
+                try:
+                    # For first chunk, do a full UI update; otherwise, stream the update
+                    if is_first_chunk:
+                        # Update the whole UI to ensure assistant prefix appears
+                        tab.update_ui()
+                    else:
+                        # Update the streaming display
+                        tab.update_chat_streaming(chunk)
+                except Exception as ui_error:
+                    print(f"DEBUG: UI error in handle_chunk: {str(ui_error)}")
 
-        # Save less frequently for better performance
-        if len(chunk) > 50:
-            self.save_conversation(conversation.id)
+                # Save less frequently for better performance
+                if len(chunk) > 50:
+                    try:
+                        self.save_conversation(conversation.id)
+                    except Exception as save_error:
+                        print(f"DEBUG: Error saving conversation: {str(save_error)}")
+
+            except Exception as inner_error:
+                print(f"DEBUG: Inner error in handle_chunk: {str(inner_error)}")
+
+        except Exception as outer_error:
+            print(f"DEBUG: Outer error in handle_chunk: {str(outer_error)}")
 
     def handle_usage_info(self, tab, info):
         """Handle token usage information"""

@@ -34,7 +34,6 @@ class OpenAIChatWorker(QThread):
         self.logger = get_logger(f"{__name__}.OpenAIChatWorker")
         self.collected_reasoning_steps = []  # NEW: Track reasoning steps
 
-
     def run(self):
         """Execute the API call in a separate thread"""
         try:
@@ -100,18 +99,14 @@ class OpenAIChatWorker(QThread):
                     params["metadata"] = self.settings.get("metadata")
                 # Note: metadata can only be included when store=True
 
-            # Set up streaming options if needed
-            if params["stream"]:
-                params["stream_options"] = {"include_usage": True}
-
             try:
+                # Set up streaming options if needed
                 if params["stream"]:
-                    # Streaming mode
-                    params["stream_options"] = {"include_usage": True}
-
-                    # Add option to include reasoning in stream if available
-                    if "include_reasoning" in params["stream_options"]:
-                        params["stream_options"]["include_reasoning"] = True
+                    # Always include reasoning for o1/o3 models
+                    if is_reasoning_model:
+                        params["stream_options"] = {"include_usage": True, "include_reasoning": True,}
+                    else:
+                        params["stream_options"] = {"include_usage": True}
 
                     full_response = ""
                     stream = client.chat.completions.create(**params)
@@ -370,7 +365,6 @@ class OpenAIChatWorker(QThread):
             return extension_map.get(ext, '')
         except IndexError:
             return ''  # If no extension is found
-
 
     def _extract_step_name(self, content: str) -> str:
         """Extract a step name from content if possible"""
