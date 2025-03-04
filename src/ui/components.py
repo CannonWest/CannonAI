@@ -399,7 +399,7 @@ class SettingsDialog(QDialog):
         seed_layout.addWidget(seed_explanation)
         gen_layout.addRow("Seed (for deterministic output):", seed_layout)
 
-        # Reasoning Effort (for o1 and o3 models)
+        # Reasoning Effort (for o1 and o3 models) - Legacy setting, now disabled
         self.reasoning_effort_container = QWidget()
         reasoning_layout = QHBoxLayout(self.reasoning_effort_container)
         reasoning_layout.setContentsMargins(0, 0, 0, 0)
@@ -415,21 +415,23 @@ class SettingsDialog(QDialog):
         except ValueError:
             self.reasoning_effort_combo.setCurrentIndex(1)  # Default to "medium"
 
+        # Disable the combo box since the API no longer supports this
+        self.reasoning_effort_combo.setEnabled(False)
         reasoning_layout.addWidget(self.reasoning_effort_combo)
 
         # Explanation for reasoning effort
         reason_explanation = QPushButton("?")
-        reason_explanation.setToolTip("Only for o1 and o3-mini models. Controls how much effort the model spends on reasoning.")
+        reason_explanation.setToolTip("This setting is no longer supported by the OpenAI API.")
         reason_explanation.setFixedWidth(25)
         reason_explanation.clicked.connect(lambda: QMessageBox.information(
             self,
             "Reasoning Effort",
-            "Only applicable to reasoning models (o1, o1-mini, o3-mini). "
-            "Constrains effort on reasoning. Lower values result in faster responses but less reasoning."
+            "This setting is no longer supported by the OpenAI API. "
+            "It's kept in the UI for backward compatibility but has no effect."
         ))
         reasoning_layout.addWidget(reason_explanation)
 
-        gen_layout.addRow("Reasoning Effort:", self.reasoning_effort_container)
+        gen_layout.addRow("Reasoning Effort (deprecated):", self.reasoning_effort_container)
 
         # Streaming option
         self.stream_checkbox = QCheckBox()
@@ -440,6 +442,7 @@ class SettingsDialog(QDialog):
         store_layout = QHBoxLayout()
         self.store_checkbox = QCheckBox()
         self.store_checkbox.setChecked(current_settings.get("store", False))
+        self.store_checkbox.stateChanged.connect(self.update_metadata_fields_state)
         store_layout.addWidget(self.store_checkbox)
 
         # Explanation for store
@@ -505,9 +508,9 @@ class SettingsDialog(QDialog):
             self.metadata_layout.addWidget(QLabel(f"Value {i + 1}:"), i, 2)
             self.metadata_layout.addWidget(value_input, i, 3)
 
-        metadata_group = QGroupBox("Metadata")
-        metadata_group.setLayout(self.metadata_layout)
-        adv_layout.addRow(metadata_group)
+        self.metadata_group = QGroupBox("Metadata")
+        self.metadata_group.setLayout(self.metadata_layout)
+        adv_layout.addRow(self.metadata_group)
 
         adv_group.setLayout(adv_layout)
         scroll_layout.addWidget(adv_group)
@@ -525,6 +528,7 @@ class SettingsDialog(QDialog):
 
         # Initialize UI based on current model
         self.update_ui_for_model()
+        self.update_metadata_fields_state()
 
     def update_ui_for_model(self):
         """Update UI elements based on selected model"""
@@ -574,6 +578,21 @@ class SettingsDialog(QDialog):
 
         # Update window title with model name for clarity
         self.setWindowTitle(f"Chat Settings - {model_name}")
+
+    def update_metadata_fields_state(self):
+        """Enable/disable metadata fields based on store checkbox state"""
+        enabled = self.store_checkbox.isChecked()
+
+        # Update all metadata fields
+        for key_input, value_input in zip(self.metadata_keys, self.metadata_values):
+            key_input.setEnabled(enabled)
+            value_input.setEnabled(enabled)
+
+        # Update the metadata group box title
+        if enabled:
+            self.metadata_group.setTitle("Metadata")
+        else:
+            self.metadata_group.setTitle("Metadata (requires Store enabled)")
 
     def get_settings(self) -> Dict[str, Any]:
         """Get the current settings from the dialog"""
@@ -626,6 +645,10 @@ class SettingsDialog(QDialog):
         # Only include reasoning_effort for appropriate models
         if model_id in REASONING_MODELS:
             settings["reasoning_effort"] = self.reasoning_effort_combo.currentText()
+            # Add a note in the settings metadata if it doesn't exist
+            if "metadata" not in settings:
+                settings["metadata"] = {}
+            settings["metadata"]["reasoning_effort_note"] = "This parameter is no longer supported by the API"
 
         return settings
 

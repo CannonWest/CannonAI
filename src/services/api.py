@@ -77,8 +77,8 @@ class OpenAIChatWorker(QThread):
 
             # Add reasoning effort for o1/o3 models
             is_reasoning_model = model in REASONING_MODELS
-            if is_reasoning_model and self.settings.get("reasoning_effort"):
-                params["reasoning_effort"] = self.settings.get("reasoning_effort")
+            if is_reasoning_model:
+                self.logger.info(f"Using reasoning model: {model}")
 
             # Add seed if specified
             if self.settings.get("seed") is not None:
@@ -92,9 +92,10 @@ class OpenAIChatWorker(QThread):
             if self.settings.get("store"):
                 params["store"] = True
 
-            # Add metadata if present
-            if self.settings.get("metadata") and len(self.settings.get("metadata")) > 0:
-                params["metadata"] = self.settings.get("metadata")
+                # Add metadata if present and store is enabled
+                if self.settings.get("metadata") and len(self.settings.get("metadata")) > 0:
+                    params["metadata"] = self.settings.get("metadata")
+                # Note: metadata can only be included when store=True
 
             # Set up streaming options if needed
             if params["stream"]:
