@@ -45,6 +45,7 @@ class ConversationBranchTab(QWidget):
         # Chat display area
         self.chat_display = QTextEdit()
         self.chat_display.setReadOnly(True)
+        self.chat_display.setAcceptRichText(True)
         self.chat_display.setStyleSheet(
             f"background-color: {DARK_MODE['background']}; color: {DARK_MODE['foreground']};"
         )
@@ -282,6 +283,9 @@ class ConversationBranchTab(QWidget):
             role = node.role
             content = node.content
 
+            # Process markdown in content
+            formatted_content = self.process_markdown(content)
+
             if role == "system":
                 color = DARK_MODE["system_message"]
                 prefix = "🔧 System: "
@@ -301,8 +305,16 @@ class ConversationBranchTab(QWidget):
                 color = DARK_MODE["foreground"]
                 prefix = f"{role}: "
 
+            # Set text color for the prefix
             self.chat_display.setTextColor(QColor(color))
-            self.chat_display.append(f"{prefix}{content}\n")
+
+            # Insert prefix as plain text
+            self.chat_display.insertPlainText(prefix)
+
+            # Insert the formatted content as HTML
+            cursor = self.chat_display.textCursor()
+            cursor.insertHtml(formatted_content)
+            cursor.insertBlock()  # Add a newline
 
             # Add file attachment indicators if present
             if hasattr(node, 'attached_files') and node.attached_files:
@@ -362,7 +374,6 @@ class ConversationBranchTab(QWidget):
             # For system or other messages
             self.token_label.setText("Tokens: - / -")
             self.model_label.setText("Model: -")
-        #########END BLOCK ALTER###########
 
         # Update response details
         if current_node.role == "assistant" and current_node.token_usage:
@@ -647,3 +658,49 @@ class ConversationBranchTab(QWidget):
         """Clear all attachments"""
         self.current_attachments = []
         self.update_attachments_ui()
+
+    # src/ui/conversation.py
+
+    def process_markdown(self, text):
+        """Convert markdown syntax to HTML for display"""
+        import re
+
+        # Process code blocks with syntax highlighting
+        text = re.sub(r'```(\w+)?\n(.*?)\n```', self._format_code_block, text, flags=re.DOTALL)
+
+        # Process inline code
+        text = re.sub(r'`([^`]+)`', r'<code style="background-color:#2d2d2d; padding:2px 4px; border-radius:3px;">\1</code>', text)
+
+        # Process bold text
+        text = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', text)
+        text = re.sub(r'__([^_]+)__', r'<b>\1</b>', text)
+
+        # Process italic text
+        text = re.sub(r'\*([^*]+)\*', r'<i>\1</i>', text)
+        text = re.sub(r'_([^_]+)_', r'<i>\1</i>', text)
+
+        # Process headers
+        text = re.sub(r'^# (.+)$', r'<h1>\1</h1>', text, flags=re.MULTILINE)
+        text = re.sub(r'^## (.+)$', r'<h2>\1</h2>', text, flags=re.MULTILINE)
+        text = re.sub(r'^### (.+)$', r'<h3>\1</h3>', text, flags=re.MULTILINE)
+
+        # Process bullet lists
+        text = re.sub(r'^- (.+)$', r'• \1<br>', text, flags=re.MULTILINE)
+        text = re.sub(r'^\* (.+)$', r'• \1<br>', text, flags=re.MULTILINE)
+
+        # Process numbered lists
+        text = re.sub(r'^(\d+)\. (.+)$', r'\1. \2<br>', text, flags=re.MULTILINE)
+
+        # Replace newlines with <br> tags
+        text = text.replace('\n', '<br>')
+
+        return text
+
+    def _format_code_block(self, match):
+        """Format code blocks with syntax highlighting"""
+        language = match.group(1) or ""
+        code = match.group(2)
+
+        # Simple syntax highlighting could be implemented here
+        # For now, we'll just wrap it in a pre tag with styling
+        return f'<pre style="background-color:#2d2d2d; color:#f8f8f2; padding:10px; border-radius:5px; overflow:auto;">{code}</pre>'
