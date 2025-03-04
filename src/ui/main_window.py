@@ -537,20 +537,62 @@ class MainWindow(QMainWindow):
         # Get the conversation
         conversation = tab.conversation_tree
 
-        # Check if we already have an assistant node
-        if conversation.current_node.role == "assistant":
-            # Update the existing node
-            conversation.current_node.content += chunk
-        else:
-            # Create a new assistant node
-            conversation.add_assistant_response(chunk)
+        # Check current message content for debugging
+        conn = self.db_manager.get_connection()
+        cursor = conn.cursor()
 
-        # Update the chat display during streaming (more efficient)
-        tab.update_chat_streaming(chunk)
+        try:
+            # Check if we already have an assistant node
+            is_first_chunk = False
+
+            if conversation.current_node.role == "assistant":
+                # Debug output before update
+                # print(f"DEBUG: Existing assistant node content (before): '{conversation.current_node.content[:30]}'")
+
+                # Update the existing node directly in database
+                cursor.execute(
+                    '''
+                    UPDATE messages SET content = content || ? WHERE id = ?
+                    ''',
+                    (chunk, conversation.current_node.id)
+                )
+                conn.commit()
+
+                # Also update the in-memory version
+                conversation.current_node.content += chunk
+
+                # Debug output after update
+                # print(f"DEBUG: Updated assistant node content (after): '{conversation.current_node.content[:30]}'")
+            else:
+                # First chunk - create a new assistant node
+                is_first_chunk = True
+                new_node = conversation.add_assistant_response(chunk)
+                # print(f"DEBUG: Created new assistant node with content: '{chunk}'")
+
+            # For first chunk, do a full UI update; otherwise, stream the update
+            if is_first_chunk:
+                # Update the whole UI to ensure assistant prefix appears
+                tab.update_ui()
+            else:
+                # Update the streaming display
+                tab.update_chat_streaming(chunk)
+
+            # Fetch current content from database to verify
+            cursor.execute(
+                'SELECT content FROM messages WHERE id = ?',
+                (conversation.current_node.id,)
+            )
+            # db_content = cursor.fetchone()[0]
+            # print(f"DEBUG: DB content after update: '{db_content[:50]}'")
+
+        except Exception as e:
+            print(f"DEBUG: Error in handle_chunk: {str(e)}")
+            conn.rollback()
+        finally:
+            conn.close()
 
         # Save less frequently for better performance
-        # Only save on larger chunks or periodically
-        if len(chunk) > 50:  # Only save occasionally during streaming
+        if len(chunk) > 50:
             self.save_conversation(conversation.id)
 
     def handle_usage_info(self, tab, info):

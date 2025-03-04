@@ -463,8 +463,21 @@ class ConversationBranchTab(QWidget):
         cursor = self.chat_display.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.chat_display.setTextCursor(cursor)
+
+        # Debug what's already in the text display
+        current_text = self.chat_display.toPlainText()
+
+        # Insert the chunk
         self.chat_display.insertPlainText(chunk)
+
+        # Debug after insertion
+        new_text = self.chat_display.toPlainText()
+
         self.chat_display.ensureCursorVisible()
+
+        # Force update
+        from PyQt6.QtCore import QCoreApplication
+        QCoreApplication.processEvents()
 
     def navigate_to_node(self, node_id):
         """Navigate to a specific node in the conversation"""
@@ -712,6 +725,32 @@ class ConversationBranchTab(QWidget):
         """Clear all attachments"""
         self.current_attachments = []
         self.update_attachments_ui()
+
+    def debug_streaming_test(self, chunk):
+        """Test method to debug streaming issues"""
+        # Get current text
+        current_text = self.chat_display.toPlainText()
+
+        # Find the last assistant message
+        last_assistant_idx = current_text.rfind("🤖 Assistant")
+
+        if last_assistant_idx >= 0:
+            # Replace everything after the assistant prefix with updated content
+            prefix_text = current_text[:last_assistant_idx + len("🤖 Assistant (gpt-4o-mini-2024-07-18): ")]
+            assistant_content = self.conversation_tree.current_node.content
+
+            # Set the complete text
+            self.chat_display.setPlainText(prefix_text + assistant_content)
+
+            # Move cursor to end
+            cursor = self.chat_display.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            self.chat_display.setTextCursor(cursor)
+
+
+        # Process events to update UI
+        from PyQt6.QtCore import QCoreApplication
+        QCoreApplication.processEvents()
 
     def format_size(self, size_bytes):
         """Format file size in a human-readable way."""

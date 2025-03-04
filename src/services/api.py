@@ -107,6 +107,8 @@ class OpenAIChatWorker(QThread):
                     full_response = ""
                     stream = client.chat.completions.create(**params)
 
+                    chunk_counter = 0
+
                     # Store the completion ID if available
                     if hasattr(stream, 'id'):
                         self.completion_id.emit(stream.id)
@@ -139,6 +141,10 @@ class OpenAIChatWorker(QThread):
                         # Handle content chunks
                         if chunk.choices and len(chunk.choices) > 0:
                             choice = chunk.choices[0]
+
+                            # Add debug output for chunk
+                            if hasattr(choice.delta, 'content'):
+                                chunk_counter += 1
 
                             # For content delta
                             if hasattr(choice.delta, 'content') and choice.delta.content:
