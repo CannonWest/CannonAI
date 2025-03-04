@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QMessageBox, QFileDialog, QMenu
 )
 from PyQt6.QtCore import Qt, QSettings, QUuid
-from PyQt6.QtGui import QFont, QIcon, QColor, QPalette, QAction
+from PyQt6.QtGui import QFont, QIcon, QColor, QPalette, QAction, QTextCursor
 
 from src.utils import DARK_MODE
 from src.models import DBConversationManager, DBMessageNode
@@ -545,11 +545,13 @@ class MainWindow(QMainWindow):
             # Create a new assistant node
             conversation.add_assistant_response(chunk)
 
-        # Update the UI
-        tab.update_ui()
+        # Update the chat display during streaming (more efficient)
+        tab.update_chat_streaming(chunk)
 
-        # Save the conversation periodically (can optimize to save less frequently)
-        self.save_conversation(conversation.id)
+        # Save less frequently for better performance
+        # Only save on larger chunks or periodically
+        if len(chunk) > 50:  # Only save occasionally during streaming
+            self.save_conversation(conversation.id)
 
     def handle_usage_info(self, tab, info):
         """Handle token usage information"""

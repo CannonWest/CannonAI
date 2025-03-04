@@ -232,26 +232,82 @@ class OpenAIChatWorker(QThread):
 
             # Check for attachments
             if "attached_files" in message and message["attached_files"]:
-                # For messages with attachments, include file content
-                file_contents = []
+                # For messages with attachments, add structured file information
+                file_sections = []
 
-                for file_info in message["attached_files"]:
+                # Add an introduction for the files
+                file_sections.append("""
+    # ATTACHED FILES
+    The user has attached the following files to this message. 
+    Each file is presented in a clearly delimited section with metadata and the file content.
+    When responding, you should:
+    1. Reference these files by their filename when discussing specific content
+    2. Use line numbers when referencing specific parts of code files
+    3. Consider the file type when analyzing the content
+    """)
+
+                # Process each file attachment
+                for i, file_info in enumerate(message["attached_files"]):
                     file_name = file_info["file_name"]
+                    file_path = file_info.get("path", "Unknown path")
+                    file_type = file_info.get("mime_type", "Unknown type")
+                    file_size = file_info.get("size", 0)
+                    token_count = file_info.get("token_count", 0)
                     file_content = file_info["content"]
 
-                    # Add file content to the message
-                    file_contents.append(f"\n\n```{file_name}\n{file_content}\n```")
+                    # Format file section with metadata and content
+                    file_section = f"""
+    ### FILE {i + 1}: {file_name}
+    - Path: {file_path}
+    - Type: {file_type}
+    - Size: {file_size} bytes
+    - Token count: {token_count} tokens
 
-                # Append file contents to the message content
-                if file_contents:
+    ```{self._get_file_extension(file_name)}
+    {file_content}
+    ```
+    """
+                    file_sections.append(file_section)
+
+                # Append file sections to the message content
+                if file_sections:
                     # Ensure there's a visual separator
                     if not prepared_message["content"].endswith("\n\n"):
                         prepared_message["content"] += "\n\n"
-                    prepared_message["content"] += "Attached files:\n" + "\n".join(file_contents)
+                    prepared_message["content"] += "\n".join(file_sections)
 
             prepared_messages.append(prepared_message)
 
         return prepared_messages
+
+    def _get_file_extension(self, filename):
+        """Extract extension from filename for syntax highlighting"""
+        try:
+            ext = filename.split('.')[-1].lower()
+            # Map common extensions to language names for syntax highlighting
+            extension_map = {
+                'py': 'python',
+                'js': 'javascript',
+                'ts': 'typescript',
+                'html': 'html',
+                'css': 'css',
+                'java': 'java',
+                'c': 'c',
+                'cpp': 'cpp',
+                'h': 'cpp',
+                'json': 'json',
+                'md': 'markdown',
+                'txt': '',  # No specific highlighting
+                'csv': '',
+                'sh': 'bash',
+                'sql': 'sql',
+                'xml': 'xml',
+                'yml': 'yaml',
+                'yaml': 'yaml'
+            }
+            return extension_map.get(ext, '')
+        except IndexError:
+            return ''  # If no extension is found
 
     def _is_reasoning_step(self, content: str) -> bool:
         """Detect if a chunk appears to be a reasoning step"""

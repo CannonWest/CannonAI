@@ -64,16 +64,20 @@ class ConversationBranchTab(QWidget):
         self.usage_layout.addStretch()
         self.usage_layout.addWidget(self.model_label)
 
-        # Chain of thought section (collapsible)
         self.cot_container = QWidget()
         self.cot_layout = QVBoxLayout(self.cot_container)
         self.cot_header = QWidget()
         self.cot_header_layout = QHBoxLayout(self.cot_header)
         self.cot_label = QLabel("Chain of Thought")
+        self.show_in_chat_btn = QPushButton("Show in Chat")
+        self.show_in_chat_btn.setCheckable(True)
+        self.show_in_chat_btn.setChecked(True)  # Default to showing reasoning in chat
+        self.show_in_chat_btn.clicked.connect(self.update_ui)
         self.cot_toggle = QPushButton("▼")
         self.cot_toggle.setFixedWidth(30)
         self.cot_toggle.clicked.connect(self.toggle_cot)
         self.cot_header_layout.addWidget(self.cot_label)
+        self.cot_header_layout.addWidget(self.show_in_chat_btn)
         self.cot_header_layout.addWidget(self.cot_toggle)
 
         self.cot_content = QTreeWidget()
@@ -274,6 +278,7 @@ class ConversationBranchTab(QWidget):
             return
 
         self.chat_display.clear()
+        show_reasoning_in_chat = self.show_in_chat_btn.isChecked()
 
         # Get the current branch messages
         branch = self.conversation_tree.get_current_branch()
@@ -282,9 +287,6 @@ class ConversationBranchTab(QWidget):
         for node in branch:
             role = node.role
             content = node.content
-
-            # Process markdown in content
-            formatted_content = self.process_markdown(content)
 
             if role == "system":
                 color = DARK_MODE["system_message"]
@@ -298,12 +300,31 @@ class ConversationBranchTab(QWidget):
                 # Add model info to the prefix if available
                 if node.model_info and "model" in node.model_info:
                     prefix = f"🤖 Assistant ({node.model_info['model']}): "
+
+                # Extract and display reasoning steps if enabled
+                if show_reasoning_in_chat:
+                    reasoning_steps = self._extract_reasoning_steps(content)
+                    if reasoning_steps:
+                        self.chat_display.setTextColor(QColor(DARK_MODE["accent"]))
+                        self.chat_display.insertPlainText("💭 Reasoning:\n")
+
+                        for step in reasoning_steps:
+                            # Format and display the step
+                            self.chat_display.insertPlainText(f"{step['name']}: {step['content']}\n")
+
+                        self.chat_display.insertPlainText("\n")  # Add spacing
+
+                        # Remove reasoning from content for cleaner display
+                        content = self._remove_reasoning_steps(content, reasoning_steps)
             elif role == "developer":
                 color = DARK_MODE["system_message"]
                 prefix = "👩‍💻 Developer: "
             else:
                 color = DARK_MODE["foreground"]
                 prefix = f"{role}: "
+
+            # Process markdown in content
+            formatted_content = self.process_markdown(content)
 
             # Set text color for the prefix
             self.chat_display.setTextColor(QColor(color))
@@ -319,9 +340,29 @@ class ConversationBranchTab(QWidget):
             # Add file attachment indicators if present
             if hasattr(node, 'attached_files') and node.attached_files:
                 self.chat_display.setTextColor(QColor(DARK_MODE["accent"]))
+                file_count = len(node.attached_files)
+
+                # Summary line for the attachments
+                attachment_summary = f"📎 {file_count} file{'s' if file_count > 1 else ''} attached:"
+                self.chat_display.append(attachment_summary)
+
+                # Create a formatted list of files with more details
                 for file_info in node.attached_files:
-                    file_text = f"📎 Attached: {file_info['file_name']} ({file_info['token_count']} tokens)"
-                    self.chat_display.append(file_text)
+                    file_name = file_info['file_name']
+                    file_type = file_info.get('mime_type', 'Unknown type')
+                    file_size = file_info.get('size', 0)
+                    token_count = file_info.get('token_count', 0)
+
+                    # Format file size for display
+                    if hasattr(self, 'format_size'):
+                        size_str = self.format_size(file_size)
+                    else:
+                        # Simple format if the format_size method is not available
+                        size_str = f"{file_size} bytes"
+
+                    file_details = f"    • {file_name} ({size_str}, {token_count} tokens)"
+                    self.chat_display.append(file_details)
+
                 self.chat_display.append("")  # Add an empty line after attachments
 
         # Scroll to bottom
@@ -416,6 +457,15 @@ class ConversationBranchTab(QWidget):
         can_retry = current_node.role == "assistant" and current_node.parent and current_node.parent.role == "user"
         self.retry_button.setEnabled(can_retry)
 
+    def update_chat_streaming(self, chunk):
+        """Update the chat display during streaming for efficiency"""
+        # Just append the chunk to the end of the display
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.chat_display.setTextCursor(cursor)
+        self.chat_display.insertPlainText(chunk)
+        self.chat_display.ensureCursorVisible()
+
     def navigate_to_node(self, node_id):
         """Navigate to a specific node in the conversation"""
         if not self.conversation_tree or not node_id:
@@ -432,17 +482,18 @@ class ConversationBranchTab(QWidget):
 
         message = self.text_input.toPlainText().strip()
 
-        # Add file attachment references to the message if present
+        # Prepare attachments if present but don't add them directly to the message text
         attachments_copy = None
         if self.current_attachments:
-            files_text = "\n\nAttached files:\n"
-            for file_info in self.current_attachments:
-                files_text += f"- {file_info['file_name']} ({file_info['token_count']} tokens)\n"
-
+            # Just note that there are attachments in the UI message
             if message:
-                message += files_text
+                # We no longer append file info to the message text
+                # The API service will handle the file content formatting
+                attachment_count = len(self.current_attachments)
+                file_text = f"\n\n[{attachment_count} file{'s' if attachment_count > 1 else ''} attached]"
+                message += file_text
             else:
-                message = files_text.strip()
+                message = f"[Attached {len(self.current_attachments)} file{'s' if len(self.current_attachments) > 1 else ''}]"
 
             # Copy attachments before clearing
             attachments_copy = self.current_attachments.copy()
@@ -544,6 +595,9 @@ class ConversationBranchTab(QWidget):
             model = settings.get("model", "gpt-4o")
 
             file_info = get_file_info(file_path, model)
+
+            # Ensure the full path is stored
+            file_info["path"] = file_path
 
             # Check if file is already attached
             for attachment in self.current_attachments:
@@ -659,7 +713,10 @@ class ConversationBranchTab(QWidget):
         self.current_attachments = []
         self.update_attachments_ui()
 
-    # src/ui/conversation.py
+    def format_size(self, size_bytes):
+        """Format file size in a human-readable way."""
+        from src.utils.file_utils import format_size as utils_format_size
+        return utils_format_size(size_bytes)
 
     def process_markdown(self, text):
         """Convert markdown syntax to HTML for display"""
@@ -704,3 +761,49 @@ class ConversationBranchTab(QWidget):
         # Simple syntax highlighting could be implemented here
         # For now, we'll just wrap it in a pre tag with styling
         return f'<pre style="background-color:#2d2d2d; color:#f8f8f2; padding:10px; border-radius:5px; overflow:auto;">{code}</pre>'
+
+    def _extract_reasoning_steps(self, content):
+        """Extract reasoning steps from message content"""
+        import re
+
+        # Patterns to identify reasoning steps
+        patterns = [
+            (r"Step (\d+):(.*?)(?=Step \d+:|$)", "Step {}"),
+            (r"Let's think step by step:(.*?)(?=Therefore|So the answer|In conclusion|$)", "Reasoning"),
+            (r"I'll solve this step by step:(.*?)(?=Therefore|So the answer|In conclusion|$)", "Problem Solving"),
+            (r"Let me think through this:(.*?)(?=Therefore|So the answer|In conclusion|$)", "Analysis"),
+            (r"First, (.*?)(?=Next,|Then,|Finally,|Therefore|So the answer|In conclusion|$)", "Step 1")
+        ]
+
+        steps = []
+        for pattern, name_template in patterns:
+            matches = re.finditer(pattern, content, re.DOTALL)
+            for i, match in enumerate(matches):
+                if len(match.groups()) > 1:
+                    step_num = match.group(1)
+                    step_content = match.group(2).strip()
+                    step_name = name_template.format(step_num)
+                else:
+                    step_content = match.group(1).strip()
+                    step_name = name_template.format(i + 1)
+
+                if step_content:
+                    steps.append({
+                        "name": step_name,
+                        "content": step_content,
+                        "match": match.group(0)
+                    })
+
+        return steps
+
+    def _remove_reasoning_steps(self, content, steps):
+        """Remove reasoning steps from content for cleaner display"""
+        cleaned_content = content
+        for step in steps:
+            if "match" in step:
+                cleaned_content = cleaned_content.replace(step["match"], "")
+
+        # Clean up any double newlines
+        import re
+        cleaned_content = re.sub(r'\n\s*\n', '\n\n', cleaned_content)
+        return cleaned_content.strip()
