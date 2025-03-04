@@ -38,6 +38,9 @@ class ConversationBranchTab(QWidget):
         # Initialize empty attachments list
         self.current_attachments = []
 
+        # NEW: Store reasoning steps
+        self.reasoning_steps = []
+
         # Branch navigation bar
         self.branch_nav = BranchNavBar()
         self.branch_nav.node_selected.connect(self.navigate_to_node)
@@ -63,33 +66,6 @@ class ConversationBranchTab(QWidget):
         self.usage_layout.addWidget(self.token_label)
         self.usage_layout.addStretch()
         self.usage_layout.addWidget(self.model_label)
-
-        self.cot_container = QWidget()
-        self.cot_layout = QVBoxLayout(self.cot_container)
-        self.cot_header = QWidget()
-        self.cot_header_layout = QHBoxLayout(self.cot_header)
-        self.cot_label = QLabel("Chain of Thought")
-        self.show_in_chat_btn = QPushButton("Show in Chat")
-        self.show_in_chat_btn.setCheckable(True)
-        self.show_in_chat_btn.setChecked(True)  # Default to showing reasoning in chat
-        self.show_in_chat_btn.clicked.connect(self.update_ui)
-        self.cot_toggle = QPushButton("▼")
-        self.cot_toggle.setFixedWidth(30)
-        self.cot_toggle.clicked.connect(self.toggle_cot)
-        self.cot_header_layout.addWidget(self.cot_label)
-        self.cot_header_layout.addWidget(self.show_in_chat_btn)
-        self.cot_header_layout.addWidget(self.cot_toggle)
-
-        self.cot_content = QTreeWidget()
-        self.cot_content.setHeaderLabels(["Step", "Content"])
-        self.cot_content.setColumnWidth(0, 150)
-        self.cot_content.setVisible(False)
-        self.cot_content.setStyleSheet(
-            f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
-        )
-
-        self.cot_layout.addWidget(self.cot_header)
-        self.cot_layout.addWidget(self.cot_content)
 
         # Advanced info section (collapsible)
         self.info_container = QWidget()
@@ -206,7 +182,6 @@ class ConversationBranchTab(QWidget):
         self.conversation_layout.addWidget(self.branch_nav)
         self.conversation_layout.addWidget(self.chat_display, 4)
         self.conversation_layout.addWidget(self.usage_container, 0)
-        self.conversation_layout.addWidget(self.cot_container, 1)
         self.conversation_layout.addWidget(self.info_container, 1)
         self.conversation_layout.addWidget(self.attachments_container, 0)
         self.conversation_layout.addWidget(self.input_container, 0)
@@ -278,7 +253,6 @@ class ConversationBranchTab(QWidget):
             return
 
         self.chat_display.clear()
-        show_reasoning_in_chat = self.show_in_chat_btn.isChecked()
 
         # Get the current branch messages
         branch = self.conversation_tree.get_current_branch()
@@ -301,21 +275,38 @@ class ConversationBranchTab(QWidget):
                 if node.model_info and "model" in node.model_info:
                     prefix = f"🤖 Assistant ({node.model_info['model']}): "
 
-                # Extract and display reasoning steps if enabled
-                if show_reasoning_in_chat:
-                    reasoning_steps = self._extract_reasoning_steps(content)
-                    if reasoning_steps:
-                        self.chat_display.setTextColor(QColor(DARK_MODE["accent"]))
-                        self.chat_display.insertPlainText("💭 Reasoning:\n")
+                # Check for reasoning tokens or reasoning steps
+                reasoning_tokens = 0
+                if node.token_usage and "completion_tokens_details" in node.token_usage:
+                    details = node.token_usage["completion_tokens_details"]
+                    reasoning_tokens = details.get("reasoning_tokens", 0)
 
-                        for step in reasoning_steps:
-                            # Format and display the step
-                            self.chat_display.insertPlainText(f"{step['name']}: {step['content']}\n")
+                # Get any stored reasoning steps for this node
+                node_reasoning = getattr(node, 'reasoning_steps', [])
 
-                        self.chat_display.insertPlainText("\n")  # Add spacing
+                # If we have stored reasoning steps or the model used reasoning tokens
+                if node_reasoning or reasoning_tokens > 0:
+                    self.chat_display.setTextColor(QColor(DARK_MODE["accent"]))
+                    self.chat_display.insertPlainText("💭 Chain of Thought:\n")
 
-                        # Remove reasoning from content for cleaner display
-                        content = self._remove_reasoning_steps(content, reasoning_steps)
+                    if node_reasoning:
+                        # Display the stored reasoning steps
+                        for step in node_reasoning:
+                            step_name = step.get("name", "Reasoning Step")
+                            step_content = step.get("content", "")
+                            self.chat_display.insertPlainText(f"• {step_name}: {step_content}\n")
+                    # Fall back to pattern recognition if needed
+                    elif not node_reasoning and "o1" in node.model_info.get("model", "") or "o3" in node.model_info.get("model", ""):
+                        # Try to extract steps from content
+                        detected_steps = self._extract_reasoning_steps(content)
+                        if detected_steps:
+                            for step in detected_steps:
+                                self.chat_display.insertPlainText(f"• {step['name']}: {step['content']}\n")
+                        else:
+                            # Just show that reasoning happened
+                            self.chat_display.insertPlainText(f"• Model performed reasoning ({reasoning_tokens} tokens)\n")
+
+                    self.chat_display.insertPlainText("\n")  # Add spacing
             elif role == "developer":
                 color = DARK_MODE["system_message"]
                 prefix = "👩‍💻 Developer: "
@@ -378,10 +369,17 @@ class ConversationBranchTab(QWidget):
                 completion_tokens = usage.get("completion_tokens", 0)
                 total_tokens = usage.get("total_tokens", 0)
 
-                # For debugging
-                print(f"Assistant node token usage: {usage}")
-
-                self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens}")
+                # Show reasoning tokens if available
+                reasoning_tokens = 0
+                if "completion_tokens_details" in usage:
+                    details = usage["completion_tokens_details"]
+                    reasoning_tokens = details.get("reasoning_tokens", 0)
+                    if reasoning_tokens > 0:
+                        self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens} ({reasoning_tokens} reasoning)")
+                    else:
+                        self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens}")
+                else:
+                    self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens}")
             else:
                 # No token usage data available
                 self.token_label.setText("Tokens: - / -")
@@ -547,27 +545,26 @@ class ConversationBranchTab(QWidget):
         self.info_toggle.setText("▲" if visible else "▼")
 
     def add_cot_step(self, step_name, content):
-        """Add a step to the chain of thought visualization"""
-        item = QTreeWidgetItem([step_name, ""])
-        item.setToolTip(1, content)
+        """Add a step to the chain of thought"""
+        # Add to our current reasoning steps
+        self.reasoning_steps.append({
+            "name": step_name,
+            "content": content
+        })
 
-        # For long content, create a truncated version
-        display_content = content
-        if len(content) > 100:
-            display_content = content[:97] + "..."
+        # If we have a current node that's an assistant, store the steps with it
+        if self.conversation_tree and self.conversation_tree.current_node:
+            node = self.conversation_tree.current_node
+            if node.role == "assistant":
+                # Store the steps
+                setattr(node, 'reasoning_steps', self.reasoning_steps)
 
-        child = QTreeWidgetItem(["", display_content])
-        item.addChild(child)
-        self.cot_content.addTopLevelItem(item)
-        item.setExpanded(True)
-
-        # Auto-show the COT panel when steps are added
-        self.cot_content.setVisible(True)
-        self.cot_toggle.setText("▲")
+                # Update display
+                self.update_chat_display()
 
     def clear_cot(self):
-        """Clear the chain of thought visualization"""
-        self.cot_content.clear()
+        """Clear the chain of thought steps"""
+        self.reasoning_steps = []
 
     # Drag and drop event handlers
     def dragEnterEvent(self, event: QDragEnterEvent):
@@ -792,6 +789,21 @@ class ConversationBranchTab(QWidget):
 
         return text
 
+    def set_reasoning_steps(self, steps):
+        """Store reasoning steps for the current response"""
+        self.reasoning_steps = steps
+        print(f"Received {len(steps)} reasoning steps from worker")
+
+        # If we have a current node that's an assistant, store the steps with it
+        if self.conversation_tree and self.conversation_tree.current_node:
+            node = self.conversation_tree.current_node
+            if node.role == "assistant":
+                # Store the reasoning steps with the node
+                setattr(node, 'reasoning_steps', steps)
+
+                # Update the display to show the reasoning
+                self.update_chat_display()
+
     def _format_code_block(self, match):
         """Format code blocks with syntax highlighting"""
         language = match.group(1) or ""
@@ -802,47 +814,148 @@ class ConversationBranchTab(QWidget):
         return f'<pre style="background-color:#2d2d2d; color:#f8f8f2; padding:10px; border-radius:5px; overflow:auto;">{code}</pre>'
 
     def _extract_reasoning_steps(self, content):
-        """Extract reasoning steps from message content"""
+        """Extract reasoning steps from message content with improved pattern detection"""
         import re
 
-        # Patterns to identify reasoning steps
+        # Debug: Print the first 100 chars of content to see what we're working with
+        print(f"Extracting reasoning from content starting with: {content[:100]}")
+
+        # Patterns to identify reasoning steps (enhanced for more patterns)
         patterns = [
+            # Classic step patterns
             (r"Step (\d+):(.*?)(?=Step \d+:|$)", "Step {}"),
+            (r"Step (\d+)\.(.*?)(?=Step \d+\.|$)", "Step {}"),
+            (r"Step (\d+)(.*?)(?=Step \d+|$)", "Step {}"),
+            (r"(\d+)\. (.*?)(?=\d+\. |$)", "Step {}"),
+
+            # Common reasoning frameworks
             (r"Let's think step by step:(.*?)(?=Therefore|So the answer|In conclusion|$)", "Reasoning"),
             (r"I'll solve this step by step:(.*?)(?=Therefore|So the answer|In conclusion|$)", "Problem Solving"),
             (r"Let me think through this:(.*?)(?=Therefore|So the answer|In conclusion|$)", "Analysis"),
-            (r"First, (.*?)(?=Next,|Then,|Finally,|Therefore|So the answer|In conclusion|$)", "Step 1")
+
+            # For o1-mini specific patterns (based on your example)
+            (r"Puzzle:(.*?)Solution:(.*?)(?=$)", "Puzzle & Solution"),
+            (r"\*\*Solution:\*\*(.*?)(?=$)", "Solution"),
+            (r"\*\*Puzzle:\*\*(.*?)\*\*Solution:\*\*(.*?)(?=$)", "Puzzle & Solution"),
+
+            # Sequential reasoning patterns
+            (r"First,(.*?)(?=Second,|Next,|Then,|Finally,|Therefore|$)", "Step 1"),
+            (r"Second,(.*?)(?=Third,|Next,|Then,|Finally,|Therefore|$)", "Step 2"),
+            (r"Third,(.*?)(?=Fourth,|Next,|Then,|Finally,|Therefore|$)", "Step 3"),
+
+            # Numbered or bulleted lists that might be reasoning
+            (r"\d+\)(.*?)(?=\d+\)|$)", "Point {}"),
+            (r"•(.*?)(?=•|$)", "Point")
         ]
 
         steps = []
-        for pattern, name_template in patterns:
-            matches = re.finditer(pattern, content, re.DOTALL)
-            for i, match in enumerate(matches):
-                if len(match.groups()) > 1:
-                    step_num = match.group(1)
-                    step_content = match.group(2).strip()
-                    step_name = name_template.format(step_num)
-                else:
-                    step_content = match.group(1).strip()
-                    step_name = name_template.format(i + 1)
 
-                if step_content:
-                    steps.append({
-                        "name": step_name,
-                        "content": step_content,
-                        "match": match.group(0)
-                    })
+        # First, check if the content contains explicit section markers
+        solution_match = re.search(r'\*\*Solution:\*\*(.*?)(?=$|Alternatively|Therefore|In conclusion)', content, re.DOTALL)
+        if solution_match:
+            solution_content = solution_match.group(1).strip()
+            steps.append({
+                "name": "Solution Process",
+                "content": solution_content,
+                "match": solution_match.group(0)
+            })
+            print(f"Found explicit solution section: {solution_content[:50]}...")
+
+        # Try to extract numbered steps within the content
+        number_steps = re.finditer(r'\d+\.\s+\*\*([^*]+)\*\*:(.*?)(?=\d+\.\s+\*\*|$)', content, re.DOTALL)
+        step_found = False
+        for i, match in enumerate(number_steps):
+            step_found = True
+            step_name = match.group(1).strip() if match.group(1) else f"Step {i + 1}"
+            step_content = match.group(2).strip()
+            steps.append({
+                "name": step_name,
+                "content": step_content,
+                "match": match.group(0)
+            })
+            print(f"Found numbered step: {step_name} - {step_content[:50]}...")
+
+        # If we didn't find any explicit steps yet, try the pattern matching approach
+        if not steps:
+            for pattern, name_template in patterns:
+                matches = re.finditer(pattern, content, re.DOTALL)
+                for i, match in enumerate(matches):
+                    if len(match.groups()) > 1:
+                        step_num = match.group(1)
+                        step_content = match.group(2).strip()
+                        step_name = name_template.format(step_num)
+                    else:
+                        step_content = match.group(1).strip()
+                        step_name = name_template.format(i + 1)
+
+                    if step_content:
+                        steps.append({
+                            "name": step_name,
+                            "content": step_content,
+                            "match": match.group(0)
+                        })
+                        print(f"Found pattern match: {step_name} - {step_content[:50]}...")
+
+        # Last resort: if the content has reasoning tokens but we found no steps,
+        # try to analyze the overall structure
+        if not steps and "**" in content:
+            # Look for bold text sections which might indicate steps
+            bold_sections = re.finditer(r'\*\*([^*]+)\*\*:(.*?)(?=\*\*|$)', content, re.DOTALL)
+            for i, match in enumerate(bold_sections):
+                section_name = match.group(1).strip()
+                section_content = match.group(2).strip()
+                steps.append({
+                    "name": section_name,
+                    "content": section_content,
+                    "match": match.group(0)
+                })
+                print(f"Found bold section: {section_name} - {section_content[:50]}...")
+
+        if steps:
+            print(f"Total reasoning steps found: {len(steps)}")
+        else:
+            print("No reasoning steps detected in content")
 
         return steps
 
     def _remove_reasoning_steps(self, content, steps):
         """Remove reasoning steps from content for cleaner display"""
+        # Make a copy of the content
         cleaned_content = content
+
+        # Try different approaches to remove the reasoning sections
+
+        # First, try to remove based on the exact match strings in the extracted steps
         for step in steps:
             if "match" in step:
-                cleaned_content = cleaned_content.replace(step["match"], "")
+                cleaned_content = cleaned_content.replace(step["match"], "", 1)  # Replace only first occurrence
+
+        # If that didn't work well (content still has most of the steps), try to identify
+        # the main solution or conclusion section
+        if len(cleaned_content) > len(content) * 0.7:  # If we removed less than 30%
+            # Look for standard conclusion markers
+            conclusion_patterns = [
+                r'Therefore,(.*?)$',
+                r'In conclusion,(.*?)$',
+                r'To summarize,(.*?)$',
+                r'So the answer is(.*?)$',
+                r'The solution is(.*?)$'
+            ]
+
+            for pattern in conclusion_patterns:
+                import re
+                conclusion_match = re.search(pattern, content, re.DOTALL)
+                if conclusion_match:
+                    # Just keep the conclusion part
+                    cleaned_content = conclusion_match.group(0)
+                    break
 
         # Clean up any double newlines
         import re
         cleaned_content = re.sub(r'\n\s*\n', '\n\n', cleaned_content)
+
+        # If the content is empty or too short after cleanup, return the original
+        if len(cleaned_content.strip()) < 20:
+            return content
+
         return cleaned_content.strip()

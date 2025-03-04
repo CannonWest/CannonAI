@@ -25,12 +25,15 @@ class OpenAIChatWorker(QThread):
     usage_info = pyqtSignal(dict)
     system_info = pyqtSignal(dict)
     completion_id = pyqtSignal(str)
+    reasoning_steps = pyqtSignal(list)  # NEW: Emit all reasoning steps together
 
     def __init__(self, messages: List[ChatCompletionMessageParam], settings: Dict[str, Any]):
         super().__init__()
         self.messages = messages
         self.settings = settings
         self.logger = get_logger(f"{__name__}.OpenAIChatWorker")
+        self.collected_reasoning_steps = []  # NEW: Track reasoning steps
+
 
     def run(self):
         """Execute the API call in a separate thread"""
@@ -104,6 +107,12 @@ class OpenAIChatWorker(QThread):
             try:
                 if params["stream"]:
                     # Streaming mode
+                    params["stream_options"] = {"include_usage": True}
+
+                    # Add option to include reasoning in stream if available
+                    if "include_reasoning" in params["stream_options"]:
+                        params["stream_options"]["include_reasoning"] = True
+
                     full_response = ""
                     stream = client.chat.completions.create(**params)
 
@@ -138,6 +147,32 @@ class OpenAIChatWorker(QThread):
                                 "model": chunk.model
                             })
 
+                        if hasattr(chunk, 'thinking') and chunk.thinking:
+                            thinking_info = chunk.thinking
+                            # If it's a single step
+                            if hasattr(thinking_info, 'step'):
+                                step_name = thinking_info.step
+                                step_content = thinking_info.content if hasattr(thinking_info, 'content') else ""
+                                self.collected_reasoning_steps.append({
+                                    "name": step_name,
+                                    "content": step_content
+                                })
+                                self.thinking_step.emit(step_name, step_content)
+                            # If it's a list of steps
+                            elif hasattr(thinking_info, 'steps'):
+                                for step in thinking_info.steps:
+                                    step_name = step.get('step', 'Reasoning')
+                                    step_content = step.get('content', '')
+                                    self.collected_reasoning_steps.append({
+                                        "name": step_name,
+                                        "content": step_content
+                                    })
+                                    self.thinking_step.emit(step_name, step_content)
+
+                            # Emit reasoning to console for debugging
+                        if hasattr(chunk, '_thinking_structured') and chunk._thinking_structured:
+                            print(f"DEBUG: Received structured thinking: {chunk._thinking_structured}")
+
                         # Handle content chunks
                         if chunk.choices and len(chunk.choices) > 0:
                             choice = chunk.choices[0]
@@ -157,12 +192,33 @@ class OpenAIChatWorker(QThread):
                                     step_name = self._extract_step_name(content)
                                     self.thinking_step.emit(step_name, content)
 
+                    if self.collected_reasoning_steps:
+                        self.reasoning_steps.emit(self.collected_reasoning_steps)
+
                     # Emit the full message at the end only for reference
                     # In streaming mode, we don't use this for UI updates to avoid duplication
                     self.message_received.emit(full_response)
                 else:
                     # Non-streaming mode
                     response = client.chat.completions.create(**params)
+
+                    all_steps = []
+                    if hasattr(response, 'thinking') and response.thinking:
+                        thinking_info = response.thinking
+                        # Handle different thinking formats
+                        if hasattr(thinking_info, 'steps'):
+                            for step in thinking_info.steps:
+                                step_name = step.get('step', 'Reasoning')
+                                step_content = step.get('content', '')
+                                all_steps.append({
+                                    "name": step_name,
+                                    "content": step_content
+                                })
+                                self.thinking_step.emit(step_name, step_content)
+
+                    # Emit the reasoning steps
+                    if all_steps:
+                        self.reasoning_steps.emit(all_steps)
 
                     # Save and emit completion ID if available
                     if hasattr(response, 'id'):
@@ -315,16 +371,6 @@ class OpenAIChatWorker(QThread):
         except IndexError:
             return ''  # If no extension is found
 
-    def _is_reasoning_step(self, content: str) -> bool:
-        """Detect if a chunk appears to be a reasoning step"""
-        content_strip = content.strip()
-        return (
-                content_strip.startswith("Step ") or
-                content_strip.startswith("Let's think") or
-                content_strip.startswith("I'll solve") or
-                content_strip.startswith("Let me think") or
-                content_strip.startswith("First, I")
-        )
 
     def _extract_step_name(self, content: str) -> str:
         """Extract a step name from content if possible"""
@@ -335,3 +381,20 @@ class OpenAIChatWorker(QThread):
             except:
                 pass
         return "Reasoning"
+
+    def _is_reasoning_step(self, content: str) -> bool:
+        """
+        Detect if a chunk appears to be a reasoning step
+        Enhanced to handle more reasoning patterns
+        """
+        content_strip = content.strip()
+        return (
+                content_strip.startswith("Step ") or
+                content_strip.startswith("Let's think") or
+                content_strip.startswith("I'll solve") or
+                content_strip.startswith("Let me think") or
+                content_strip.startswith("First, I") or
+                content_strip.startswith("**Solution:") or
+                content_strip.startswith("**Step") or
+                content_strip.startswith("**Puzzle:")
+        )

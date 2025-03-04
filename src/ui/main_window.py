@@ -466,6 +466,8 @@ class MainWindow(QMainWindow):
 
         # Connect other signals
         self.worker.thinking_step.connect(lambda step, content: tab.add_cot_step(step, content))
+        # NEW: Connect the reasoning_steps signal
+        self.worker.reasoning_steps.connect(lambda steps: tab.set_reasoning_steps(steps))
         self.worker.error_occurred.connect(self.handle_error)
         self.worker.usage_info.connect(lambda info: self.handle_usage_info(tab, info))
         self.worker.system_info.connect(lambda info: self.handle_system_info(tab, info))
@@ -499,6 +501,8 @@ class MainWindow(QMainWindow):
 
         # Connect other signals
         self.worker.thinking_step.connect(lambda step, content: tab.add_cot_step(step, content))
+        # NEW: Connect the reasoning_steps signal
+        self.worker.reasoning_steps.connect(lambda steps: tab.set_reasoning_steps(steps))
         self.worker.error_occurred.connect(self.handle_error)
         self.worker.usage_info.connect(lambda info: self.handle_usage_info(tab, info))
         self.worker.system_info.connect(lambda info: self.handle_system_info(tab, info))
