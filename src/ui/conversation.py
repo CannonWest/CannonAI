@@ -156,9 +156,17 @@ class ConversationBranchTab(QWidget):
         )
         self.attach_button.clicked.connect(self.on_attach_file)
 
+        self.attach_dir_button = QPushButton("📁")
+        self.attach_dir_button.setToolTip("Attach directory")
+        self.attach_dir_button.setStyleSheet(
+            f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
+        )
+        self.attach_dir_button.clicked.connect(self.on_attach_directory)
+
         self.button_layout.addWidget(self.send_button)
         self.button_layout.addWidget(self.retry_button)
         self.button_layout.addWidget(self.attach_button)
+        self.button_layout.addWidget(self.attach_dir_button)
 
         self.input_layout.addWidget(self.text_input, 5)
         self.input_layout.addWidget(self.button_container, 1)
@@ -511,7 +519,7 @@ class ConversationBranchTab(QWidget):
             self.chat_display.insertPlainText(chunk)
             self.chat_display.ensureCursorVisible()
 
-            # Increment counter safely
+            # Inrement counter safely
             try:
                 self._chunk_counter += 1
             except TypeError:
@@ -655,7 +663,7 @@ class ConversationBranchTab(QWidget):
         for file_path in file_paths:
             self.add_attachment(file_path)
 
-    def add_attachment(self, file_path: str):
+    def add_attachment(self, file_path: str, relative_path: str = None):
         """Add a file attachment to the current message"""
         try:
             # Use the current model from settings to count tokens accurately
@@ -667,6 +675,13 @@ class ConversationBranchTab(QWidget):
 
             # Ensure the full path is stored
             file_info["path"] = file_path
+
+            # If a relative path is provided, use it for display
+            if relative_path:
+                # Store original file name
+                file_info["original_file_name"] = file_info["file_name"]
+                # Use relative path for display
+                file_info["file_name"] = relative_path
 
             # Check if file is already attached
             for attachment in self.current_attachments:
@@ -688,6 +703,65 @@ class ConversationBranchTab(QWidget):
                 "Attachment Error",
                 f"Error attaching file: {str(e)}"
             )
+
+    def on_attach_directory(self):
+        """Open directory dialog to attach all files in a directory"""
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        import os
+
+        directory_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select Directory to Attach",
+            "",
+            QFileDialog.Option.ShowDirsOnly
+        )
+
+        if not directory_path:
+            return
+
+        # Confirm with user if directory might contain many files
+        file_count = sum([len(files) for _, _, files in os.walk(directory_path)])
+
+        if file_count > 10:
+            reply = QMessageBox.question(
+                self,
+                "Confirm Directory Attachment",
+                f"The selected directory contains {file_count} files. Are you sure you want to attach all of them?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        # Process the directory
+        attached_count = 0
+        error_count = 0
+
+        # Walk through the directory recursively
+        for root, dirs, files in os.walk(directory_path):
+            for file in files:
+                # Build the full file path
+                file_path = os.path.join(root, file)
+
+                # Get the relative path from the selected directory
+                relative_path = os.path.relpath(file_path, directory_path)
+
+                try:
+                    # Add the file with its relative path
+                    self.add_attachment(file_path, relative_path)
+                    attached_count += 1
+                except Exception as e:
+                    error_count += 1
+                    print(f"Error attaching file {relative_path}: {str(e)}")
+
+        # Show summary message
+        if attached_count > 0:
+            summary = f"Attached {attached_count} files from directory"
+            if error_count > 0:
+                summary += f" ({error_count} files skipped due to errors)"
+            QMessageBox.information(self, "Directory Attachment", summary)
+        elif error_count > 0:
+            QMessageBox.warning(self, "Attachment Error", f"Could not attach any files. {error_count} files had errors.")
 
     def update_attachments_ui(self):
         """Update the attachments UI with current files"""
@@ -745,8 +819,14 @@ class ConversationBranchTab(QWidget):
         layout = QVBoxLayout(dialog)
 
         # File info label
+        display_name = file_info['file_name']
+        original_name = file_info.get('original_file_name', display_name.split('/')[-1])
+        full_path = file_info['path']
+
         info_label = QLabel(
-            f"File: {file_info['file_name']}\n"
+            f"File: {display_name}\n"
+            f"Original name: {original_name}\n"
+            f"Path: {full_path}\n"
             f"Size: {format_size(file_info['size'])}\n"
             f"Token count: {file_info['token_count']} tokens"
         )
