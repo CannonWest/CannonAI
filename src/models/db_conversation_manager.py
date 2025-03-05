@@ -143,6 +143,17 @@ class DBConversationManager:
             self.logger.info("No conversations found in database")
             return
 
+        # Log how many conversations were found
+        self.logger.info(f"Found {len(conversation_list)} conversations in database")
+
+        # Load all conversations into memory
+        for conv_info in conversation_list:
+            conv_id = conv_info['id']
+            # Skip if already loaded
+            if conv_id not in self.conversations:
+                self.load_conversation(conv_id)
+                self.logger.info(f"Loaded conversation: {conv_info['name']} (ID: {conv_id})")
+
         # Set first conversation as active if none is active
         if not self.active_conversation_id and conversation_list:
             first_conversation_id = conversation_list[0]['id']

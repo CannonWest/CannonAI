@@ -144,6 +144,37 @@ class DBConversationTree:
             # Create root system message
             self._create_new_conversation(system_message)
 
+    def update_name(self, new_name):
+        """Update the conversation name in the database"""
+        conn = self.db_manager.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # Update the name in the database
+            cursor.execute(
+                'UPDATE conversations SET name = ? WHERE id = ?',
+                (new_name, self.id)
+            )
+
+            # Update the in-memory property
+            self.name = new_name
+
+            # Update modified timestamp
+            now = datetime.now().isoformat()
+            self.modified_at = now
+            cursor.execute(
+                'UPDATE conversations SET modified_at = ? WHERE id = ?',
+                (now, self.id)
+            )
+
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
     def _load_conversation(self, conversation_id):
         """Load conversation from database"""
         conn = self.db_manager.get_connection()
@@ -166,6 +197,8 @@ class DBConversationTree:
             self.created_at = conversation['created_at']
             self.modified_at = conversation['modified_at']
             self.current_node_id = conversation['current_node_id']
+
+            print(f"DEBUG: Loaded conversation '{self.name}' with ID {self.id}")
 
             # Find root node
             cursor.execute(

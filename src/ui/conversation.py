@@ -646,9 +646,31 @@ class ConversationBranchTab(QWidget):
 
     def dropEvent(self, event: QDropEvent):
         """Handle file drop events"""
+        import os
+
         for url in event.mimeData().urls():
             file_path = url.toLocalFile()
-            self.add_attachment(file_path)
+
+            # Check if it's a directory
+            if os.path.isdir(file_path):
+                # Process directory recursively, similar to on_attach_directory
+                for root, dirs, files in os.walk(file_path):
+                    for file in files:
+                        # Build the full file path
+                        individual_file_path = os.path.join(root, file)
+
+                        # Get the relative path from the dropped directory
+                        relative_path = os.path.relpath(individual_file_path, file_path)
+
+                        try:
+                            # Add each file with its relative path
+                            self.add_attachment(individual_file_path, relative_path)
+                        except Exception as e:
+                            print(f"Error attaching file {relative_path}: {str(e)}")
+            else:
+                # It's a regular file, handle normally
+                self.add_attachment(file_path)
+
         event.acceptProposedAction()
 
     def on_attach_file(self):

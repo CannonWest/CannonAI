@@ -190,6 +190,31 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def debug_print_conversations(self):
+        """Print all conversations in the database for debugging"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('SELECT * FROM conversations')
+            conversations = cursor.fetchall()
+
+            print(f"===== DEBUG: Found {len(conversations)} conversations in database =====")
+            for conv in conversations:
+                print(f"ID: {conv['id']}, Name: {conv['name']}, Modified: {conv['modified_at']}")
+
+                # Count messages in this conversation
+                cursor.execute('SELECT COUNT(*) FROM messages WHERE conversation_id = ?', (conv['id'],))
+                message_count = cursor.fetchone()[0]
+                print(f"  Messages: {message_count}")
+
+            print("=====================================================")
+
+        except Exception as e:
+            print(f"DEBUG: Error querying conversations: {str(e)}")
+        finally:
+            conn.close()
+
     def _create_node_from_db_row(self, row):
         """Create a DBMessageNode from a database row"""
         from src.models.db_conversation import DBMessageNode

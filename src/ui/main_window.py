@@ -41,6 +41,9 @@ class MainWindow(QMainWindow):
         # Initialize UI components
         self.setup_ui()
 
+        # Debug: Print all conversations in database
+        self.db_manager.debug_print_conversations()
+
         # Set up styling
         self.setup_style()
 
@@ -312,8 +315,37 @@ class MainWindow(QMainWindow):
             # Update the tab title
             self.tabs.setTabText(index, new_name)
 
+            # Update the name in the database - this ensures it's saved
+            if hasattr(conversation, 'update_name'):
+                conversation.update_name(new_name)
+            else:
+                # If update_name doesn't exist, update the database directly
+                conn = self.db_manager.get_connection()
+                if conn:
+                    try:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            'UPDATE conversations SET name = ? WHERE id = ?',
+                            (new_name, conversation.id)
+                        )
+                        conn.commit()
+                    except Exception as e:
+                        print(f"Error updating conversation name: {str(e)}")
+                        conn.rollback()
+                    finally:
+                        conn.close()
+
             # Save the conversation
             self.save_conversation(conversation.id)
+
+    def rename_current_conversation(self):
+        """Rename the current conversation"""
+        # Get the current tab
+        index = self.tabs.currentIndex()
+        if index < 0:
+            return
+
+        self.rename_conversation_at_index(index)
 
     def setup_style(self):
         """Set up the application styling"""
@@ -743,15 +775,6 @@ class MainWindow(QMainWindow):
                 if hasattr(tab, 'update_model_info'):
                     tab.update_model_info(current_model)
 
-    def rename_current_conversation(self):
-        """Rename the current conversation"""
-        # Get the current tab
-        index = self.tabs.currentIndex()
-        if index < 0:
-            return
-
-        self.rename_conversation_at_index(index)
-
     def save_conversation(self, conversation_id):
         """Save a specific conversation"""
         self.conversation_manager.save_conversation(conversation_id)
@@ -769,6 +792,12 @@ class MainWindow(QMainWindow):
         # Add tabs for each conversation
         for conversation_id, conversation in self.conversation_manager.conversations.items():
             self.add_conversation_tab(conversation)
+            # Ensure the tab title is set to the conversation name
+            index = self.tabs.count() - 1  # Get the index of the tab we just added
+            if index >= 0:
+                # Make sure we're using the actual name from the database
+                self.tabs.setTabText(index, conversation.name)
+                print(f"DEBUG: Set tab {index} title to '{conversation.name}'")
 
     def show_about(self):
         """Show the 'about' dialog"""
