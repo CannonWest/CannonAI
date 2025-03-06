@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
     QTreeWidget, QTreeWidgetItem, QSplitter, QMessageBox, QDialogButtonBox, QFileDialog, QDialog, QScrollArea
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer
 from PyQt6.QtGui import QColor, QTextCursor, QDragEnterEvent, QDropEvent
 
 from src.utils import DARK_MODE, MODEL_CONTEXT_SIZES, MODEL_OUTPUT_LIMITS, MODEL_PRICING
@@ -36,6 +36,13 @@ class ConversationBranchTab(QWidget):
         self._is_streaming = False
         self._chunk_counter = 0
         self._extracting_reasoning = False
+
+        # Loading indicator variables
+        self._loading_timer = QTimer(self)
+        self._loading_timer.timeout.connect(self._update_loading_indicator)
+        self._loading_timer.setInterval(500)  # Update every 500ms
+        self._loading_state = 0
+        self._loading_active = False
 
         # Enable drag and drop
         self.setAcceptDrops(True)
@@ -540,6 +547,10 @@ class ConversationBranchTab(QWidget):
     def update_chat_streaming(self, chunk):
         """Update the chat display during streaming for efficiency"""
         try:
+            # Stop the loading indicator on first chunk
+            if hasattr(self, '_loading_active') and self._loading_active:
+                self.stop_loading_indicator()
+
             # Initialize variables - must happen at the start
             # Mark that we're in streaming mode
             self._is_streaming = True
@@ -616,6 +627,9 @@ class ConversationBranchTab(QWidget):
         # Store attachments for use in the main window's send_message method
         self._pending_attachments = attachments_copy
 
+        # Start loading indicator
+        self.start_loading_indicator()
+
         self.send_message.emit(message)
 
         # Clear attachments after sending
@@ -646,6 +660,10 @@ class ConversationBranchTab(QWidget):
     def add_cot_step(self, step_name, content):
         """Add a step to the chain of thought"""
         try:
+            # Stop loading indicator when first thinking step is received
+            if hasattr(self, '_loading_active') and self._loading_active:
+                self.stop_loading_indicator()
+
             # Add to our current reasoning steps
             if not hasattr(self, 'reasoning_steps') or self.reasoning_steps is None:
                 self.reasoning_steps = []
@@ -668,6 +686,9 @@ class ConversationBranchTab(QWidget):
                     # Skip UI update completely during streaming
                     if getattr(self, '_is_streaming', False):
                         return
+
+        except Exception as e:
+            print(f"Error in add_cot_step: {str(e)}")
 
         except Exception as e:
             print(f"Error in add_cot_step: {str(e)}")
@@ -995,6 +1016,10 @@ class ConversationBranchTab(QWidget):
     def set_reasoning_steps(self, steps):
         """Store reasoning steps for the current response"""
         try:
+            # Stop loading indicator if it's still active
+            if hasattr(self, '_loading_active') and self._loading_active:
+                self.stop_loading_indicator()
+
             # Ensure steps is a valid list
             if steps is None:
                 steps = []
@@ -1038,6 +1063,16 @@ class ConversationBranchTab(QWidget):
                     QTimer.singleShot(300, lambda: self.update_ui())
         except Exception as e:
             print(f"Error in set_reasoning_steps: {str(e)}")
+
+    def log_loading_state(self):
+        """Log the current state of the loading indicator for debugging"""
+        loading_active = getattr(self, '_loading_active', False)
+        has_loading_text = getattr(self, '_has_loading_text', False)
+        loading_state = getattr(self, '_loading_state', -1)
+        is_streaming = getattr(self, '_is_streaming', False)
+
+        print(f"LOADING DEBUG: active={loading_active}, has_text={has_loading_text}, " +
+              f"state={loading_state}, streaming={is_streaming}")
 
     def _format_code_block(self, match):
         """Format code blocks with syntax highlighting"""
@@ -1218,3 +1253,73 @@ class ConversationBranchTab(QWidget):
             return content
 
         return cleaned_content.strip()
+
+    def _update_loading_indicator(self):
+        """Update the loading indicator text"""
+        if not self._loading_active:
+            return
+
+        # Cycle through loading states
+        states = [
+            "⏳ Waiting for response.",
+            "⏳ Waiting for response..",
+            "⏳ Waiting for response..."
+        ]
+
+        # Get current loading text
+        loading_text = states[self._loading_state]
+        self._loading_state = (self._loading_state + 1) % len(states)
+
+        # Find the last message in the chat display
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.chat_display.setTextCursor(cursor)
+
+        # Set color to make it more visible
+        self.chat_display.setTextColor(QColor(DARK_MODE["accent"]))
+
+        # Replace previous loading text or add new loading text
+        if hasattr(self, '_has_loading_text') and self._has_loading_text:
+            # Move up and delete previous loading text
+            cursor.movePosition(QTextCursor.MoveOperation.Up, QTextCursor.MoveMode.KeepAnchor, 1)
+            cursor.removeSelectedText()
+            cursor.insertText("\n" + loading_text)
+        else:
+            # Add loading text for the first time
+            self.chat_display.append("")
+            self.chat_display.append(loading_text)
+            self._has_loading_text = True
+
+        # Reset text color to normal
+        self.chat_display.setTextColor(QColor(DARK_MODE["foreground"]))
+
+        # Make sure the loading text is visible
+        self.chat_display.ensureCursorVisible()
+
+        # Debug output
+        if self._loading_state == 0:  # Log only occasionally
+            self.log_loading_state()
+
+    def start_loading_indicator(self):
+        """Start the loading indicator"""
+        self._loading_state = 0
+        self._loading_active = True
+        self._has_loading_text = False
+        self._loading_timer.start()
+        self._update_loading_indicator()  # Show initial state immediately
+
+    def stop_loading_indicator(self):
+        """Stop the loading indicator and remove it from display"""
+        if not self._loading_active:
+            return
+
+        self._loading_timer.stop()
+        self._loading_active = False
+
+        # Remove the loading text if it exists
+        if hasattr(self, '_has_loading_text') and self._has_loading_text:
+            cursor = self.chat_display.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.movePosition(QTextCursor.MoveOperation.Up, QTextCursor.MoveMode.KeepAnchor, 1)
+            cursor.removeSelectedText()
+            self._has_loading_text = False

@@ -528,6 +528,10 @@ class MainWindow(QMainWindow):
         # Clear any existing chain of thought steps
         tab.clear_cot()
 
+        # Start loading indicator
+        if hasattr(tab, 'start_loading_indicator'):
+            tab.start_loading_indicator()
+
         # Create and start the worker thread to get the response
         self.worker = OpenAIChatWorker(conversation.get_current_messages(), self.settings)
 
@@ -555,6 +559,10 @@ class MainWindow(QMainWindow):
         """Handle the complete response from the assistant"""
         if not content:
             return
+
+        # Stop loading indicator if it's active
+        if hasattr(tab, 'stop_loading_indicator'):
+            tab.stop_loading_indicator()
 
         # Get the conversation
         conversation = tab.conversation_tree
@@ -743,6 +751,11 @@ class MainWindow(QMainWindow):
 
     def handle_error(self, error_message):
         """Handle API errors"""
+        # Get the current tab to stop its loading indicator
+        tab = self.tabs.currentWidget()
+        if tab and hasattr(tab, 'stop_loading_indicator'):
+            tab.stop_loading_indicator()
+
         QMessageBox.critical(self, "API Error", f"Error communicating with OpenAI: {error_message}")
 
     def on_branch_changed(self, tab):
