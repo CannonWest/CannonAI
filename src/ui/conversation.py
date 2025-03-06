@@ -16,7 +16,7 @@ from src.utils import DARK_MODE, MODEL_CONTEXT_SIZES, MODEL_OUTPUT_LIMITS, MODEL
 from src.models import DBConversationTree, DBMessageNode
 from src.ui.components import ConversationTreeWidget, BranchNavBar
 from src.utils.file_utils import get_file_info, format_size
-
+from src.ui.graph_view import ConversationGraphView
 
 class ConversationBranchTab(QWidget):
     """
@@ -180,19 +180,49 @@ class ConversationBranchTab(QWidget):
         self.input_layout.addWidget(self.text_input, 5)
         self.input_layout.addWidget(self.button_container, 1)
 
-        # Tree view for branch navigation
+        # Graphical view for branch navigation
         self.tree_container = QWidget()
         self.tree_layout = QVBoxLayout(self.tree_container)
         self.tree_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.tree_label = QLabel("Conversation Branches")
+        self.tree_label = QLabel("Conversation Graph")
         self.tree_label.setStyleSheet(f"font-weight: bold; color: {DARK_MODE['foreground']};")
 
-        self.tree_view = ConversationTreeWidget()
-        self.tree_view.node_selected.connect(self.navigate_to_node)
+        # Replace tree view with graphical view
+        self.graph_view = ConversationGraphView()
+        self.graph_view.node_selected.connect(self.navigate_to_node)
+        self.graph_view.setStyleSheet(f"background-color: {DARK_MODE['highlight']};")
 
         self.tree_layout.addWidget(self.tree_label)
-        self.tree_layout.addWidget(self.tree_view)
+        self.tree_layout.addWidget(self.graph_view)
+
+        # Add zoom controls
+        self.zoom_container = QWidget()
+        self.zoom_layout = QHBoxLayout(self.zoom_container)
+        self.zoom_layout.setContentsMargins(0, 5, 0, 5)
+
+        self.zoom_in_btn = QPushButton("+")
+        self.zoom_in_btn.setFixedWidth(30)
+        self.zoom_in_btn.setToolTip("Zoom In")
+        self.zoom_in_btn.clicked.connect(lambda: self.graph_view.scale(1.2, 1.2))
+
+        self.zoom_out_btn = QPushButton("-")
+        self.zoom_out_btn.setFixedWidth(30)
+        self.zoom_out_btn.setToolTip("Zoom Out")
+        self.zoom_out_btn.clicked.connect(lambda: self.graph_view.scale(0.8, 0.8))
+
+        fit_btn = QPushButton("Fit")
+        fit_btn.setToolTip("Fit View")
+        fit_btn.clicked.connect(lambda: self.graph_view.fitInView(
+            self.graph_view._scene.sceneRect(),
+            Qt.AspectRatioMode.KeepAspectRatio
+        ))
+
+        self.zoom_layout.addWidget(self.zoom_out_btn)
+        self.zoom_layout.addWidget(fit_btn)
+        self.zoom_layout.addWidget(self.zoom_in_btn)
+
+        self.tree_layout.addWidget(self.zoom_container)
 
         # Split view for conversation and branch tree
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -237,7 +267,7 @@ class ConversationBranchTab(QWidget):
         self.branch_nav.update_branch(current_branch)
 
         # Update tree view
-        self.tree_view.update_tree(self.conversation_tree)
+        self.graph_view.update_tree(self.conversation_tree)
 
         # Update chat display
         self.update_chat_display()
