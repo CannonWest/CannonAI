@@ -7,7 +7,7 @@ from functools import partial
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
-    QTreeWidget, QTreeWidgetItem, QSplitter, QMessageBox, QDialogButtonBox, QFileDialog, QDialog
+    QTreeWidget, QTreeWidgetItem, QSplitter, QMessageBox, QDialogButtonBox, QFileDialog, QDialog, QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QColor, QTextCursor, QDragEnterEvent, QDropEvent
@@ -49,6 +49,15 @@ class ConversationBranchTab(QWidget):
         # Branch navigation bar
         self.branch_nav = BranchNavBar()
         self.branch_nav.node_selected.connect(self.navigate_to_node)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidget(self.branch_nav)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setFixedHeight(60)  # Adjust as desired
+
+        self.layout.addWidget(self.scroll_area)
 
         # Chat display area
         self.chat_display = QTextEdit()
@@ -192,7 +201,6 @@ class ConversationBranchTab(QWidget):
         self.conversation_container = QWidget()
         self.conversation_layout = QVBoxLayout(self.conversation_container)
 
-        self.conversation_layout.addWidget(self.branch_nav)
         self.conversation_layout.addWidget(self.chat_display, 4)
         self.conversation_layout.addWidget(self.usage_container, 0)
         self.conversation_layout.addWidget(self.info_container, 1)
@@ -541,6 +549,11 @@ class ConversationBranchTab(QWidget):
         if self.conversation_tree.navigate_to_node(node_id):
             self.update_ui()
             self.branch_changed.emit()
+
+    def format_size(self, size_bytes):
+        """Format file size in a human-readable way."""
+        from src.utils.file_utils import format_size as utils_format_size
+        return utils_format_size(size_bytes)
 
     def on_send(self):
         """Handle sending a new message"""

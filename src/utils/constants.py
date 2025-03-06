@@ -81,7 +81,7 @@ REASONING_EFFORT = ["low", "medium", "high"]
 # Response format options
 RESPONSE_FORMATS = ["text", "json_object"]
 
-# Default token limits (to show max limits in UI)
+# Default token limits (to show max limits in UI) - Updated for 2025
 MODEL_CONTEXT_SIZES = {
     # GPT-4.5 models
     "gpt-4.5-preview": 128000,
@@ -107,7 +107,7 @@ MODEL_CONTEXT_SIZES = {
     "o3-mini": 200000,
     "o3-mini-2025-01-31": 200000,
 
-    # GPT-4 models
+    # GPT-4 models (some may be deprecated, kept for compatibility)
     "gpt-4-turbo": 128000,
     "gpt-4-turbo-2024-04-09": 128000,
     "gpt-4-0125-preview": 128000,
@@ -116,7 +116,7 @@ MODEL_CONTEXT_SIZES = {
     "gpt-4-0613": 8192,
     "gpt-4-0314": 8192,
 
-    # GPT-3.5 models
+    # GPT-3.5 models (some may be deprecated, kept for compatibility)
     "gpt-3.5-turbo": 16385,
     "gpt-3.5-turbo-0125": 16385,
     "gpt-3.5-turbo-1106": 16385,
@@ -125,7 +125,12 @@ MODEL_CONTEXT_SIZES = {
 
     # Base models
     "davinci-002": 16384,
-    "babbage-002": 16384
+    "babbage-002": 16384,
+
+    # Claude models (if we want to support them in the future)
+    "claude-3-5-sonnet-20240620": 200000,
+    "claude-3-opus-20240229": 200000,
+    "claude-3-haiku-20240307": 200000
 }
 
 # Default max output tokens
