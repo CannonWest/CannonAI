@@ -22,12 +22,12 @@ os.makedirs(DATABASE_DIR, exist_ok=True)
 
 # Main models (latest aliases)
 MODELS = {
+    "DeepSeek R1": "deepseek-reasoner",
+    "DeepSeek V3": "deepseek-chat",
     "GPT-4.5 Turbo (Preview)": "gpt-4.5-preview",
     "GPT-4o": "gpt-4o",
     "GPT-4o Mini": "gpt-4o-mini",
     "o1": "o1",
-    "o1-preview": "o1-preview",
-    "o1-mini": "o1-mini",
     "o3-mini": "o3-mini",
     "GPT-4 Turbo": "gpt-4-turbo",
     "GPT-4": "gpt-4",
@@ -36,7 +36,6 @@ MODELS = {
     "Davinci-002": "davinci-002",
     "Babbage-002": "babbage-002"
 }
-
 # For those who want specific model versions
 MODEL_SNAPSHOTS = {
     # GPT-4.5 snapshots
@@ -71,8 +70,8 @@ MODEL_SNAPSHOTS = {
 ALL_MODELS = {**MODELS, **MODEL_SNAPSHOTS}
 
 # Model categories to show the right settings
-REASONING_MODELS = ["o1", "o1-mini", "o3-mini", "o1-2024-12-17", "o1-mini-2024-09-12", "o3-mini-2025-01-31", "o1-preview-2024-09-12", "o1-preview"]
-GPT_MODELS = ["gpt-4.5-preview", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo",
+REASONING_MODELS = ["deepseek-reasoner", "o1", "o3-mini", "o1-2024-12-17", "o1-mini-2024-09-12", "o3-mini-2025-01-31", "o1-preview-2024-09-12", "o1-preview"]
+GPT_MODELS = ["deepseek-chat","gpt-4.5-preview", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo",
               "gpt-4.5-preview-2025-02-27", "gpt-4o-2024-08-06", "gpt-4o-2024-11-20", "gpt-4o-mini-2024-07-18"]
 
 # Reasoning effort options for o1 and o3 models
@@ -254,6 +253,14 @@ MODEL_PRICING = {
     "davinci-002": {"input": 2.00, "output": 2.00},
     "babbage-002": {"input": 0.40, "output": 0.40}
 }
+
+MODEL_CONTEXT_SIZES["deepseek-reasoner"] = 64000
+MODEL_OUTPUT_LIMITS["deepseek-reasoner"] = 8000
+MODEL_PRICING["deepseek-reasoner"] = {"input": 0.55, "output": 2.19}
+
+MODEL_CONTEXT_SIZES["deepseek-chat"] = 64000
+MODEL_OUTPUT_LIMITS["deepseek-chat"] = 8000
+MODEL_PRICING["deepseek-chat"] = {"input": 0.27, "output": 1.10}
 
 # Calculate cost per token (USD per token, converted from per million)
 MODEL_PRICE_PER_TOKEN = {}
