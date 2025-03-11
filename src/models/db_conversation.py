@@ -70,6 +70,30 @@ class DBMessageNode:
             return self._db_manager.get_message(self.parent_id)
         return None
 
+    @property
+    def reasoning_steps(self):
+        """Get reasoning steps if they exist"""
+        if hasattr(self, '_reasoning_steps'):
+            return self._reasoning_steps
+
+        # Try to load from database if we have a manager
+        if self._db_manager:
+            try:
+                # Get metadata info including reasoning steps
+                _, _, _, steps = self._db_manager.get_node_metadata(self.id)
+                if steps:
+                    self._reasoning_steps = steps
+                    return steps
+            except Exception as e:
+                print(f"Error retrieving reasoning steps: {str(e)}")
+
+        return []
+
+    @reasoning_steps.setter
+    def reasoning_steps(self, steps):
+        """Set reasoning steps and store in database"""
+        self._reasoning_steps = steps
+
     def add_child(self, child_node):
         """Add a child node to this node (compatibility method)"""
         # This is just for in-memory operation during a session

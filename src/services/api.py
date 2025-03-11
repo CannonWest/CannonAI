@@ -218,9 +218,10 @@ class OpenAIApiWorker(QObject):
                                 "model": chunk.model
                             })
 
-                        # Handle thinking step information
                         if hasattr(chunk, 'thinking') and chunk.thinking:
                             thinking_info = chunk.thinking
+                            self.logger.info(f"Received thinking info: {thinking_info}")
+
                             # If it's a single step
                             if hasattr(thinking_info, 'step'):
                                 step_name = thinking_info.step
@@ -230,6 +231,8 @@ class OpenAIApiWorker(QObject):
                                     "content": step_content
                                 })
                                 self.thinking_step.emit(step_name, step_content)
+                                self.logger.info(f"Emitted thinking step: {step_name}")
+
                             # If it's a list of steps
                             elif hasattr(thinking_info, 'steps'):
                                 for step in thinking_info.steps:
@@ -240,6 +243,40 @@ class OpenAIApiWorker(QObject):
                                         "content": step_content
                                     })
                                     self.thinking_step.emit(step_name, step_content)
+                                    self.logger.info(f"Emitted thinking step: {step_name}")
+
+                            # If it's just raw content
+                            elif hasattr(thinking_info, 'content'):
+                                step_name = "Reasoning"
+                                step_content = thinking_info.content
+                                self.collected_reasoning_steps.append({
+                                    "name": step_name,
+                                    "content": step_content
+                                })
+                                self.thinking_step.emit(step_name, step_content)
+                                self.logger.info(f"Emitted thinking content")
+
+                            # Generic fallback - try to handle as JSON
+                            else:
+                                try:
+                                    import json
+                                    thinking_str = json.dumps(thinking_info)
+                                    self.logger.info(f"Raw thinking info: {thinking_str}")
+
+                                    # Attempt to extract directly from dictionary
+                                    if isinstance(thinking_info, dict):
+                                        for key, value in thinking_info.items():
+                                            if isinstance(value, str) and len(value) > 10:
+                                                step_name = key
+                                                step_content = value
+                                                self.collected_reasoning_steps.append({
+                                                    "name": step_name,
+                                                    "content": step_content
+                                                })
+                                                self.thinking_step.emit(step_name, step_content)
+                                                self.logger.info(f"Extracted thinking data from key: {key}")
+                                except Exception as e:
+                                    self.logger.warning(f"Error processing thinking info: {e}")
 
                         # Handle content chunks
                         if chunk.choices and len(chunk.choices) > 0:

@@ -442,18 +442,37 @@ class ConversationBranchTab(QWidget):
         self.chat_display.insertPlainText("\n\n")  # Add spacing
 
     def _render_reasoning_steps(self, node):
-        """Render reasoning steps for an assistant message"""
+        """Render reasoning steps for an assistant message with improved debugging"""
         # Check for reasoning tokens or reasoning steps
         reasoning_tokens = 0
         if node.token_usage and "completion_tokens_details" in node.token_usage:
             details = node.token_usage["completion_tokens_details"]
             reasoning_tokens = details.get("reasoning_tokens", 0)
 
-        # Get any stored reasoning steps for this node
-        node_reasoning = getattr(node, 'reasoning_steps', [])
+        # Print debug info about this node and its reasoning data
+        print(f"DEBUG: Rendering reasoning for node {node.id}, role: {node.role}")
 
-        # If no reasoning, return empty string
-        if not node_reasoning and reasoning_tokens <= 0:
+        # Try to extract reasoning steps from different attributes
+        node_reasoning = None
+
+        # First try the standard attribute
+        if hasattr(node, 'reasoning_steps'):
+            node_reasoning = node.reasoning_steps
+            print(f"DEBUG: Found reasoning_steps attribute with {len(node_reasoning) if node_reasoning else 0} steps")
+
+        # If we still don't have reasoning, try to extract from content
+        if (not node_reasoning or len(node_reasoning) == 0) and reasoning_tokens > 0:
+            print(f"DEBUG: Attempting to extract reasoning from content (tokens: {reasoning_tokens})")
+            content_reasoning = self._extract_reasoning_steps(node.content)
+            if content_reasoning and len(content_reasoning) > 0:
+                node_reasoning = content_reasoning
+                # Store extracted steps back to the node
+                setattr(node, 'reasoning_steps', content_reasoning)
+                print(f"DEBUG: Extracted {len(content_reasoning)} reasoning steps from content")
+
+        # If no reasoning after all attempts, return empty string
+        if (not node_reasoning or len(node_reasoning) == 0) and reasoning_tokens <= 0:
+            print("DEBUG: No reasoning steps found for this node")
             return ""
 
         html_parts = []
@@ -463,13 +482,25 @@ class ConversationBranchTab(QWidget):
         if node_reasoning and isinstance(node_reasoning, list) and len(node_reasoning) > 0:
             html_parts.append('<ul style="margin-top: 5px; margin-bottom: 5px;">')
             for step in node_reasoning:
-                step_name = step.get("name", "Reasoning Step")
-                step_content = step.get("content", "")
-                html_parts.append(f'<li><b>{step_name}:</b> {step_content}</li>')
+                if isinstance(step, dict):
+                    step_name = step.get("name", "Reasoning Step")
+                    step_content = step.get("content", "")
+                    # Skip empty content
+                    if not step_content or len(step_content.strip()) == 0:
+                        continue
+                    # Trim very long content for display
+                    if len(step_content) > 500:
+                        step_content = step_content[:497] + "..."
+                    html_parts.append(f'<li><b>{step_name}:</b> {step_content}</li>')
             html_parts.append('</ul>')
-        elif reasoning_tokens > 0:
-            # Just show token count if no steps found
+
+        # If we have no steps but reasoning tokens were used, show that
+        if (not node_reasoning or len(node_reasoning) == 0) and reasoning_tokens > 0:
             html_parts.append(f'<div>• Model performed reasoning ({reasoning_tokens} tokens)</div>')
+
+            # Add extra info for o3-mini model (which might not expose steps)
+            if 'model' in node.model_info and 'o3-mini' in node.model_info['model']:
+                html_parts.append(f'<div>• Note: o3-mini model may not expose detailed reasoning steps</div>')
 
         return "".join(html_parts)
 
@@ -558,12 +589,54 @@ class ConversationBranchTab(QWidget):
         # Reset streaming flag first
         self._is_streaming = False
 
+        # Ensure any remaining buffer is flushed completely
+        if hasattr(self, '_chunk_buffer') and self._chunk_buffer:
+            try:
+                # Force flush any remaining buffer
+                if self.conversation_tree and self.conversation_tree.current_node:
+                    current_node = self.conversation_tree.current_node
+                    conn = None
+                    try:
+                        # Get database connection through db_manager
+                        from src.models.db_manager import DatabaseManager
+                        db_manager = DatabaseManager()
+                        conn = db_manager.get_connection()
+                        cursor = conn.cursor()
+
+                        # Ensure the database content is complete
+                        cursor.execute(
+                            'SELECT content FROM messages WHERE id = ?',
+                            (current_node.id,)
+                        )
+                        result = cursor.fetchone()
+                        if result:
+                            full_content = result['content']
+                            # Update in-memory object
+                            current_node.content = full_content
+                        conn.commit()
+                    except Exception as e:
+                        print(f"Error in buffer flush during completion: {str(e)}")
+                        if conn:
+                            conn.rollback()
+                    finally:
+                        if conn:
+                            conn.close()
+
+                    # Clear buffer state
+                    self._chunk_buffer = ""
+                    self._chunk_counter = 0
+            except Exception as e:
+                print(f"Error finalizing streaming: {str(e)}")
+
+        # Force a full chat display update to ensure content is complete
+        self.update_chat_display()
+
         # Only update if we have pending updates
         if self._ui_update_pending:
             # Ensure we wait a short moment to allow any in-progress
             # operations to complete first (important for stability)
             from PyQt6.QtCore import QTimer
-            QTimer.singleShot(100, self._do_complete_update)
+            QTimer.singleShot(200, self._do_complete_update)  # Increased delay
 
     def _do_complete_update(self):
         """Perform the actual delayed UI update"""
@@ -1042,7 +1115,7 @@ class ConversationBranchTab(QWidget):
         return text
 
     def set_reasoning_steps(self, steps):
-        """Store reasoning steps for the current response"""
+        """Store reasoning steps for the current response with improved debugging and handling"""
         try:
             # Stop loading indicator if it's still active
             if hasattr(self, '_loading_active') and self._loading_active:
@@ -1054,6 +1127,34 @@ class ConversationBranchTab(QWidget):
 
             print(f"Received {len(steps)} reasoning steps from worker")
 
+            # Log details of the first few steps for debugging
+            if steps and len(steps) > 0:
+                print(f"First step info: {steps[0]}")
+
+                # Check if steps have expected structure
+                if not isinstance(steps[0], dict) or not all(key in steps[0] for key in ["name", "content"]):
+                    print("WARNING: Reasoning steps don't have expected structure")
+
+                    # Try to fix structure if possible
+                    fixed_steps = []
+                    for i, step in enumerate(steps):
+                        if isinstance(step, str):
+                            fixed_steps.append({
+                                "name": f"Reasoning Step {i + 1}",
+                                "content": step
+                            })
+                        elif isinstance(step, dict):
+                            # Ensure it has required keys
+                            fixed_step = {
+                                "name": step.get("name", step.get("step", f"Reasoning Step {i + 1}")),
+                                "content": step.get("content", str(step))
+                            }
+                            fixed_steps.append(fixed_step)
+
+                    if fixed_steps:
+                        print(f"Fixed {len(fixed_steps)} steps to correct structure")
+                        steps = fixed_steps
+
             # Store the complete set of steps
             self.reasoning_steps = steps
 
@@ -1063,8 +1164,43 @@ class ConversationBranchTab(QWidget):
                 if node.role == "assistant":
                     print(f"DEBUG: Storing {len(steps)} reasoning steps with node {node.id}")
 
+                    # Create database-backed storage for reasoning steps
+                    conn = None
                     try:
-                        # Store the reasoning steps with the node
+                        # Get a database connection
+                        from src.models.db_manager import DatabaseManager
+                        db_manager = DatabaseManager()
+                        conn = db_manager.get_connection()
+                        cursor = conn.cursor()
+
+                        # Delete any existing reasoning steps metadata
+                        cursor.execute(
+                            'DELETE FROM message_metadata WHERE message_id = ? AND metadata_type = ?',
+                            (node.id, 'reasoning_steps')
+                        )
+
+                        # Store reasoning steps as metadata
+                        import json
+                        cursor.execute(
+                            '''
+                            INSERT INTO message_metadata (message_id, metadata_type, metadata_value)
+                            VALUES (?, ?, ?)
+                            ''',
+                            (node.id, 'reasoning_steps', json.dumps(steps))
+                        )
+
+                        conn.commit()
+                        print(f"DEBUG: Saved reasoning steps to database for node {node.id}")
+                    except Exception as e:
+                        print(f"ERROR storing reasoning steps in database: {str(e)}")
+                        if conn:
+                            conn.rollback()
+                    finally:
+                        if conn:
+                            conn.close()
+
+                    try:
+                        # Also store in-memory for immediate use
                         setattr(node, 'reasoning_steps', steps)
                     except Exception as e:
                         print(f"ERROR setting reasoning_steps on node: {str(e)}")
@@ -1074,23 +1210,18 @@ class ConversationBranchTab(QWidget):
                     self._chunk_counter = 0
                     self._extracting_reasoning = False
 
-                    # Use extra safety - just update current node text
-                    # and delay full UI update to avoid recursive crash
+                    # Use extra safety - update UI with delay to avoid recursion
                     from PyQt6.QtCore import QTimer
 
-                    # First update just the node content
-                    try:
-                        cursor = self.chat_display.textCursor()
-                        self.chat_display.moveCursor(QTextCursor.MoveOperation.End)
-                        self.chat_display.ensureCursorVisible()
-                    except:
-                        pass
+                    # Immediate chat display update to show content
+                    self.update_chat_display()
 
-                    # Schedule an update but first return control to main thread
-                    # to avoid recursion issues
+                    # Schedule a full UI update
                     QTimer.singleShot(300, lambda: self.update_ui())
         except Exception as e:
             print(f"Error in set_reasoning_steps: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def log_loading_state(self):
         """Log the current state of the loading indicator for debugging"""

@@ -2,6 +2,7 @@
 Main window UI for the OpenAI Chat application.
 """
 import json
+import time
 from typing import Optional, Dict, Any
 from functools import partial
 
@@ -597,28 +598,42 @@ class MainWindow(QMainWindow):
         if not hasattr(tab, '_chunk_buffer'):
             tab._chunk_buffer = ""
             tab._chunk_counter = 0
-            tab._buffer_flush_threshold = 20  # Adjust based on average chunk size
+            tab._buffer_flush_threshold = 100  # Increased threshold to reduce DB writes
+            tab._last_flush_time = time.time()
 
         # Add new chunk to buffer
         tab._chunk_buffer += chunk
         tab._chunk_counter += 1
 
     def _should_flush_buffer(self, tab, is_first_chunk):
-        """Determine if the buffer should be flushed to the database"""
+        """Determine if the buffer should be flushed to the database with better timing"""
+        import time
+
         # Always flush on first chunk (new assistant message)
         if is_first_chunk:
             return True
 
-        # Flush if we've accumulated enough chunks
-        if tab._chunk_counter >= tab._buffer_flush_threshold:
-            return True
+        # Time-based flushing - only flush every 1 second at most
+        current_time = time.time()
+        if not hasattr(tab, '_last_flush_time'):
+            tab._last_flush_time = current_time
+
+        # Flush if more than 1 second has passed since last flush
+        time_based_flush = (current_time - tab._last_flush_time) > 1.0
+
+        # Flush if we've accumulated enough chunks (increased threshold)
+        chunk_threshold_met = tab._chunk_counter >= tab._buffer_flush_threshold
 
         # Flush if buffer is getting large (to prevent memory issues)
-        if len(tab._chunk_buffer) > 1000:
-            return True
+        size_threshold_met = len(tab._chunk_buffer) > 2000  # Increased size threshold
 
-        # Otherwise, keep buffering
-        return False
+        should_flush = time_based_flush or chunk_threshold_met or size_threshold_met
+
+        # Update last flush time if we're going to flush
+        if should_flush:
+            tab._last_flush_time = current_time
+
+        return should_flush
 
     def _flush_buffer_to_database(self, tab, conversation, is_first_chunk):
         """Write accumulated buffer to the database"""
@@ -709,6 +724,10 @@ class MainWindow(QMainWindow):
         """Flush any remaining buffer and ensure content is complete"""
         conn = None
         try:
+            # Log before flush for debugging
+            print(f"DEBUG: Final flush - buffer size: {len(tab._chunk_buffer) if hasattr(tab, '_chunk_buffer') else 0}")
+            print(f"DEBUG: Full content length: {len(full_content)}")
+
             conn = self.db_manager.get_connection()
             cursor = conn.cursor()
 
@@ -723,6 +742,7 @@ class MainWindow(QMainWindow):
 
             # Update in-memory content
             conversation.current_node.content = full_content
+            print(f"DEBUG: Updated node content length: {len(conversation.current_node.content)}")
 
         except Exception as e:
             print(f"Error in _flush_final_content: {str(e)}")

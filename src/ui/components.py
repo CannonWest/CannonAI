@@ -148,13 +148,22 @@ class BranchNavBar(QWidget):
             }}
         """)
 
-    def update_branch(self, branch: List[DBMessageNode]):
+    def update_branch(self, branch):
         """Update the navigation bar with the current branch"""
         # Clear existing buttons
         self.clear()
 
+        # Safety check if branch is None
+        if not branch:
+            return
+
         # Create new buttons for each node in the branch
         for i, node in enumerate(branch):
+            # Skip None nodes (handle corrupted data)
+            if node is None:
+                print(f"WARNING: Found None node at index {i} in branch")
+                continue
+
             if node.role == "system":
                 continue  # Skip system message
 

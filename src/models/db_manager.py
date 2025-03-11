@@ -104,6 +104,10 @@ class DatabaseManager:
 
     def get_path_to_root(self, node_id):
         """Get the path from a node to the root"""
+        if not node_id:
+            self.logger.error("Attempted to get path to root with None node_id")
+            return []
+
         conn = self.get_connection()
         cursor = conn.cursor()
 
@@ -120,25 +124,34 @@ class DatabaseManager:
                 message = cursor.fetchone()
 
                 if not message:
+                    self.logger.warning(f"No message found for ID {current_id}")
                     break
 
                 # Create node object
-                node = self._create_node_from_db_row(message)
-
-                # Add to path (at beginning to maintain root-to-node order)
-                path.insert(0, node)
+                try:
+                    node = self._create_node_from_db_row(message)
+                    if node:
+                        # Add to path (at beginning to maintain root-to-node order)
+                        path.insert(0, node)
+                    else:
+                        self.logger.error(f"Failed to create node from row for ID {current_id}")
+                        break
+                except Exception as e:
+                    self.logger.error(f"Error creating node from row for ID {current_id}: {str(e)}")
+                    break
 
                 # Move to parent
                 current_id = message['parent_id']
 
-            return path
+            # Extra validation before returning
+            valid_path = [node for node in path if node is not None]
+            if len(valid_path) != len(path):
+                self.logger.warning(f"Filtered {len(path) - len(valid_path)} None nodes from path")
+
+            return valid_path
 
         except Exception as e:
-            self.logger.error(f"Error getting path to root for node {node_id}")
-            log_exception(self.logger, e, f"Failed to get path to root")
-            return []
-        finally:
-            conn.close()
+            self.logger.error(f"Error creating node from row for ID {node_id}: {str(e)}")
 
     def get_node_children(self, node_id):
         """Get children of a node"""
@@ -221,33 +234,53 @@ class DatabaseManager:
         """Create a DBMessageNode from a database row"""
         from src.models.db_conversation import DBMessageNode
 
-        # Get metadata
-        model_info, parameters, token_usage = self._get_node_metadata(row['id'])
+        try:
+            # Get metadata - handle both 3-tuple and 4-tuple returns for backward compatibility
+            metadata_result = self._get_node_metadata(row['id'])
 
-        # Get file attachments
-        attached_files = self._get_node_attachments(row['id'])
+            # Handle different tuple lengths from _get_node_metadata
+            if len(metadata_result) == 4:
+                model_info, parameters, token_usage, reasoning_steps = metadata_result
+            else:
+                # Fall back to old 3-tuple format
+                model_info, parameters, token_usage = metadata_result
+                reasoning_steps = []
 
-        # Create the node
-        node = DBMessageNode(
-            id=row['id'],
-            conversation_id=row['conversation_id'],
-            role=row['role'],
-            content=row['content'],
-            parent_id=row['parent_id'],
-            timestamp=row['timestamp'],
-            model_info=model_info,
-            parameters=parameters,
-            token_usage=token_usage,
-            attached_files=attached_files
-        )
+            # Get file attachments
+            attached_files = self._get_node_attachments(row['id'])
 
-        # Set database manager for lazy loading children
-        node._db_manager = self
+            # Create the node
+            node = DBMessageNode(
+                id=row['id'],
+                conversation_id=row['conversation_id'],
+                role=row['role'],
+                content=row['content'],
+                parent_id=row['parent_id'],
+                timestamp=row['timestamp'],
+                model_info=model_info,
+                parameters=parameters,
+                token_usage=token_usage,
+                attached_files=attached_files
+            )
 
-        return node
+            # Set database manager for lazy loading children
+            node._db_manager = self
+
+            # Add reasoning steps if available
+            if reasoning_steps:
+                node._reasoning_steps = reasoning_steps
+
+            return node
+        except Exception as e:
+            self.logger.error(f"Error creating node from row: {str(e)}")
+            return None  # Return None rather than crashing
 
     def _get_node_metadata(self, node_id):
-        """Get metadata for a node"""
+        """Get metadata for a node with improved error handling"""
+        if not node_id:
+            self.logger.error("Attempted to get metadata with None node_id")
+            return {}, {}, {}, []
+
         conn = self.get_connection()
         cursor = conn.cursor()
 
@@ -255,28 +288,50 @@ class DatabaseManager:
             model_info = {}
             parameters = {}
             token_usage = {}
+            reasoning_steps = []
 
-            cursor.execute(
-                'SELECT metadata_type, metadata_value FROM message_metadata WHERE message_id = ?',
-                (node_id,)
-            )
+            try:
+                cursor.execute(
+                    'SELECT metadata_type, metadata_value FROM message_metadata WHERE message_id = ?',
+                    (node_id,)
+                )
 
-            import json
-            for row in cursor.fetchall():
-                metadata_type = row['metadata_type']
-                metadata_value = json.loads(row['metadata_value'])
+                import json
+                for row in cursor.fetchall():
+                    try:
+                        metadata_type = row['metadata_type']
 
-                if metadata_type.startswith('model_info.'):
-                    key = metadata_type.replace('model_info.', '')
-                    model_info[key] = metadata_value
-                elif metadata_type.startswith('parameters.'):
-                    key = metadata_type.replace('parameters.', '')
-                    parameters[key] = metadata_value
-                elif metadata_type.startswith('token_usage.'):
-                    key = metadata_type.replace('token_usage.', '')
-                    token_usage[key] = metadata_value
+                        # Special handling for reasoning steps
+                        if metadata_type == 'reasoning_steps':
+                            try:
+                                reasoning_steps = json.loads(row['metadata_value'])
+                                continue
+                            except Exception as e:
+                                self.logger.error(f"Error parsing reasoning steps: {e}")
+                                continue
 
-            return model_info, parameters, token_usage
+                        # Regular metadata handling
+                        try:
+                            metadata_value = json.loads(row['metadata_value'])
+
+                            if metadata_type.startswith('model_info.'):
+                                key = metadata_type.replace('model_info.', '')
+                                model_info[key] = metadata_value
+                            elif metadata_type.startswith('parameters.'):
+                                key = metadata_type.replace('parameters.', '')
+                                parameters[key] = metadata_value
+                            elif metadata_type.startswith('token_usage.'):
+                                key = metadata_type.replace('token_usage.', '')
+                                token_usage[key] = metadata_value
+                        except Exception as e:
+                            self.logger.error(f"Error parsing metadata {metadata_type}: {e}")
+                    except Exception as e:
+                        self.logger.error(f"Error processing metadata row: {e}")
+            except Exception as e:
+                self.logger.error(f"Error querying metadata: {e}")
+
+            # Return tuple including reasoning steps
+            return model_info, parameters, token_usage, reasoning_steps
 
         finally:
             conn.close()
