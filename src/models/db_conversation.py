@@ -35,7 +35,8 @@ class DBMessageNode:
             model_info: Dict = None,
             parameters: Dict = None,
             token_usage: Dict = None,
-            attached_files: List[Dict] = None
+            attached_files: List[Dict] = None,
+            response_id: Optional[str] = None  # New: store OpenAI Response ID
     ):
         self.id = id
         self.conversation_id = conversation_id
@@ -43,6 +44,9 @@ class DBMessageNode:
         self.content = content
         self.parent_id = parent_id
         self.timestamp = timestamp or datetime.now().isoformat()
+
+        # Store Response API data
+        self.response_id = response_id
 
         # For assistant messages only
         self.model_info = model_info or {}
@@ -439,8 +443,8 @@ class DBConversationTree:
         finally:
             conn.close()
 
-    def add_assistant_response(self, content, model_info=None, parameters=None, token_usage=None):
-        """Add an assistant response as child of current node"""
+    def add_assistant_response(self, content, model_info=None, parameters=None, token_usage=None, response_id=None):
+        """Add an assistant response as child of current node, with Response API support"""
         conn = self.db_manager.get_connection()
         cursor = conn.cursor()
 
@@ -451,10 +455,10 @@ class DBConversationTree:
             # Insert message
             cursor.execute(
                 '''
-                INSERT INTO messages (id, conversation_id, parent_id, role, content, timestamp)
-                VALUES (?, ?, ?, 'assistant', ?, ?)
+                INSERT INTO messages (id, conversation_id, parent_id, role, content, timestamp, response_id)
+                VALUES (?, ?, ?, 'assistant', ?, ?, ?)
                 ''',
-                (node_id, self.id, self.current_node_id, content, now)
+                (node_id, self.id, self.current_node_id, content, now, response_id)
             )
 
             # Add metadata if provided

@@ -62,6 +62,7 @@ class DatabaseManager:
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
                     timestamp TEXT NOT NULL,
+                    response_id TEXT,  -- New: store OpenAI Response ID
                     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
                     FOREIGN KEY (parent_id) REFERENCES messages(id) ON DELETE CASCADE
                 );
@@ -86,11 +87,22 @@ class DatabaseManager:
                     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
                 );
 
+                -- Reasoning steps table for Response API reasoning
+                CREATE TABLE IF NOT EXISTS reasoning_steps (
+                    id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL,
+                    step_name TEXT NOT NULL,
+                    step_content TEXT NOT NULL,
+                    step_order INTEGER NOT NULL,
+                    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+                );
+                
                 -- Indices for faster lookups
                 CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
                 CREATE INDEX IF NOT EXISTS idx_messages_parent_id ON messages(parent_id);
                 CREATE INDEX IF NOT EXISTS idx_message_metadata_message_id ON message_metadata(message_id);
                 CREATE INDEX IF NOT EXISTS idx_file_attachments_message_id ON file_attachments(message_id);
+                CREATE INDEX IF NOT EXISTS idx_reasoning_steps_message_id ON reasoning_steps(message_id);
             ''')
 
             conn.commit()

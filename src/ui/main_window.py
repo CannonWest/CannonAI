@@ -15,7 +15,7 @@ from PyQt6.QtGui import QFont, QIcon, QColor, QPalette, QAction, QTextCursor
 
 from src.utils import DARK_MODE
 from src.models import DBConversationManager, DBMessageNode
-from src.services import OpenAIApiWorker, OpenAIThreadManager, SettingsManager
+from src.services import OpenAIResponseWorker, OpenAIThreadManager, SettingsManager
 from src.ui.conversation import ConversationBranchTab
 from src.ui.components import SettingsDialog, SearchDialog
 from src.models.db_manager import DatabaseManager
@@ -520,9 +520,11 @@ class MainWindow(QMainWindow):
             # For streaming mode
             worker.chunk_received.connect(lambda chunk: self.handle_chunk(tab, chunk))
             worker.message_received.connect(lambda content: self.finalize_streaming(tab, content))
+            worker.completion_id.connect(lambda id: setattr(tab, '_response_id', id))
         else:
             # For non-streaming mode
             worker.message_received.connect(lambda content: self.handle_assistant_response(tab, content))
+            worker.completion_id.connect(lambda id: self.handle_assistant_response(tab, tab.chat_display.toPlainText(), id))
 
         # Connect other signals
         worker.thinking_step.connect(lambda step, content: tab.add_cot_step(step, content))
@@ -535,7 +537,7 @@ class MainWindow(QMainWindow):
         # Start the worker thread
         self.thread_manager.start_worker(thread_id)
 
-    def handle_assistant_response(self, tab, content):
+    def handle_assistant_response(self, tab, content, response_id=None):
         """Handle the complete response from the assistant"""
         if not content:
             return
@@ -553,7 +555,8 @@ class MainWindow(QMainWindow):
         conversation.add_assistant_response(
             content,
             model_info={},
-            token_usage={}
+            token_usage={},
+            response_id=response_id  # Add Response ID if available
         )
 
         # Update the UI
@@ -703,12 +706,15 @@ class MainWindow(QMainWindow):
         """Finalize the streaming process, ensuring all content is saved"""
         conversation = tab.conversation_tree
 
+        # Get the response ID if it was stored
+        response_id = getattr(tab, '_response_id', None)
+
         # Ensure any remaining buffer is flushed completely
         if hasattr(tab, '_chunk_buffer') and tab._chunk_buffer:
-            self._flush_final_content(tab, conversation, full_content)
+            self._flush_final_content(tab, conversation, full_content, response_id)
         else:
             # Even if no buffer, ensure the final content is consistent
-            self._ensure_content_consistency(tab, conversation, full_content)
+            self._ensure_content_consistency(tab, conversation, full_content, response_id)
 
         # Reset streaming state flags
         self._reset_streaming_state(tab)
@@ -720,7 +726,7 @@ class MainWindow(QMainWindow):
         # Always save the conversation at the end
         self.save_conversation(conversation.id)
 
-    def _flush_final_content(self, tab, conversation, full_content):
+    def _flush_final_content(self, tab, conversation, full_content, response_id=None):
         """Flush any remaining buffer and ensure content is complete"""
         conn = None
         try:
@@ -731,17 +737,27 @@ class MainWindow(QMainWindow):
             conn = self.db_manager.get_connection()
             cursor = conn.cursor()
 
-            # Set the exact full content rather than appending
-            cursor.execute(
-                '''
-                UPDATE messages SET content = ? WHERE id = ?
-                ''',
-                (full_content, conversation.current_node.id)
-            )
+            # Set the exact full content rather than appending and include response_id if available
+            if response_id:
+                cursor.execute(
+                    '''
+                    UPDATE messages SET content = ?, response_id = ? WHERE id = ?
+                    ''',
+                    (full_content, response_id, conversation.current_node.id)
+                )
+            else:
+                cursor.execute(
+                    '''
+                    UPDATE messages SET content = ? WHERE id = ?
+                    ''',
+                    (full_content, conversation.current_node.id)
+                )
             conn.commit()
 
             # Update in-memory content
             conversation.current_node.content = full_content
+            if response_id:
+                conversation.current_node.response_id = response_id
             print(f"DEBUG: Updated node content length: {len(conversation.current_node.content)}")
 
         except Exception as e:

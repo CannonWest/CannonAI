@@ -564,6 +564,18 @@ class ConversationBranchTab(QWidget):
             self._is_streaming = True
             self._ui_update_pending = True
 
+            # If this is the first chunk and we have a loading indicator active, remove it completely
+            if not hasattr(self, '_streaming_started'):
+                self._streaming_started = True
+
+                # Remove any loading indicator text if present
+                if hasattr(self, '_has_loading_text') and self._has_loading_text:
+                    cursor = self.chat_display.textCursor()
+                    cursor.movePosition(QTextCursor.MoveOperation.End)
+                    cursor.movePosition(QTextCursor.MoveOperation.Up, QTextCursor.MoveMode.KeepAnchor, 1)
+                    cursor.removeSelectedText()
+                    self._has_loading_text = False
+
             # Get cursor position at the end
             cursor = self.chat_display.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
@@ -1620,8 +1632,9 @@ class ConversationBranchTab(QWidget):
         self._loading_state = 0
         self._loading_active = True
         self._has_loading_text = False
+        self._streaming_started = False  # Reset streaming flag
         self._loading_timer.start()
-        self._update_loading_indicator()  # Show initial state immediately
+        self._update_loading_indicator()  # Show initial state immediatel
 
     def stop_loading_indicator(self):
         """Stop the loading indicator and remove it from display"""
@@ -1631,8 +1644,8 @@ class ConversationBranchTab(QWidget):
         self._loading_timer.stop()
         self._loading_active = False
 
-        # Remove the loading text if it exists
-        if hasattr(self, '_has_loading_text') and self._has_loading_text:
+        # Remove the loading text if it exists and streaming hasn't started yet
+        if hasattr(self, '_has_loading_text') and self._has_loading_text and not getattr(self, '_streaming_started', False):
             cursor = self.chat_display.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
             cursor.movePosition(QTextCursor.MoveOperation.Up, QTextCursor.MoveMode.KeepAnchor, 1)

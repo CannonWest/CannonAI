@@ -355,14 +355,12 @@ class SettingsDialog(QDialog):
             self.response_format_combo.addItem(format_type)
 
         # Set current response format
-        current_format = current_settings.get("response_format", {"type": "text"})
-        if isinstance(current_format, dict) and "type" in current_format:
-            format_type = current_format["type"]
-            try:
-                format_index = RESPONSE_FORMATS.index(format_type)
-                self.response_format_combo.setCurrentIndex(format_index)
-            except ValueError:
-                self.response_format_combo.setCurrentIndex(0)
+        current_format = current_settings.get("text", {}).get("format", {}).get("type", "text")
+        try:
+            format_index = RESPONSE_FORMATS.index(current_format)
+            self.response_format_combo.setCurrentIndex(format_index)
+        except ValueError:
+            self.response_format_combo.setCurrentIndex(0)
 
         response_format_layout.addWidget(self.response_format_combo)
 
@@ -616,9 +614,9 @@ class SettingsDialog(QDialog):
             model_name = self.snapshot_combo.currentText()
             model_id = MODEL_SNAPSHOTS.get(model_name, "")
 
-        # Get response format
+        # Get response format type
         response_format_type = self.response_format_combo.currentText()
-        response_format = {"type": response_format_type}
+        text_format = {"format": {"type": response_format_type}}
 
         # Handle seed value
         seed_value = self.seed_input.value()
@@ -637,11 +635,9 @@ class SettingsDialog(QDialog):
         settings = {
             "model": model_id,
             "temperature": self.temperature.value(),
-            "max_completion_tokens": self.max_tokens.value(),
+            "max_output_tokens": self.max_tokens.value(),
             "top_p": self.top_p.value(),
-            "frequency_penalty": self.freq_penalty.value(),
-            "presence_penalty": self.pres_penalty.value(),
-            "response_format": response_format,
+            "text": text_format,
             "stream": self.stream_checkbox.isChecked(),
             "store": self.store_checkbox.isChecked(),
             "seed": seed_value,
@@ -651,13 +647,9 @@ class SettingsDialog(QDialog):
             "api_base": self.api_base_input.text()
         }
 
-        # Only include reasoning_effort for appropriate models
+        # Add reasoning effort for appropriate models
         if model_id in REASONING_MODELS:
-            settings["reasoning_effort"] = self.reasoning_effort_combo.currentText()
-            # Add a note in the settings metadata if it doesn't exist
-            if "metadata" not in settings:
-                settings["metadata"] = {}
-            settings["metadata"]["reasoning_effort_note"] = "This parameter is no longer supported by the API"
+            settings["reasoning"] = {"effort": self.reasoning_effort_combo.currentText()}
 
         return settings
 

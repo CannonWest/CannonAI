@@ -178,20 +178,18 @@ MODEL_OUTPUT_LIMITS = {
     "davinci-002": 16384,
     "babbage-002": 16384
 }
+
 # Default parameters for API calls
 DEFAULT_PARAMS: Dict[str, Any] = {
     "model": "gpt-4o",
     "temperature": 0.7,
-    "max_completion_tokens": 1024,  # Using the newer parameter instead of max_tokens
+    "max_output_tokens": 1024,  # New Response API parameter
     "top_p": 1.0,
-    "frequency_penalty": 0.0,
-    "presence_penalty": 0.0,
     "stream": True,
-    "reasoning_effort": "medium",
-    "response_format": {"type": "text"},
-    "store": False,  # Whether to store chat completions for later retrieval
+    "text": {"format": {"type": "text"}},  # New Response API parameter
+    "reasoning": {"effort": "medium"},  # For o1/o3 models
+    "store": True,  # Whether to store responses for later retrieval
     "seed": None,    # For deterministic outputs
-    "service_tier": "auto",
     "api_key": DEFAULT_API_KEY,
 }
 
