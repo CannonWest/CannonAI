@@ -14,7 +14,7 @@ from PyQt6.QtGui import QFont, QIcon, QColor, QPalette, QAction, QTextCursor
 
 from src.utils import DARK_MODE
 from src.models import DBConversationManager, DBMessageNode
-from src.services import OpenAIChatWorker, SettingsManager
+from src.services import OpenAIApiWorker, OpenAIThreadManager, SettingsManager
 from src.ui.conversation import ConversationBranchTab
 from src.ui.components import SettingsDialog, SearchDialog
 from src.models.db_manager import DatabaseManager
@@ -31,6 +31,9 @@ class MainWindow(QMainWindow):
         # Initialize settings and conversation managers
         self.settings_manager = SettingsManager()
         self.settings = self.settings_manager.get_settings()
+
+        # PyQt6 thread manager
+        self.thread_manager = OpenAIThreadManager()
 
         # Use the new database-backed conversation manager
         self.conversation_manager = DBConversationManager()
@@ -195,8 +198,6 @@ class MainWindow(QMainWindow):
 
         button.clicked.connect(create_new_tab)
         return button
-
-    #########NEW CODE###########
     def show_tab_context_menu(self, position):
         """Show context menu for tabs"""
         # Get the tab index at the position
@@ -448,27 +449,9 @@ class MainWindow(QMainWindow):
         index = self.tabs.addTab(tab, conversation.name)
         self.tabs.setCurrentIndex(index)
 
-    def close_tab(self, index):
-        """Close a conversation tab"""
-        if self.tabs.count() > 1:
-            # Get the conversation ID for this tab
-            tab = self.tabs.widget(index)
-            conversation_id = tab.conversation_tree.id
-
-            # Remove the tab
-            self.tabs.removeTab(index)
-            tab.deleteLater()
-
-            # Delete the conversation
-            self.conversation_manager.delete_conversation(conversation_id)
-        else:
-            QMessageBox.warning(
-                self, "Cannot Close Tab",
-                "You must have at least one conversation open."
-            )
-
     def send_message(self, tab, message):
         """Send a user message and get a response"""
+        tab.measure_ui_operations()
         # Get the active conversation
         conversation = tab.conversation_tree
 
@@ -481,40 +464,42 @@ class MainWindow(QMainWindow):
         # Update the UI
         tab.update_ui()
 
-        # Create and start the worker thread to get the response
-        self.worker = OpenAIChatWorker(conversation.get_current_messages(), self.settings)
-
         # Clear any existing chain of thought steps
         tab.clear_cot()
 
+        # Store the active tab for later reference
+        tab._processing_message = True
+
+        # Create worker and thread using the manager
+        thread_id, worker = self.thread_manager.create_worker(
+            conversation.get_current_messages(),
+            self.settings
+        )
+
+        # Store thread_id with the tab for potential cancellation
+        tab._active_thread_id = thread_id
+
         # Connect signals
         if self.settings.get("stream", True):
-            # For streaming mode, only handle chunks
-            self.worker.chunk_received.connect(lambda chunk: self.handle_chunk(tab, chunk))
-            self.worker.message_received.connect(lambda content: None)  # Ignore full message to avoid duplication
+            # For streaming mode
+            worker.chunk_received.connect(lambda chunk: self.handle_chunk(tab, chunk))
+            worker.message_received.connect(lambda content: self.finalize_streaming(tab, content))
         else:
-            # For non-streaming mode, handle the complete message
-            self.worker.message_received.connect(lambda content: self.handle_assistant_response(tab, content))
+            # For non-streaming mode
+            worker.message_received.connect(lambda content: self.handle_assistant_response(tab, content))
 
         # Connect other signals
-        self.worker.thinking_step.connect(lambda step, content: tab.add_cot_step(step, content))
+        worker.thinking_step.connect(lambda step, content: tab.add_cot_step(step, content))
+        worker.reasoning_steps.connect(lambda steps: tab.set_reasoning_steps(steps))
+        worker.error_occurred.connect(self.handle_error)
+        worker.usage_info.connect(lambda info: self.handle_usage_info(tab, info))
+        worker.system_info.connect(lambda info: self.handle_system_info(tab, info))
+        worker.worker_finished.connect(lambda: self._on_worker_finished(tab))
 
-        # Connect reasoning steps signal with better error handling
-        def handle_reasoning_steps(steps):
-            print(f"DEBUG: Received {len(steps) if steps else 0} reasoning steps")
-            try:
-                tab.set_reasoning_steps(steps)
-            except Exception as e:
-                print(f"ERROR handling reasoning steps: {str(e)}")
+        # Start the worker thread
+        self.thread_manager.start_worker(thread_id)
+        tab.measure_ui_operations()
 
-        self.worker.reasoning_steps.connect(handle_reasoning_steps)
-
-        self.worker.error_occurred.connect(self.handle_error)
-        self.worker.usage_info.connect(lambda info: self.handle_usage_info(tab, info))
-        self.worker.system_info.connect(lambda info: self.handle_system_info(tab, info))
-
-        # Start the worker
-        self.worker.start()
 
     def retry_message(self, tab):
         """Retry the current message with possibly different settings"""
@@ -533,7 +518,7 @@ class MainWindow(QMainWindow):
             tab.start_loading_indicator()
 
         # Create and start the worker thread to get the response
-        self.worker = OpenAIChatWorker(conversation.get_current_messages(), self.settings)
+        self.worker = OpenAIApiWorker(conversation.get_current_messages(), self.settings)
 
         # Connect signals
         if self.settings.get("stream", True):
@@ -583,7 +568,7 @@ class MainWindow(QMainWindow):
         self.save_conversation(conversation.id)
 
     def handle_chunk(self, tab, chunk):
-        """Handle a streaming chunk from the API"""
+        """Handle a streaming chunk from the API with optimized database access"""
         if not chunk:
             return
 
@@ -591,61 +576,77 @@ class MainWindow(QMainWindow):
             # Get the conversation
             conversation = tab.conversation_tree
 
-            # Database operations in a separate try-except block
+            # Check if we're in buffered mode
+            if not hasattr(tab, '_chunk_buffer'):
+                # Initialize buffer and counter for this tab
+                tab._chunk_buffer = ""
+                tab._chunk_counter = 0
+                tab._buffer_flush_threshold = 20  # Adjust based on average chunk size
+
+            # Add to buffer
+            tab._chunk_buffer += chunk
+            tab._chunk_counter += 1
+
+            # Database operations - only perform periodically
             try:
-                # Check current message content for debugging
-                conn = self.db_manager.get_connection()
-                cursor = conn.cursor()
+                # Determine if we should write to database now
+                is_first_chunk = conversation.current_node.role != "assistant"
+                should_flush = (tab._chunk_counter >= tab._buffer_flush_threshold) or is_first_chunk
 
-                try:
-                    # Check if we already have an assistant node
-                    is_first_chunk = False
+                if should_flush or len(tab._chunk_buffer) > 1000:  # Also flush on large buffer
+                    conn = self.db_manager.get_connection()
+                    cursor = conn.cursor()
 
-                    if conversation.current_node.role == "assistant":
-                        # Update the existing node directly in database
-                        cursor.execute(
-                            '''
-                            UPDATE messages SET content = content || ? WHERE id = ?
-                            ''',
-                            (chunk, conversation.current_node.id)
-                        )
+                    try:
+                        if is_first_chunk:
+                            # First chunk - create a new assistant node with the buffer content
+                            new_node = conversation.add_assistant_response(tab._chunk_buffer)
+
+                            # Store an empty reasoning_steps list on the node
+                            if not hasattr(new_node, 'reasoning_steps'):
+                                setattr(new_node, 'reasoning_steps', [])
+
+                        else:
+                            # Update existing node with accumulated buffer
+                            cursor.execute(
+                                '''
+                                UPDATE messages SET content = content || ? WHERE id = ?
+                                ''',
+                                (tab._chunk_buffer, conversation.current_node.id)
+                            )
+
+                            # Also update the in-memory version
+                            conversation.current_node.content += tab._chunk_buffer
+
+                        # Commit the changes
                         conn.commit()
 
-                        # Also update the in-memory version
-                        conversation.current_node.content += chunk
-                    else:
-                        # First chunk - create a new assistant node
-                        is_first_chunk = True
-                        new_node = conversation.add_assistant_response(chunk)
+                        # Reset buffer after successful commit
+                        tab._chunk_buffer = ""
+                        tab._chunk_counter = 0
 
-                        # Store an empty reasoning_steps list on the node
-                        if not hasattr(new_node, 'reasoning_steps'):
-                            setattr(new_node, 'reasoning_steps', [])
+                    except Exception as db_error:
+                        print(f"DEBUG: Database error in handle_chunk: {str(db_error)}")
+                        if conn:
+                            conn.rollback()
+                    finally:
+                        if conn:
+                            conn.close()
 
-                except Exception as db_error:
-                    print(f"DEBUG: Database error in handle_chunk: {str(db_error)}")
-                    if conn:
-                        conn.rollback()
-                    # Continue with UI updates even if DB fails
-                    is_first_chunk = False
-                finally:
-                    if conn:
-                        conn.close()
-
-                # UI updates in a separate try block
+                # UI updates regardless of db operations
                 try:
-                    # For first chunk, do a full UI update; otherwise, stream the update
+                    # For first chunk, do a full UI update
                     if is_first_chunk:
                         # Update the whole UI to ensure assistant prefix appears
                         tab.update_ui()
                     else:
-                        # Update the streaming display
+                        # Update the streaming display with just this chunk
                         tab.update_chat_streaming(chunk)
                 except Exception as ui_error:
                     print(f"DEBUG: UI error in handle_chunk: {str(ui_error)}")
 
-                # Save less frequently for better performance
-                if len(chunk) > 50:
+                # Only save conversation occasionally or on large buffer flushes
+                if tab._chunk_counter == 0 and len(chunk) > 50:
                     try:
                         self.save_conversation(conversation.id)
                     except Exception as save_error:
@@ -656,6 +657,42 @@ class MainWindow(QMainWindow):
 
         except Exception as outer_error:
             print(f"DEBUG: Outer error in handle_chunk: {str(outer_error)}")
+
+    # Make sure we clean up buffer on completion
+    # This would typically be called from message_received signal handle
+    def finalize_streaming(self, tab, full_content):
+        """Finalize the streaming process, flushing any remaining buffer"""
+        if hasattr(tab, '_chunk_buffer') and tab._chunk_buffer:
+            # Final database update with any remaining buffered content
+            try:
+                conn = self.db_manager.get_connection()
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    '''
+                    UPDATE messages SET content = ? WHERE id = ?
+                    ''',
+                    (full_content, tab.conversation_tree.current_node.id)
+                )
+                conn.commit()
+
+                # Clean up
+                tab.conversation_tree.current_node.content = full_content
+                tab._chunk_buffer = ""
+                tab._chunk_counter = 0
+
+            except Exception as e:
+                print(f"Error in finalize_streaming: {str(e)}")
+            finally:
+                if conn:
+                    conn.close()
+
+        # Mark streaming as complete and trigger deferred UI updates
+        if hasattr(tab, 'complete_streaming_update'):
+            tab.complete_streaming_update()
+
+        # Save the conversation
+        self.save_conversation(tab.conversation_tree.id)
 
     def handle_usage_info(self, tab, info):
         """Handle token usage information"""
@@ -825,8 +862,48 @@ class MainWindow(QMainWindow):
             "- Conversation saving and loading"
         )
 
+
+    def _on_worker_finished(self, tab):
+        """Handle worker thread completion"""
+        if hasattr(tab, '_processing_message'):
+            tab._processing_message = False
+
+        if hasattr(tab, '_active_thread_id'):
+            del tab._active_thread_id
+
+        # Update UI as needed
+        if hasattr(tab, 'stop_loading_indicator') and tab._loading_active:
+            tab.stop_loading_indicator()
+
+    # Add a method to handle tab closing with active threads
+    def close_tab(self, index):
+        """Close a conversation tab with proper thread cleanup"""
+        if self.tabs.count() > 1:
+            # Get the tab object
+            tab = self.tabs.widget(index)
+            conversation_id = tab.conversation_tree.id
+
+            # Cancel any active API calls
+            if hasattr(tab, '_active_thread_id'):
+                self.thread_manager.cancel_worker(tab._active_thread_id)
+
+            # Remove the tab
+            self.tabs.removeTab(index)
+            tab.deleteLater()
+
+            # Delete the conversation
+            self.conversation_manager.delete_conversation(conversation_id)
+        else:
+            QMessageBox.warning(
+                self, "Cannot Close Tab",
+                "You must have at least one conversation open."
+            )
+
     def closeEvent(self, event):
         """Handle application close event"""
+        # Cancel all active API calls
+        self.thread_manager.cancel_all()
+
         # Save all conversations
         self.conversation_manager.save_all()
 

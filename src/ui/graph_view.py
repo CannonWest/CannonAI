@@ -81,6 +81,8 @@ class ConversationGraphView(QGraphicsView):
         # Enable scene mouse events
         self._scene.mouseReleaseEvent = self._handle_scene_mouse_release
 
+        self._update_in_progress = False
+
         # Build the initial graph if a conversation is set
         if self.conversation:
             self.update_tree(self.conversation)
@@ -101,28 +103,40 @@ class ConversationGraphView(QGraphicsView):
         self.update_tree(self.conversation)
 
     def update_tree(self, conversation_tree):
-        """Clear and rebuild the scene based on the conversation tree data (mimics ConversationTreeWidget API)"""
-        self._scene.clear()
-        self.node_items = {}
-
-        if not conversation_tree:
+        """Clear and rebuild the scene based on the conversation tree data"""
+        # Skip update if we're marked as busy to prevent layout thrashing
+        if hasattr(self, '_update_in_progress') and self._update_in_progress:
             return
 
-        # Get the current branch for highlighting
-        current_branch = conversation_tree.get_current_branch()
-        self.current_branch_ids = {node.id for node in current_branch}
+        try:
+            self._update_in_progress = True
 
-        # Start layout from the root node
-        root_node = conversation_tree.root
-        self._layout_subtree(root_node, x=0, y=0, level=0)
+            self._scene.clear()
+            self.node_items = {}
 
-        # Fit the view to show all content
-        self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            if not conversation_tree:
+                return
 
-        # Set a reasonable scene rect with some padding
-        sceneRect = self._scene.itemsBoundingRect()
-        sceneRect.adjust(-100, -100, 100, 100)  # Add some padding
-        self._scene.setSceneRect(sceneRect)
+            # Get the current branch for highlighting
+            current_branch = conversation_tree.get_current_branch()
+            self.current_branch_ids = {node.id for node in current_branch}
+
+            # Start layout from the root node
+            root_node = conversation_tree.root
+            self._layout_subtree(root_node, x=0, y=0, level=0)
+
+            # Fit the view to show all content
+            self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+            # Set a reasonable scene rect with some padding
+            sceneRect = self._scene.itemsBoundingRect()
+            sceneRect.adjust(-100, -100, 100, 100)  # Add some padding
+            self._scene.setSceneRect(sceneRect)
+
+        finally:
+            self._update_in_progress = False
+
+
 
     def _layout_subtree(self, node, x, y, level):
         """

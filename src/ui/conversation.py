@@ -18,6 +18,7 @@ from src.ui.components import ConversationTreeWidget, BranchNavBar
 from src.utils.file_utils import get_file_info, format_size
 from src.ui.graph_view import ConversationGraphView
 
+
 class ConversationBranchTab(QWidget):
     """
     Widget representing a conversation branch tab with retry functionality
@@ -255,6 +256,13 @@ class ConversationBranchTab(QWidget):
         # Add splitter to main layout
         self.layout.addWidget(self.splitter)
 
+        # Add state tracking for deferred UI updates
+        self._ui_update_pending = False
+        self._is_streaming = False
+
+        self._message_cache = {}  # node_id -> rendered html
+        self._last_branch_ids = set()  # Track which messages were last displayed
+
         # Update the UI with the initial conversation
         if self.conversation_tree:
             self.update_ui()
@@ -269,7 +277,15 @@ class ConversationBranchTab(QWidget):
         if not self.conversation_tree:
             return
 
-        # Update branch navigation
+        # Don't do expensive UI updates during streaming
+        if self._is_streaming:
+            # Mark that we need a full update when streaming ends
+            self._ui_update_pending = True
+            # Only update the chat display during streaming
+            self.update_chat_display()
+            return
+
+        # Normal full UI update when not streaming
         current_branch = self.conversation_tree.get_current_branch()
         self.branch_nav.update_branch(current_branch)
 
@@ -281,6 +297,9 @@ class ConversationBranchTab(QWidget):
 
         # Update retry button state
         self.update_retry_button()
+
+        # Reset pending update flag since we just did a full update
+        self._ui_update_pending = False
 
     def update_model_info(self, model_id):
         """Update the model information display with the current model details"""
@@ -306,144 +325,44 @@ class ConversationBranchTab(QWidget):
         self.model_token_limit_label.setText(f"Limits: {context_size:,} ctx, {output_limit:,} out")
 
     def update_chat_display(self):
-        """Update the chat display with the current branch messages"""
+        """Update the chat display with the current branch messages more efficiently"""
         if not self.conversation_tree:
             return
-
-        # Add flag to check if we're in streaming mode to avoid expensive operations
-        is_streaming = hasattr(self, '_is_streaming') and self._is_streaming
-
-        self.chat_display.clear()
 
         # Get the current branch messages
         branch = self.conversation_tree.get_current_branch()
         current_node = self.conversation_tree.current_node
 
-        for node in branch:
-            role = node.role
-            content = node.content
+        # Get the IDs in the current branch
+        current_branch_ids = {node.id for node in branch}
 
-            if role == "system":
-                color = DARK_MODE["system_message"]
-                prefix = "🔧 System: "
-            elif role == "user":
-                color = DARK_MODE["user_message"]
-                prefix = "👤 You: "
-            elif role == "assistant":
-                color = DARK_MODE["assistant_message"]
-                prefix = "🤖 Assistant: "
-                # Add model info to the prefix if available
-                if node.model_info and "model" in node.model_info:
-                    prefix = f"🤖 Assistant ({node.model_info['model']}): "
+        # Check if we just need to append new content
+        append_only = False
+        if self._last_branch_ids and current_branch_ids.issuperset(self._last_branch_ids):
+            # All previous messages are still there, we might just need to append
+            # Count messages to determine if we're just adding to the end
+            if len(current_branch_ids) == len(self._last_branch_ids) + 1:
+                # Added exactly one message
+                append_only = True
 
-                # Check for reasoning tokens or reasoning steps
-                reasoning_tokens = 0
-                if node.token_usage and "completion_tokens_details" in node.token_usage:
-                    details = node.token_usage["completion_tokens_details"]
-                    reasoning_tokens = details.get("reasoning_tokens", 0)
+        if append_only and hasattr(self, '_is_streaming') and self._is_streaming:
+            # During streaming, we've already been updating incrementally
+            # So we don't need to do anything here
+            return
 
-                # Get any stored reasoning steps for this node
-                node_reasoning = getattr(node, 'reasoning_steps', [])
+        # If the conversation structure has changed significantly, or this is
+        # the first update, we need to redraw the entire conversation
+        if not append_only or not self._last_branch_ids:
+            self.chat_display.clear()
+            self._render_full_conversation(branch)
+        else:
+            # We just need to append the new message(s)
+            new_messages = [node for node in branch if node.id not in self._last_branch_ids]
+            for node in new_messages:
+                self._render_single_message(node)
 
-                # If we have stored reasoning steps or the model used reasoning tokens
-                if node_reasoning or reasoning_tokens > 0:
-                    self.chat_display.setTextColor(QColor(DARK_MODE["accent"]))
-                    self.chat_display.insertPlainText("💭 Chain of Thought:\n")
-
-                    print(f"DEBUG: node_reasoning={node_reasoning}, reasoning_tokens={reasoning_tokens}")
-
-                    # First, try to use stored reasoning steps
-                    if node_reasoning and isinstance(node_reasoning, list) and len(node_reasoning) > 0:
-                        print(f"DEBUG: Using stored reasoning steps: {len(node_reasoning)}")
-                        # Display the stored reasoning steps
-                        for step in node_reasoning:
-                            step_name = step.get("name", "Reasoning Step")
-                            step_content = step.get("content", "")
-                            self.chat_display.insertPlainText(f"• {step_name}: {step_content}\n")
-
-                    # For o1/o3 models, attempt pattern extraction in non-streaming mode
-                    elif "o1" in node.model_info.get("model", "") or "o3" in node.model_info.get("model", ""):
-                        # Don't try to extract if we're still streaming
-                        if getattr(self, '_is_streaming', False):
-                            self.chat_display.insertPlainText(f"• Reasoning in progress (streaming)...\n")
-                        else:
-                            # When the full response is available, try to extract patterns
-                            try:
-                                # Skip recursion check for final extraction
-                                if getattr(self, '_extracting_reasoning', False):
-                                    self.chat_display.insertPlainText(f"• Extraction already in progress\n")
-                                else:
-                                    self._extracting_reasoning = True
-                                    detected_steps = self._extract_reasoning_steps(content)
-                                    self._extracting_reasoning = False
-
-                                    if detected_steps and len(detected_steps) > 0:
-                                        print(f"DEBUG: Found {len(detected_steps)} reasoning steps via extraction")
-                                        for step in detected_steps:
-                                            self.chat_display.insertPlainText(f"• {step['name']}: {step['content']}\n")
-
-                                            # Save the extracted steps to the node for future use
-                                            if not node_reasoning:
-                                                setattr(node, 'reasoning_steps', detected_steps)
-                                    else:
-                                        # Just show token count if no steps found
-                                        self.chat_display.insertPlainText(f"• Model performed reasoning ({reasoning_tokens} tokens)\n")
-                            except Exception as e:
-                                print(f"Error extracting reasoning steps: {str(e)}")
-                                self.chat_display.insertPlainText(f"• Error displaying reasoning steps\n")
-                    # Generic case - just mention reasoning token count
-                    else:
-                        self.chat_display.insertPlainText(f"• Model performed reasoning ({reasoning_tokens} tokens)\n")
-
-                self.chat_display.insertPlainText("\n")  # Add spacing
-            elif role == "developer":
-                color = DARK_MODE["system_message"]
-                prefix = "👩‍💻 Developer: "
-            else:
-                color = DARK_MODE["foreground"]
-                prefix = f"{role}: "
-
-            # Process markdown in content
-            formatted_content = self.process_markdown(content)
-
-            # Set text color for the prefix
-            self.chat_display.setTextColor(QColor(color))
-
-            # Insert prefix as plain text
-            self.chat_display.insertPlainText(prefix)
-
-            # Insert the formatted content as HTML
-            cursor = self.chat_display.textCursor()
-            cursor.insertHtml(formatted_content)
-            cursor.insertBlock()  # Add a newline
-
-            # Add file attachment indicators if present
-            if hasattr(node, 'attached_files') and node.attached_files:
-                self.chat_display.setTextColor(QColor(DARK_MODE["accent"]))
-                file_count = len(node.attached_files)
-
-                # Summary line for the attachments
-                attachment_summary = f"📎 {file_count} file{'s' if file_count > 1 else ''} attached:"
-                self.chat_display.append(attachment_summary)
-
-                # Create a formatted list of files with more details
-                for file_info in node.attached_files:
-                    file_name = file_info['file_name']
-                    file_type = file_info.get('mime_type', 'Unknown type')
-                    file_size = file_info.get('size', 0)
-                    token_count = file_info.get('token_count', 0)
-
-                    # Format file size for display
-                    if hasattr(self, 'format_size'):
-                        size_str = self.format_size(file_size)
-                    else:
-                        # Simple format if the format_size method is not available
-                        size_str = f"{file_size} bytes"
-
-                    file_details = f"    • {file_name} ({size_str}, {token_count} tokens)"
-                    self.chat_display.append(file_details)
-
-                self.chat_display.append("")  # Add an empty line after attachments
+        # Store the current branch IDs for next comparison
+        self._last_branch_ids = current_branch_ids
 
         # Scroll to bottom
         cursor = self.chat_display.textCursor()
@@ -451,87 +370,251 @@ class ConversationBranchTab(QWidget):
         self.chat_display.setTextCursor(cursor)
 
         # Update token usage and model info based on the current node
-        if current_node.role == "assistant":
-            if current_node.token_usage:
-                usage = current_node.token_usage
-                prompt_tokens = usage.get("prompt_tokens", 0)
-                completion_tokens = usage.get("completion_tokens", 0)
-                total_tokens = usage.get("total_tokens", 0)
+        self._update_info_displays(current_node)
 
-                # Show reasoning tokens if available
-                reasoning_tokens = 0
-                if "completion_tokens_details" in usage:
-                    details = usage["completion_tokens_details"]
-                    reasoning_tokens = details.get("reasoning_tokens", 0)
-                    if reasoning_tokens > 0:
-                        self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens} ({reasoning_tokens} reasoning)")
-                    else:
-                        self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens}")
-                else:
-                    self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens}")
-            else:
-                # No token usage data available
-                self.token_label.setText("Tokens: - / -")
-                print(f"No token usage for assistant node ID: {current_node.id}")
+    def _render_full_conversation(self, branch):
+        """Render the full conversation branch"""
+        for node in branch:
+            self._render_single_message(node)
 
-            # Update model info
-            if current_node.model_info and "model" in current_node.model_info:
-                model_name = current_node.model_info["model"]
-                self.model_label.setText(f"Model: {model_name}")
-                print(f"Model info: {current_node.model_info}")
-            else:
-                self.model_label.setText("Model: -")
-                print(f"No model info for assistant node ID: {current_node.id}")
+    def _render_single_message(self, node):
+        """Render a single message to the chat display"""
+        # Check if we have this message cached and it hasn't changed
+        cache_key = f"{node.id}:{node.content}"  # Include content in key to detect changes
 
-        elif current_node.role == "user":
-            # For user messages, estimate token count from content and attachments
-            token_estimate = 0
+        if cache_key in self._message_cache:
+            # Use cached HTML
+            html_content = self._message_cache[cache_key]
+            self.chat_display.insertHtml(html_content)
+            self.chat_display.insertPlainText("\n\n")  # Add spacing
+            return
 
-            # Approximate tokens as words/0.75 for English text (rough approximation)
-            if current_node.content:
-                token_estimate += len(current_node.content.split())
-
-            # Add tokens from attachments if present
-            if hasattr(current_node, 'attached_files') and current_node.attached_files:
-                for file_info in current_node.attached_files:
-                    token_estimate += file_info.get('token_count', 0)
-
-            self.token_label.setText(f"Tokens: {token_estimate} / -")
-            self.model_label.setText("Model: -")  # No model for user messages
+        # Determine message style based on role
+        if node.role == "system":
+            color = DARK_MODE["system_message"]
+            prefix = "🔧 System: "
+        elif node.role == "user":
+            color = DARK_MODE["user_message"]
+            prefix = "👤 You: "
+        elif node.role == "assistant":
+            color = DARK_MODE["assistant_message"]
+            prefix = "🤖 Assistant: "
+            # Add model info to the prefix if available
+            if node.model_info and "model" in node.model_info:
+                prefix = f"🤖 Assistant ({node.model_info['model']}): "
+        elif node.role == "developer":
+            color = DARK_MODE["system_message"]
+            prefix = "👩‍💻 Developer: "
         else:
-            # For system or other messages
-            self.token_label.setText("Tokens: - / -")
-            self.model_label.setText("Model: -")
+            color = DARK_MODE["foreground"]
+            prefix = f"{node.role}: "
 
-        # Update response details
-        if current_node.role == "assistant" and current_node.token_usage:
-            usage = current_node.token_usage
-            prompt_tokens = usage.get("prompt_tokens", 0)
-            completion_tokens = usage.get("completion_tokens", 0)
-            total_tokens = usage.get("total_tokens", 0)
+        # Start building HTML content
+        html_parts = []
 
-            details_text = f"Token Usage:\n"
-            details_text += f"  • Prompt tokens: {prompt_tokens}\n"
-            details_text += f"  • Completion tokens: {completion_tokens}\n"
-            details_text += f"  • Total tokens: {total_tokens}\n\n"
+        # Add prefix with styling
+        prefix_html = f'<span style="color: {color};">{prefix}</span>'
+        html_parts.append(prefix_html)
 
-            # Add completion tokens details if available
-            if "completion_tokens_details" in usage:
-                details = usage["completion_tokens_details"]
-                details_text += "Completion Token Details:\n"
-                details_text += f"  • Reasoning tokens: {details.get('reasoning_tokens', 0)}\n"
-                details_text += f"  • Accepted prediction tokens: {details.get('accepted_prediction_tokens', 0)}\n"
-                details_text += f"  • Rejected prediction tokens: {details.get('rejected_prediction_tokens', 0)}\n\n"
+        # Process content for markdown formatting
+        content_html = self.process_markdown(node.content)
+        html_parts.append(content_html)
 
-            # Add model info
-            if current_node.model_info:
-                details_text += "Model Information:\n"
-                for key, value in current_node.model_info.items():
-                    details_text += f"  • {key}: {value}\n"
+        # Add reasoning steps if this is an assistant node
+        if node.role == "assistant":
+            reasoning_html = self._render_reasoning_steps(node)
+            if reasoning_html:
+                html_parts.append(reasoning_html)
 
-            self.info_content.setText(details_text)
-        else:
-            self.info_content.setText("")
+        # Add file attachments if present
+        if hasattr(node, 'attached_files') and node.attached_files:
+            attachments_html = self._render_attachments(node.attached_files)
+            html_parts.append(attachments_html)
+
+        # Join all parts
+        full_html = "".join(html_parts)
+
+        # Cache the rendered HTML
+        self._message_cache[cache_key] = full_html
+
+        # Insert into display
+        self.chat_display.insertHtml(full_html)
+        self.chat_display.insertPlainText("\n\n")  # Add spacing
+
+    def _render_reasoning_steps(self, node):
+        """Render reasoning steps for an assistant message"""
+        # Check for reasoning tokens or reasoning steps
+        reasoning_tokens = 0
+        if node.token_usage and "completion_tokens_details" in node.token_usage:
+            details = node.token_usage["completion_tokens_details"]
+            reasoning_tokens = details.get("reasoning_tokens", 0)
+
+        # Get any stored reasoning steps for this node
+        node_reasoning = getattr(node, 'reasoning_steps', [])
+
+        # If no reasoning, return empty string
+        if not node_reasoning and reasoning_tokens <= 0:
+            return ""
+
+        html_parts = []
+        html_parts.append(f'<div style="color: {DARK_MODE["accent"]}; margin-top: 10px;">💭 Chain of Thought:</div>')
+
+        # Use stored reasoning steps if available
+        if node_reasoning and isinstance(node_reasoning, list) and len(node_reasoning) > 0:
+            html_parts.append('<ul style="margin-top: 5px; margin-bottom: 5px;">')
+            for step in node_reasoning:
+                step_name = step.get("name", "Reasoning Step")
+                step_content = step.get("content", "")
+                html_parts.append(f'<li><b>{step_name}:</b> {step_content}</li>')
+            html_parts.append('</ul>')
+        elif reasoning_tokens > 0:
+            # Just show token count if no steps found
+            html_parts.append(f'<div>• Model performed reasoning ({reasoning_tokens} tokens)</div>')
+
+        return "".join(html_parts)
+
+    def _render_attachments(self, attachments):
+        """Render file attachments HTML"""
+        html_parts = []
+        file_count = len(attachments)
+
+        html_parts.append(f'<div style="color: {DARK_MODE["accent"]}; margin-top: 10px;">📎 {file_count} file{"s" if file_count > 1 else ""} attached:</div>')
+        html_parts.append('<ul style="margin-top: 5px; margin-bottom: 5px;">')
+
+        for file_info in attachments:
+            file_name = file_info['file_name']
+            file_type = file_info.get('mime_type', 'Unknown type')
+            file_size = file_info.get('size', 0)
+            token_count = file_info.get('token_count', 0)
+
+            # Format file size
+            if hasattr(self, 'format_size'):
+                size_str = self.format_size(file_size)
+            else:
+                size_str = f"{file_size} bytes"
+
+            html_parts.append(f'<li>{file_name} ({size_str}, {token_count} tokens)</li>')
+
+        html_parts.append('</ul>')
+        return "".join(html_parts)
+
+    def measure_ui_operations(self):
+        """Measure time taken for various UI operations"""
+        import time
+
+        print("Starting UI performance measurements...")
+
+        # Measure branch nav update
+        start = time.time()
+        current_branch = self.conversation_tree.get_current_branch()
+        self.branch_nav.update_branch(current_branch)
+        nav_time = time.time() - start
+
+        # Measure graph view update
+        start = time.time()
+        self.graph_view.update_tree(self.conversation_tree)
+        graph_time = time.time() - start
+
+        # Measure chat display update
+        start = time.time()
+        self.update_chat_display()
+        chat_time = time.time() - start
+
+        print(f"UI Operation Times:")
+        print(f"- Branch Navigation: {nav_time:.4f} seconds")
+        print(f"- Graph View: {graph_time:.4f} seconds")
+        print(f"- Chat Display: {chat_time:.4f} seconds")
+        print(f"- Total: {nav_time + graph_time + chat_time:.4f} seconds")
+
+    def update_chat_streaming(self, chunk):
+        """Update the chat display during streaming for efficiency"""
+        try:
+            # Stop the loading indicator on first chunk
+            if hasattr(self, '_loading_active') and self._loading_active:
+                self.stop_loading_indicator()
+
+            # Set streaming mode flag - important!
+            self._is_streaming = True
+            # Mark that we'll need a full UI update when done
+            self._ui_update_pending = True
+
+            # Initialize counter if needed
+            if not hasattr(self, '_chunk_counter') or self._chunk_counter is None:
+                self._chunk_counter = 0
+
+            # Get cursor position at the end
+            cursor = self.chat_display.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            self.chat_display.setTextCursor(cursor)
+
+            # Insert the chunk as plain text
+            self.chat_display.insertPlainText(chunk)
+            self.chat_display.ensureCursorVisible()
+
+            # Increment counter
+            try:
+                self._chunk_counter += 1
+            except TypeError:
+                self._chunk_counter = 1
+
+            # Process events less frequently - adaptive approach
+            # Only process critical UI events during streaming
+            if self._chunk_counter % 20 == 0:
+                from PyQt6.QtCore import QCoreApplication
+                QCoreApplication.processEvents()
+
+        except Exception as e:
+            print(f"Error in update_chat_streaming: {str(e)}")
+
+    def complete_streaming_update(self):
+        """Perform a full UI update after streaming is complete"""
+        # Reset streaming flag first
+        self._is_streaming = False
+
+        # Only update if we have pending updates
+        if self._ui_update_pending:
+            # Ensure we wait a short moment to allow any in-progress
+            # operations to complete first (important for stability)
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(100, self._do_complete_update)
+
+    def _do_complete_update(self):
+        """Perform the actual delayed UI update"""
+        try:
+            # Ensure we have a valid conversation tree
+            if not self.conversation_tree:
+                return
+
+            # Do a full UI update now
+            current_branch = self.conversation_tree.get_current_branch()
+
+            # Update branch navigation
+            self.branch_nav.update_branch(current_branch)
+
+            # Update graph view
+            self.graph_view.update_tree(self.conversation_tree)
+
+            # Update retry button
+            self.update_retry_button()
+
+            # Reset pending update flag
+            self._ui_update_pending = False
+
+            # Log that we completed a deferred update for debugging
+            print("Completed deferred UI update after streaming")
+
+        except Exception as e:
+            print(f"Error in complete_streaming_update: {str(e)}")
+
+    def clear_message_cache(self):
+        """Clear the message rendering cache"""
+        self._message_cache = {}
+
+    def resizeEvent(self, event):
+        """Handle widget resize events - invalidate cache on resize"""
+        super().resizeEvent(event)
+        # Clear cache as messages may need to reflow at new width
+        self.clear_message_cache()
 
     def update_retry_button(self):
         """Enable/disable retry button based on current node"""
@@ -543,44 +626,6 @@ class ConversationBranchTab(QWidget):
         current_node = self.conversation_tree.current_node
         can_retry = current_node.role == "assistant" and current_node.parent and current_node.parent.role == "user"
         self.retry_button.setEnabled(can_retry)
-
-    def update_chat_streaming(self, chunk):
-        """Update the chat display during streaming for efficiency"""
-        try:
-            # Stop the loading indicator on first chunk
-            if hasattr(self, '_loading_active') and self._loading_active:
-                self.stop_loading_indicator()
-
-            # Initialize variables - must happen at the start
-            # Mark that we're in streaming mode
-            self._is_streaming = True
-
-            # Initialize counter if it doesn't exist or is None
-            if not hasattr(self, '_chunk_counter') or self._chunk_counter is None:
-                self._chunk_counter = 0
-
-            # Just append the chunk to the end of the display
-            cursor = self.chat_display.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            self.chat_display.setTextCursor(cursor)
-
-            # Insert the chunk
-            self.chat_display.insertPlainText(chunk)
-            self.chat_display.ensureCursorVisible()
-
-            # Inrement counter safely
-            try:
-                self._chunk_counter += 1
-            except TypeError:
-                # Reset counter if it's somehow None
-                self._chunk_counter = 1
-
-            # Process events less frequently
-            if self._chunk_counter % 20 == 0:
-                from PyQt6.QtCore import QCoreApplication
-                QCoreApplication.processEvents()
-        except Exception as e:
-            print(f"Error in update_chat_streaming: {str(e)}")
 
     def navigate_to_node(self, node_id):
         """Navigate to a specific node in the conversation"""
@@ -1253,6 +1298,88 @@ class ConversationBranchTab(QWidget):
             return content
 
         return cleaned_content.strip()
+
+    def _update_info_displays(self, current_node):
+        """Update token usage and model info displays"""
+        if current_node.role == "assistant":
+            if current_node.token_usage:
+                usage = current_node.token_usage
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                total_tokens = usage.get("total_tokens", 0)
+
+                # Show reasoning tokens if available
+                reasoning_tokens = 0
+                if "completion_tokens_details" in usage:
+                    details = usage["completion_tokens_details"]
+                    reasoning_tokens = details.get("reasoning_tokens", 0)
+                    if reasoning_tokens > 0:
+                        self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens} ({reasoning_tokens} reasoning)")
+                    else:
+                        self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens}")
+                else:
+                    self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens}")
+            else:
+                # No token usage data available
+                self.token_label.setText("Tokens: - / -")
+                print(f"No token usage for assistant node ID: {current_node.id}")
+
+            # Update model info
+            if current_node.model_info and "model" in current_node.model_info:
+                model_name = current_node.model_info["model"]
+                self.model_label.setText(f"Model: {model_name}")
+            else:
+                self.model_label.setText("Model: -")
+
+        elif current_node.role == "user":
+            # For user messages, estimate token count from content and attachments
+            token_estimate = 0
+
+            # Approximate tokens as words/0.75 for English text (rough approximation)
+            if current_node.content:
+                token_estimate += len(current_node.content.split())
+
+            # Add tokens from attachments if present
+            if hasattr(current_node, 'attached_files') and current_node.attached_files:
+                for file_info in current_node.attached_files:
+                    token_estimate += file_info.get('token_count', 0)
+
+            self.token_label.setText(f"Tokens: {token_estimate} / -")
+            self.model_label.setText("Model: -")  # No model for user messages
+        else:
+            # For system or other messages
+            self.token_label.setText("Tokens: - / -")
+            self.model_label.setText("Model: -")
+
+        # Update response details
+        if current_node.role == "assistant" and current_node.token_usage:
+            usage = current_node.token_usage
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+            total_tokens = usage.get("total_tokens", 0)
+
+            details_text = f"Token Usage:\n"
+            details_text += f"  • Prompt tokens: {prompt_tokens}\n"
+            details_text += f"  • Completion tokens: {completion_tokens}\n"
+            details_text += f"  • Total tokens: {total_tokens}\n\n"
+
+            # Add completion tokens details if available
+            if "completion_tokens_details" in usage:
+                details = usage["completion_tokens_details"]
+                details_text += "Completion Token Details:\n"
+                details_text += f"  • Reasoning tokens: {details.get('reasoning_tokens', 0)}\n"
+                details_text += f"  • Accepted prediction tokens: {details.get('accepted_prediction_tokens', 0)}\n"
+                details_text += f"  • Rejected prediction tokens: {details.get('rejected_prediction_tokens', 0)}\n\n"
+
+            # Add model info
+            if current_node.model_info:
+                details_text += "Model Information:\n"
+                for key, value in current_node.model_info.items():
+                    details_text += f"  • {key}: {value}\n"
+
+            self.info_content.setText(details_text)
+        else:
+            self.info_content.setText("")
 
     def _update_loading_indicator(self):
         """Update the loading indicator text"""
