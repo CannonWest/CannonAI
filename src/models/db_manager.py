@@ -192,6 +192,8 @@ class DatabaseManager:
 
     def debug_print_conversations(self):
         """Print all conversations in the database for debugging"""
+        # if not DEBUG_MODE:
+        #     return
         conn = self.get_connection()
         cursor = conn.cursor()
 

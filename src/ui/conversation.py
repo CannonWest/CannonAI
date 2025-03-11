@@ -529,18 +529,9 @@ class ConversationBranchTab(QWidget):
     def update_chat_streaming(self, chunk):
         """Update the chat display during streaming for efficiency"""
         try:
-            # Stop the loading indicator on first chunk
-            if hasattr(self, '_loading_active') and self._loading_active:
-                self.stop_loading_indicator()
-
-            # Set streaming mode flag - important!
+            # Set streaming mode flag
             self._is_streaming = True
-            # Mark that we'll need a full UI update when done
             self._ui_update_pending = True
-
-            # Initialize counter if needed
-            if not hasattr(self, '_chunk_counter') or self._chunk_counter is None:
-                self._chunk_counter = 0
 
             # Get cursor position at the end
             cursor = self.chat_display.textCursor()
@@ -549,16 +540,12 @@ class ConversationBranchTab(QWidget):
 
             # Insert the chunk as plain text
             self.chat_display.insertPlainText(chunk)
-            self.chat_display.ensureCursorVisible()
 
-            # Increment counter
-            try:
-                self._chunk_counter += 1
-            except TypeError:
-                self._chunk_counter = 1
+            # Only process events every 20 chunks for better performance
+            if not hasattr(self, '_chunk_counter'):
+                self._chunk_counter = 0
+            self._chunk_counter += 1
 
-            # Process events less frequently - adaptive approach
-            # Only process critical UI events during streaming
             if self._chunk_counter % 20 == 0:
                 from PyQt6.QtCore import QCoreApplication
                 QCoreApplication.processEvents()
@@ -636,10 +623,6 @@ class ConversationBranchTab(QWidget):
             self.update_ui()
             self.branch_changed.emit()
 
-    def format_size(self, size_bytes):
-        """Format file size in a human-readable way."""
-        from src.utils.file_utils import format_size as utils_format_size
-        return utils_format_size(size_bytes)
 
     def on_send(self):
         """Handle sending a new message"""

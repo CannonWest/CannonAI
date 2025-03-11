@@ -500,7 +500,6 @@ class MainWindow(QMainWindow):
         self.thread_manager.start_worker(thread_id)
         tab.measure_ui_operations()
 
-
     def retry_message(self, tab):
         """Retry the current message with possibly different settings"""
         # Get the conversation
@@ -576,94 +575,177 @@ class MainWindow(QMainWindow):
             # Get the conversation
             conversation = tab.conversation_tree
 
-            # Check if we're in buffered mode
-            if not hasattr(tab, '_chunk_buffer'):
-                # Initialize buffer and counter for this tab
-                tab._chunk_buffer = ""
-                tab._chunk_counter = 0
-                tab._buffer_flush_threshold = 20  # Adjust based on average chunk size
+            # Manage the chunk buffer
+            self._manage_chunk_buffer(tab, chunk)
 
-            # Add to buffer
-            tab._chunk_buffer += chunk
-            tab._chunk_counter += 1
+            # Determine if database update is needed
+            is_first_chunk = conversation.current_node.role != "assistant"
+            should_flush = self._should_flush_buffer(tab, is_first_chunk)
 
-            # Database operations - only perform periodically
-            try:
-                # Determine if we should write to database now
-                is_first_chunk = conversation.current_node.role != "assistant"
-                should_flush = (tab._chunk_counter >= tab._buffer_flush_threshold) or is_first_chunk
+            if should_flush:
+                self._flush_buffer_to_database(tab, conversation, is_first_chunk)
 
-                if should_flush or len(tab._chunk_buffer) > 1000:  # Also flush on large buffer
-                    conn = self.db_manager.get_connection()
-                    cursor = conn.cursor()
+            # Update UI
+            self._update_ui_for_chunk(tab, conversation, chunk, is_first_chunk)
 
-                    try:
-                        if is_first_chunk:
-                            # First chunk - create a new assistant node with the buffer content
-                            new_node = conversation.add_assistant_response(tab._chunk_buffer)
+            # Save conversation if needed
+            self._maybe_save_conversation(tab, conversation, chunk)
 
-                            # Store an empty reasoning_steps list on the node
-                            if not hasattr(new_node, 'reasoning_steps'):
-                                setattr(new_node, 'reasoning_steps', [])
+        except Exception as e:
+            print(f"DEBUG: Error in handle_chunk: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
-                        else:
-                            # Update existing node with accumulated buffer
-                            cursor.execute(
-                                '''
-                                UPDATE messages SET content = content || ? WHERE id = ?
-                                ''',
-                                (tab._chunk_buffer, conversation.current_node.id)
-                            )
+    def _manage_chunk_buffer(self, tab, chunk):
+        """Initialize and update the chunk buffer for a tab"""
+        # Initialize buffer if needed
+        if not hasattr(tab, '_chunk_buffer'):
+            tab._chunk_buffer = ""
+            tab._chunk_counter = 0
+            tab._buffer_flush_threshold = 20  # Adjust based on average chunk size
 
-                            # Also update the in-memory version
-                            conversation.current_node.content += tab._chunk_buffer
+        # Add new chunk to buffer
+        tab._chunk_buffer += chunk
+        tab._chunk_counter += 1
 
-                        # Commit the changes
-                        conn.commit()
+    def _should_flush_buffer(self, tab, is_first_chunk):
+        """Determine if the buffer should be flushed to the database"""
+        # Always flush on first chunk (new assistant message)
+        if is_first_chunk:
+            return True
 
-                        # Reset buffer after successful commit
-                        tab._chunk_buffer = ""
-                        tab._chunk_counter = 0
+        # Flush if we've accumulated enough chunks
+        if tab._chunk_counter >= tab._buffer_flush_threshold:
+            return True
 
-                    except Exception as db_error:
-                        print(f"DEBUG: Database error in handle_chunk: {str(db_error)}")
-                        if conn:
-                            conn.rollback()
-                    finally:
-                        if conn:
-                            conn.close()
+        # Flush if buffer is getting large (to prevent memory issues)
+        if len(tab._chunk_buffer) > 1000:
+            return True
 
-                # UI updates regardless of db operations
-                try:
-                    # For first chunk, do a full UI update
-                    if is_first_chunk:
-                        # Update the whole UI to ensure assistant prefix appears
-                        tab.update_ui()
-                    else:
-                        # Update the streaming display with just this chunk
-                        tab.update_chat_streaming(chunk)
-                except Exception as ui_error:
-                    print(f"DEBUG: UI error in handle_chunk: {str(ui_error)}")
+        # Otherwise, keep buffering
+        return False
 
-                # Only save conversation occasionally or on large buffer flushes
-                if tab._chunk_counter == 0 and len(chunk) > 50:
-                    try:
-                        self.save_conversation(conversation.id)
-                    except Exception as save_error:
-                        print(f"DEBUG: Error saving conversation: {str(save_error)}")
+    def _flush_buffer_to_database(self, tab, conversation, is_first_chunk):
+        """Write accumulated buffer to the database"""
+        conn = None
+        try:
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
 
-            except Exception as inner_error:
-                print(f"DEBUG: Inner error in handle_chunk: {str(inner_error)}")
+            if is_first_chunk:
+                # First chunk - create a new assistant node with the buffer content
+                new_node = conversation.add_assistant_response(tab._chunk_buffer)
 
-        except Exception as outer_error:
-            print(f"DEBUG: Outer error in handle_chunk: {str(outer_error)}")
+                # Store an empty reasoning_steps list on the node
+                if not hasattr(new_node, 'reasoning_steps'):
+                    setattr(new_node, 'reasoning_steps', [])
+            else:
+                # Update existing node with accumulated buffer
+                cursor.execute(
+                    '''
+                    UPDATE messages SET content = content || ? WHERE id = ?
+                    ''',
+                    (tab._chunk_buffer, conversation.current_node.id)
+                )
+
+                # Also update the in-memory version
+                conversation.current_node.content += tab._chunk_buffer
+
+            # Commit the changes
+            conn.commit()
+
+            # Reset buffer after successful commit
+            tab._chunk_buffer = ""
+            tab._chunk_counter = 0
+
+        except Exception as e:
+            print(f"DEBUG: Database error in _flush_buffer_to_database: {str(e)}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+                conn.close()
+
+    def _update_ui_for_chunk(self, tab, conversation, chunk, is_first_chunk):
+        """Update the UI based on the new chunk"""
+        try:
+            if is_first_chunk:
+                # For first chunk, do a full UI update to ensure assistant prefix appears
+                tab.update_ui()
+            else:
+                # For subsequent chunks, just update the streaming display with the chunk
+                tab.update_chat_streaming(chunk)
+        except Exception as e:
+            print(f"DEBUG: UI error in _update_ui_for_chunk: {str(e)}")
+
+    def _maybe_save_conversation(self, tab, conversation, chunk):
+        """Save the conversation if appropriate conditions are met"""
+        try:
+            # Save after a buffer flush with substantial content
+            if tab._chunk_counter == 0 and len(chunk) > 50:
+                self.save_conversation(conversation.id)
+        except Exception as e:
+            print(f"DEBUG: Error saving conversation: {str(e)}")
 
     # Make sure we clean up buffer on completion
     # This would typically be called from message_received signal handle
     def finalize_streaming(self, tab, full_content):
-        """Finalize the streaming process, flushing any remaining buffer"""
+        """Finalize the streaming process, ensuring all content is saved"""
+        conversation = tab.conversation_tree
+
+        # Ensure any remaining buffer is flushed completely
         if hasattr(tab, '_chunk_buffer') and tab._chunk_buffer:
-            # Final database update with any remaining buffered content
+            self._flush_final_content(tab, conversation, full_content)
+        else:
+            # Even if no buffer, ensure the final content is consistent
+            self._ensure_content_consistency(tab, conversation, full_content)
+
+        # Reset streaming state flags
+        self._reset_streaming_state(tab)
+
+        # Mark streaming as complete and trigger deferred UI updates
+        if hasattr(tab, 'complete_streaming_update'):
+            tab.complete_streaming_update()
+
+        # Always save the conversation at the end
+        self.save_conversation(conversation.id)
+
+    def _flush_final_content(self, tab, conversation, full_content):
+        """Flush any remaining buffer and ensure content is complete"""
+        conn = None
+        try:
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
+
+            # Set the exact full content rather than appending
+            cursor.execute(
+                '''
+                UPDATE messages SET content = ? WHERE id = ?
+                ''',
+                (full_content, conversation.current_node.id)
+            )
+            conn.commit()
+
+            # Update in-memory content
+            conversation.current_node.content = full_content
+
+        except Exception as e:
+            print(f"Error in _flush_final_content: {str(e)}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+                conn.close()
+
+            # Clear buffer state regardless of success
+            tab._chunk_buffer = ""
+            tab._chunk_counter = 0
+
+    def _ensure_content_consistency(self, tab, conversation, full_content):
+        """Ensure the node content matches the full content, even without a buffer"""
+        # Only update if content doesn't match
+        if conversation.current_node.content != full_content:
+            conn = None
             try:
                 conn = self.db_manager.get_connection()
                 cursor = conn.cursor()
@@ -672,27 +754,34 @@ class MainWindow(QMainWindow):
                     '''
                     UPDATE messages SET content = ? WHERE id = ?
                     ''',
-                    (full_content, tab.conversation_tree.current_node.id)
+                    (full_content, conversation.current_node.id)
                 )
                 conn.commit()
 
-                # Clean up
-                tab.conversation_tree.current_node.content = full_content
-                tab._chunk_buffer = ""
-                tab._chunk_counter = 0
+                # Update in-memory content
+                conversation.current_node.content = full_content
 
             except Exception as e:
-                print(f"Error in finalize_streaming: {str(e)}")
+                print(f"Error in _ensure_content_consistency: {str(e)}")
+                if conn:
+                    conn.rollback()
             finally:
                 if conn:
                     conn.close()
 
-        # Mark streaming as complete and trigger deferred UI updates
-        if hasattr(tab, 'complete_streaming_update'):
-            tab.complete_streaming_update()
+    def _reset_streaming_state(self, tab):
+        """Reset all streaming-related state variables"""
+        # Clear buffer
+        if hasattr(tab, '_chunk_buffer'):
+            tab._chunk_buffer = ""
+        if hasattr(tab, '_chunk_counter'):
+            tab._chunk_counter = 0
 
-        # Save the conversation
-        self.save_conversation(tab.conversation_tree.id)
+        # Reset streaming flags
+        if hasattr(tab, '_is_streaming'):
+            tab._is_streaming = False
+        if hasattr(tab, '_extracting_reasoning'):
+            tab._extracting_reasoning = False
 
     def handle_usage_info(self, tab, info):
         """Handle token usage information"""
@@ -861,7 +950,6 @@ class MainWindow(QMainWindow):
             "- Model customization\n"
             "- Conversation saving and loading"
         )
-
 
     def _on_worker_finished(self, tab):
         """Handle worker thread completion"""
