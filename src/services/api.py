@@ -55,10 +55,21 @@ class OpenAIThreadManager:
         return False
 
     def cancel_worker(self, thread_id):
-        """Cancel an active worker"""
+        """Cancel an active worker with improved cleanup"""
         if thread_id in self.active_threads:
-            _, worker = self.active_threads[thread_id]
+            thread, worker = self.active_threads[thread_id]
+
+            # Mark worker for cancellation
             worker.cancel()
+
+            # Set a timeout for the thread to finish gracefully
+            if thread.isRunning():
+                if not thread.wait(3000):  # 3 second timeout
+                    self.logger.warning(f"Thread {thread_id} did not finish in time, forcing quit")
+                    thread.terminate()  # Force termination as last resort
+
+            # Clean up references immediately
+            self._cleanup_thread(thread_id)
             return True
         return False
 

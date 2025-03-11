@@ -198,6 +198,7 @@ class MainWindow(QMainWindow):
 
         button.clicked.connect(create_new_tab)
         return button
+
     def show_tab_context_menu(self, position):
         """Show context menu for tabs"""
         # Get the tab index at the position
@@ -464,15 +465,49 @@ class MainWindow(QMainWindow):
         # Update the UI
         tab.update_ui()
 
+        # Start message processing
+        self._start_message_processing(tab, conversation.get_current_messages())
+
+        tab.measure_ui_operations()
+
+    def retry_message(self, tab):
+        """Retry the current message with possibly different settings"""
+        # Get the conversation
+        conversation = tab.conversation_tree
+
+        # If the current node is an assistant message, we need to navigate to its parent (user message)
+        if conversation.current_node.role == "assistant":
+            if not conversation.retry_current_response():
+                return
+            tab.update_ui()  # Update UI to reflect the navigation
+        # Otherwise, verify we're on a user message
+        elif conversation.current_node.role != "user":
+            return  # Can't retry if not on user/assistant message
+
+        # Start message processing - reuse the same logic as send_message
+        self._start_message_processing(tab, conversation.get_current_messages())
+
+    def _start_message_processing(self, tab, messages):
+        """
+        Start processing a message request.
+
+        Args:
+            tab: The tab containing the conversation
+            messages: Messages to send to the API
+        """
         # Clear any existing chain of thought steps
         tab.clear_cot()
 
-        # Store the active tab for later reference
+        # Start loading indicator
+        if hasattr(tab, 'start_loading_indicator'):
+            tab.start_loading_indicator()
+
+        # Mark the tab as processing a message
         tab._processing_message = True
 
         # Create worker and thread using the manager
         thread_id, worker = self.thread_manager.create_worker(
-            conversation.get_current_messages(),
+            messages,
             self.settings
         )
 
@@ -498,46 +533,6 @@ class MainWindow(QMainWindow):
 
         # Start the worker thread
         self.thread_manager.start_worker(thread_id)
-        tab.measure_ui_operations()
-
-    def retry_message(self, tab):
-        """Retry the current message with possibly different settings"""
-        # Get the conversation
-        conversation = tab.conversation_tree
-
-        # Verify the current node is a user message (parent of assistant message)
-        if conversation.current_node.role != "user":
-            return
-
-        # Clear any existing chain of thought steps
-        tab.clear_cot()
-
-        # Start loading indicator
-        if hasattr(tab, 'start_loading_indicator'):
-            tab.start_loading_indicator()
-
-        # Create and start the worker thread to get the response
-        self.worker = OpenAIApiWorker(conversation.get_current_messages(), self.settings)
-
-        # Connect signals
-        if self.settings.get("stream", True):
-            # For streaming mode, only handle chunks
-            self.worker.chunk_received.connect(lambda chunk: self.handle_chunk(tab, chunk))
-            self.worker.message_received.connect(lambda content: None)  # Ignore full message to avoid duplication
-        else:
-            # For non-streaming mode, handle the complete message
-            self.worker.message_received.connect(lambda content: self.handle_assistant_response(tab, content))
-
-        # Connect other signals
-        self.worker.thinking_step.connect(lambda step, content: tab.add_cot_step(step, content))
-        # NEW: Connect the reasoning_steps signal
-        self.worker.reasoning_steps.connect(lambda steps: tab.set_reasoning_steps(steps))
-        self.worker.error_occurred.connect(self.handle_error)
-        self.worker.usage_info.connect(lambda info: self.handle_usage_info(tab, info))
-        self.worker.system_info.connect(lambda info: self.handle_system_info(tab, info))
-
-        # Start the worker
-        self.worker.start()
 
     def handle_assistant_response(self, tab, content):
         """Handle the complete response from the assistant"""

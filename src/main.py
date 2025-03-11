@@ -20,10 +20,15 @@ logger = get_logger(__name__)
 from src.ui import MainWindow
 from dotenv import load_dotenv
 
-# Load environment variables from .env file if it exists
-load_dotenv()
-
-logger.info("Starting OpenAI Chat application")
+try:
+    # Load environment variables from .env file if it exists
+    load_dotenv()
+    if os.environ.get("OPENAI_API_KEY"):
+        logger.info("Loaded API key from environment")
+    else:
+        logger.warning("No API key found in environment")
+except Exception as e:
+    logger.warning(f"Error loading .env file: {e}")
 
 
 def main():

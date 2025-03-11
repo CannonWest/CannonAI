@@ -1113,8 +1113,6 @@ class ConversationBranchTab(QWidget):
 
     def _extract_reasoning_steps(self, content):
         """Extract reasoning steps from message content with improved pattern detection"""
-        import re
-
         # If content is None or empty, return empty list
         if not content:
             print("Empty content for reasoning extraction")
@@ -1125,50 +1123,58 @@ class ConversationBranchTab(QWidget):
             print("Skipping reasoning extraction during streaming")
             return []
 
-        # Set extraction flag
+        # Set extraction flag to prevent recursion
         self._extracting_reasoning = True
 
         try:
-            # Debug: Print the first 100 chars of content to see what we're working with
+            # Debug: Print short preview of content
             print(f"Extracting reasoning from content starting with: {content[:min(100, len(content))]}")
 
-            # For some models, the reasoning structure uses markdown headers
-            # This is a special case for o1/o3 models
-            if "**Step" in content or "## Step" in content:
-                print("Found markdown-style reasoning structure")
-
-            # Patterns to identify reasoning steps (enhanced for more patterns)
-            patterns = [
-                # Classic step patterns
-                (r"Step (\d+):(.*?)(?=Step \d+:|$)", "Step {}"),
-                (r"Step (\d+)\.(.*?)(?=Step \d+\.|$)", "Step {}"),
-                (r"Step (\d+)(.*?)(?=Step \d+|$)", "Step {}"),
-                (r"(\d+)\. (.*?)(?=\d+\. |$)", "Step {}"),
-
-                # Common reasoning frameworks
-                (r"Let's think step by step:(.*?)(?=Therefore|So the answer|In conclusion|$)", "Reasoning"),
-                (r"I'll solve this step by step:(.*?)(?=Therefore|So the answer|In conclusion|$)", "Problem Solving"),
-                (r"Let me think through this:(.*?)(?=Therefore|So the answer|In conclusion|$)", "Analysis"),
-
-                # For o1-mini specific patterns (based on your example)
-                (r"Puzzle:(.*?)Solution:(.*?)(?=$)", "Puzzle & Solution"),
-                (r"\*\*Solution:\*\*(.*?)(?=$)", "Solution"),
-                (r"\*\*Puzzle:\*\*(.*?)\*\*Solution:\*\*(.*?)(?=$)", "Puzzle & Solution"),
-
-                # Sequential reasoning patterns
-                (r"First,(.*?)(?=Second,|Next,|Then,|Finally,|Therefore|$)", "Step 1"),
-                (r"Second,(.*?)(?=Third,|Next,|Then,|Finally,|Therefore|$)", "Step 2"),
-                (r"Third,(.*?)(?=Fourth,|Next,|Then,|Finally,|Therefore|$)", "Step 3"),
-
-                # Numbered or bulleted lists that might be reasoning
-                (r"\d+\)(.*?)(?=\d+\)|$)", "Point {}"),
-                (r"•(.*?)(?=•|$)", "Point")
-            ]
-
+            # Collect steps from different extraction methods
             steps = []
 
-            # First, check if the content contains explicit section markers
-            solution_match = re.search(r'\*\*Solution:\*\*(.*?)(?=$|Alternatively|Therefore|In conclusion)', content, re.DOTALL)
+            # Try each extraction method in order of specificity
+            steps.extend(self._extract_explicit_solution(content))
+
+            if not steps:
+                steps.extend(self._extract_numbered_steps(content))
+
+            if not steps:
+                steps.extend(self._extract_pattern_based_steps(content))
+
+            if not steps and "**" in content:
+                steps.extend(self._extract_bold_sections(content))
+
+            # Log results
+            if steps:
+                print(f"Total reasoning steps found: {len(steps)}")
+            else:
+                print("No reasoning steps detected in content")
+
+            return steps
+        except Exception as e:
+            print(f"Error in _extract_reasoning_steps: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return []
+        finally:
+            # Always clear the recursion prevention flag
+            self._extracting_reasoning = False
+
+    def _extract_explicit_solution(self, content):
+        """Extract explicitly marked solution sections"""
+        import re
+        steps = []
+
+        # Search for solution markers
+        solution_patterns = [
+            r'\*\*Solution:\*\*(.*?)(?=$|Alternatively|Therefore|In conclusion)',
+            r'## Solution(.*?)(?=##|$)',
+            r'Solution:(.*?)(?=Alternatively|Therefore|In conclusion|$)'
+        ]
+
+        for pattern in solution_patterns:
+            solution_match = re.search(pattern, content, re.DOTALL)
             if solution_match:
                 solution_content = solution_match.group(1).strip()
                 steps.append({
@@ -1177,68 +1183,136 @@ class ConversationBranchTab(QWidget):
                     "match": solution_match.group(0)
                 })
                 print(f"Found explicit solution section: {solution_content[:50]}...")
+                break  # Found one match, no need to continue
 
-            # Try to extract numbered steps within the content
-            number_steps = re.finditer(r'\d+\.\s+\*\*([^*]+)\*\*:(.*?)(?=\d+\.\s+\*\*|$)', content, re.DOTALL)
-            step_found = False
-            for i, match in enumerate(number_steps):
-                step_found = True
-                step_name = match.group(1).strip() if match.group(1) else f"Step {i + 1}"
-                step_content = match.group(2).strip()
-                steps.append({
-                    "name": step_name,
-                    "content": step_content,
-                    "match": match.group(0)
-                })
-                print(f"Found numbered step: {step_name} - {step_content[:50]}...")
+        return steps
 
-            # If we didn't find any explicit steps yet, try the pattern matching approach
-            if not steps:
-                for pattern, name_template in patterns:
-                    matches = re.finditer(pattern, content, re.DOTALL)
-                    for i, match in enumerate(matches):
-                        if len(match.groups()) > 1:
-                            step_num = match.group(1)
-                            step_content = match.group(2).strip()
-                            step_name = name_template.format(step_num)
-                        else:
-                            step_content = match.group(1).strip()
-                            step_name = name_template.format(i + 1)
+    def _extract_numbered_steps(self, content):
+        """Extract clearly numbered steps with formatting"""
+        import re
+        steps = []
 
-                        if step_content:
-                            steps.append({
-                                "name": step_name,
-                                "content": step_content,
-                                "match": match.group(0)
-                            })
-                            print(f"Found pattern match: {step_name} - {step_content[:50]}...")
+        # Pattern for numbered steps with bold headers like "1. **First Step**:"
+        number_steps = re.finditer(r'\d+\.\s+\*\*([^*]+)\*\*:(.*?)(?=\d+\.\s+\*\*|$)', content, re.DOTALL)
 
-            # Last resort: if the content has reasoning tokens but we found no steps,
-            # try to analyze the overall structure
-            if not steps and "**" in content:
-                # Look for bold text sections which might indicate steps
-                bold_sections = re.finditer(r'\*\*([^*]+)\*\*:(.*?)(?=\*\*|$)', content, re.DOTALL)
-                for i, match in enumerate(bold_sections):
-                    section_name = match.group(1).strip()
-                    section_content = match.group(2).strip()
+        for i, match in enumerate(number_steps):
+            step_name = match.group(1).strip() if match.group(1) else f"Step {i + 1}"
+            step_content = match.group(2).strip()
+            steps.append({
+                "name": step_name,
+                "content": step_content,
+                "match": match.group(0)
+            })
+            print(f"Found numbered step: {step_name} - {step_content[:50]}...")
+
+        # Another common pattern for markdown headers
+        header_steps = re.finditer(r'## Step (\d+):?\s*([^#]+?)(?=## Step \d+|$)', content, re.DOTALL)
+
+        for match in header_steps:
+            step_num = match.group(1)
+            step_content = match.group(2).strip()
+            steps.append({
+                "name": f"Step {step_num}",
+                "content": step_content,
+                "match": match.group(0)
+            })
+            print(f"Found header step: Step {step_num} - {step_content[:50]}...")
+
+        return steps
+
+    def _extract_pattern_based_steps(self, content):
+        """Use regex patterns to identify different reasoning step formats"""
+        import re
+        steps = []
+
+        # Define regex patterns with named templates
+        patterns = [
+            # Classic step patterns
+            (r"Step (\d+):(.*?)(?=Step \d+:|$)", "Step {}"),
+            (r"Step (\d+)\.(.*?)(?=Step \d+\.|$)", "Step {}"),
+            (r"Step (\d+)(.*?)(?=Step \d+|$)", "Step {}"),
+            (r"(\d+)\. (.*?)(?=\d+\. |$)", "Step {}"),
+
+            # Common reasoning frameworks
+            (r"Let's think step by step:(.*?)(?=Therefore|So the answer|In conclusion|$)", "Reasoning"),
+            (r"I'll solve this step by step:(.*?)(?=Therefore|So the answer|In conclusion|$)", "Problem Solving"),
+            (r"Let me think through this:(.*?)(?=Therefore|So the answer|In conclusion|$)", "Analysis"),
+
+            # Specific model patterns
+            (r"Puzzle:(.*?)Solution:(.*?)(?=$)", "Puzzle & Solution"),
+            (r"\*\*Puzzle:\*\*(.*?)\*\*Solution:\*\*(.*?)(?=$)", "Puzzle & Solution"),
+
+            # Sequential reasoning patterns
+            (r"First,(.*?)(?=Second,|Next,|Then,|Finally,|Therefore|$)", "Step 1"),
+            (r"Second,(.*?)(?=Third,|Next,|Then,|Finally,|Therefore|$)", "Step 2"),
+            (r"Third,(.*?)(?=Fourth,|Next,|Then,|Finally,|Therefore|$)", "Step 3"),
+
+            # Numbered or bulleted lists
+            (r"\d+\)(.*?)(?=\d+\)|$)", "Point {}"),
+            (r"•(.*?)(?=•|$)", "Point")
+        ]
+
+        # Try each pattern
+        for pattern, name_template in patterns:
+            matches = re.finditer(pattern, content, re.DOTALL)
+            for i, match in enumerate(matches):
+                # Extract step name and content based on pattern structure
+                if len(match.groups()) > 1:
+                    step_num = match.group(1)
+                    step_content = match.group(2).strip()
+                    step_name = name_template.format(step_num)
+                else:
+                    step_content = match.group(1).strip()
+                    step_name = name_template.format(i + 1)
+
+                # Only add if we have meaningful content
+                if step_content and len(step_content) > 5:  # Minimum length check
                     steps.append({
-                        "name": section_name,
-                        "content": section_content,
+                        "name": step_name,
+                        "content": step_content,
                         "match": match.group(0)
                     })
-                    print(f"Found bold section: {section_name} - {section_content[:50]}...")
+                    print(f"Found pattern match: {step_name} - {step_content[:50]}...")
 
-            if steps:
-                print(f"Total reasoning steps found: {len(steps)}")
+        return steps
+
+    def _extract_bold_sections(self, content):
+        """Extract sections marked with bold formatting"""
+        import re
+        steps = []
+
+        # Find sections with bold headers
+        bold_sections = re.finditer(r'\*\*([^*:]+)(?::|)\*\*(.*?)(?=\*\*|$)', content, re.DOTALL)
+
+        for i, match in enumerate(bold_sections):
+            section_name = match.group(1).strip()
+
+            # Skip certain non-reasoning headers
+            if section_name.lower() in ['note', 'important', 'warning', 'attention', 'summary']:
+                continue
+
+            # Get the content, handling cases with or without colons
+            if match.group(2):
+                section_content = match.group(2).strip()
             else:
-                print("No reasoning steps detected in content")
+                # If we can't find content, look ahead for the next paragraph
+                next_para = re.search(r'\*\*' + re.escape(section_name) + r'\*\*\s*\n(.*?)(?=\n\s*\n|\*\*|$)',
+                                      content, re.DOTALL)
+                if next_para:
+                    section_content = next_para.group(1).strip()
+                else:
+                    section_content = ""
 
-            # Clear the recursion prevention flag
-            self._extracting_reasoning = False
-            return steps
+            # Only add if we have meaningful content
+            if section_content and len(section_content) > 10:
+                steps.append({
+                    "name": section_name,
+                    "content": section_content,
+                    "match": match.group(0)
+                })
+                print(f"Found bold section: {section_name} - {section_content[:50]}...")
 
-        except Exception as e:
-            print(f"Error in set_reasoning_steps: {str(e)}")
+        return steps
 
     def _remove_reasoning_steps(self, content, steps):
         """Remove reasoning steps from content for cleaner display"""
