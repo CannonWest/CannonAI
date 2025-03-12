@@ -184,16 +184,37 @@ class OpenAIAPIWorker(QObject):
 
         # Add response format if specified (now under 'text' parameter)
         if "text" in self.settings and "format" in self.settings["text"]:
+            format_type = self.settings["text"]["format"]["type"]
             params["text"] = self.settings["text"]
         elif "response_format" in self.settings:
             format_type = self.settings.get("response_format", {}).get("type", "text")
             params["text"] = {"format": {"type": format_type}}
+        else:
+            format_type = "text"
+            params["text"] = {"format": {"type": format_type}}
 
-        # Add max_output_tokens parameter
+        # For json_object format, ensure input contains the word "json"
+        if format_type == "json_object":
+            input_content = prepared_input.lower() if prepared_input else ""
+            has_json_keyword = "json" in input_content
+
+            if not has_json_keyword:
+                # Add JSON hint to the input or instructions
+                if "instructions" in params:
+                    params["instructions"] += " Please provide the response in JSON format."
+                else:
+                    # Create instructions if they don't exist
+                    system_message = next((msg for msg in self.messages if msg["role"] == "system"), None)
+                    if system_message:
+                        params["instructions"] = system_message["content"] + " Please provide the response in JSON format."
+                    else:
+                        params["instructions"] = "Please provide the response in JSON format."
+
+        # Add max_completion_tokens parameter (new API naming convention)
         if "max_completion_tokens" in self.settings:
-            params["max_output_tokens"] = self.settings.get("max_completion_tokens")
+            params["max_completion_tokens"] = self.settings.get("max_completion_tokens")
         elif "max_tokens" in self.settings:
-            params["max_output_tokens"] = self.settings.get("max_tokens")
+            params["max_completion_tokens"] = self.settings.get("max_tokens")
 
         # Add reasoning configuration for o1/o3 models
         is_reasoning_model = model in REASONING_MODELS
@@ -354,16 +375,19 @@ class OpenAIAPIWorker(QObject):
                                 self.completion_id.emit(chunk.id)
 
                             # Emit usage info if available in the final chunk
-                            if hasattr(chunk, 'usage'):
-                                usage_data = self._normalize_token_usage(
-                                    {
-                                        "prompt_tokens": chunk.usage.prompt_tokens,
-                                        "completion_tokens": chunk.usage.completion_tokens,
-                                        "total_tokens": chunk.usage.total_tokens
-                                    },
-                                    "chat_completions"
-                                )
-                                self.usage_info.emit(usage_data)
+                            if hasattr(chunk, 'usage') and chunk.usage is not None:
+                                try:
+                                    usage_data = self._normalize_token_usage(
+                                        {
+                                            "prompt_tokens": getattr(chunk.usage, 'prompt_tokens', 0),
+                                            "completion_tokens": getattr(chunk.usage, 'completion_tokens', 0),
+                                            "total_tokens": getattr(chunk.usage, 'total_tokens', 0)
+                                        },
+                                        "chat_completions"
+                                    )
+                                    self.usage_info.emit(usage_data)
+                                except Exception as e:
+                                    self.logger.warning(f"Error processing usage data: {str(e)}")
 
                             # Emit model info
                             model_info = {"model": getattr(chunk, "model", "unknown")}
@@ -436,16 +460,23 @@ class OpenAIAPIWorker(QObject):
                     self.completion_id.emit(response.id)
 
                 # Emit usage information
-                if hasattr(response, 'usage'):
-                    usage_data = self._normalize_token_usage(
-                        {
-                            "prompt_tokens": response.usage.prompt_tokens,
-                            "completion_tokens": response.usage.completion_tokens,
-                            "total_tokens": response.usage.total_tokens
-                        },
-                        "chat_completions"
-                    )
-                    self.usage_info.emit(usage_data)
+                if hasattr(response, "usage"):
+                    try:
+                        # Create usage data dictionary with safe attribute access
+                        usage_data_dict = {
+                            "input_tokens": getattr(response.usage, "input_tokens", 0),
+                            "output_tokens": getattr(response.usage, "output_tokens", 0),
+                            "total_tokens": getattr(response.usage, "total_tokens", 0)
+                        }
+
+                        # Handle output_tokens_details safely
+                        if hasattr(response.usage, "output_tokens_details"):
+                            usage_data_dict["output_tokens_details"] = response.usage.output_tokens_details
+
+                        usage_data = self._normalize_token_usage(usage_data_dict, "responses")
+                        self.usage_info.emit(usage_data)
+                    except Exception as e:
+                        self.logger.error(f"Error processing usage data: {str(e)}")
 
                 # Emit system information
                 model_info = {"model": response.model}
@@ -529,14 +560,16 @@ class OpenAIAPIWorker(QObject):
             # Include reasoning tokens if available
             if "output_tokens_details" in usage and usage["output_tokens_details"]:
                 details = usage["output_tokens_details"]
-                normalized["completion_tokens_details"] = {
-                    "reasoning_tokens": details.get("reasoning_tokens", 0)
-                }
-        else:
-            normalized["prompt_tokens"] = usage.get("prompt_tokens", 0)
-            normalized["completion_tokens"] = usage.get("completion_tokens", 0)
-            normalized["total_tokens"] = usage.get("total_tokens", 0)
-
+                # Handle both dictionary and object types
+                if isinstance(details, dict):
+                    normalized["completion_tokens_details"] = {
+                        "reasoning_tokens": details.get("reasoning_tokens", 0)
+                    }
+                else:
+                    # Handle OutputTokensDetails as an object with attributes
+                    normalized["completion_tokens_details"] = {
+                        "reasoning_tokens": getattr(details, "reasoning_tokens", 0)
+                    }
         return normalized
 
     #########END BLOCK ADD###########
