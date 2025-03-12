@@ -167,7 +167,6 @@ class OpenAIAPIWorker(QObject):
             # Signal completion
             self.worker_finished.emit()
 
-    #########NEW CODE###########
     def _prepare_response_api_params(self, model):
         """Prepare parameters for the Response API"""
         # Log the settings for debugging
@@ -309,8 +308,6 @@ class OpenAIAPIWorker(QObject):
         self.logger.debug(f"Final Chat Completions API parameters: {params}")
 
         return params
-
-    #########END BLOCK ADD###########
 
     def _handle_streaming_response(self, stream, api_type="responses"):
         """Handle streaming response from either API"""
@@ -539,8 +536,6 @@ class OpenAIAPIWorker(QObject):
         self._is_cancelled = True
         self.logger.info("Worker marked for cancellation")
 
-    #########NEW CODE###########
-    #########NEW CODE###########
     def _handle_completed_event(self, event):
         """Handle completion event for Response API streaming"""
         # Emit usage information if available
@@ -581,9 +576,6 @@ class OpenAIAPIWorker(QObject):
                 }
                 self.system_info.emit(model_info)
 
-    #########END BLOCK ADD##########
-    #########END BLOCK ADD###########
-    #########NEW CODE###########
     def _normalize_token_usage(self, usage, api_type="responses"):
         """Normalize token usage data to a consistent format regardless of API type"""
         normalized = {}
@@ -607,8 +599,6 @@ class OpenAIAPIWorker(QObject):
                         "reasoning_tokens": getattr(details, "reasoning_tokens", 0)
                     }
         return normalized
-
-    #########END BLOCK ADD###########
 
     def prepare_input(self, messages, api_type="responses"):
         """
@@ -684,61 +674,3 @@ class OpenAIAPIWorker(QObject):
                 prepared_messages.append(prepared_message)
 
             return prepared_messages
-
-
-
-    def _get_file_extension(self, filename):
-        """Extract extension from filename for syntax highlighting"""
-        try:
-            ext = filename.split('.')[-1].lower()
-            # Map common extensions to language names for syntax highlighting
-            extension_map = {
-                'py': 'python',
-                'js': 'javascript',
-                'ts': 'typescript',
-                'html': 'html',
-                'css': 'css',
-                'java': 'java',
-                'c': 'c',
-                'cpp': 'cpp',
-                'h': 'cpp',
-                'json': 'json',
-                'md': 'markdown',
-                'txt': '',  # No specific highlighting
-                'csv': '',
-                'sh': 'bash',
-                'sql': 'sql',
-                'xml': 'xml',
-                'yml': 'yaml',
-                'yaml': 'yaml'
-            }
-            return extension_map.get(ext, '')
-        except IndexError:
-            return ''  # If no extension is found
-
-    def _extract_step_name(self, content: str) -> str:
-        """Extract a step name from content if possible"""
-        content_strip = content.strip()
-        if content_strip.startswith("Step "):
-            try:
-                return content_strip.split('\n')[0].strip()
-            except:
-                pass
-        return "Reasoning"
-
-    def _is_reasoning_step(self, content: str) -> bool:
-        """
-        Detect if a chunk appears to be a reasoning step
-        Enhanced to handle more reasoning patterns
-        """
-        content_strip = content.strip()
-        return (
-                content_strip.startswith("Step ") or
-                content_strip.startswith("Let's think") or
-                content_strip.startswith("I'll solve") or
-                content_strip.startswith("Let me think") or
-                content_strip.startswith("First, I") or
-                content_strip.startswith("**Solution:") or
-                content_strip.startswith("**Step") or
-                content_strip.startswith("**Puzzle:")
-        )

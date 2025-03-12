@@ -907,13 +907,24 @@ class MainWindow(QMainWindow):
                 conn.close()
 
     def handle_error(self, error_message):
-        """Handle API errors"""
+        """Handle API errors with more context"""
         # Get the current tab to stop its loading indicator
         tab = self.tabs.currentWidget()
         if tab and hasattr(tab, 'stop_loading_indicator'):
             tab.stop_loading_indicator()
 
-        QMessageBox.critical(self, "API Error", f"Error communicating with OpenAI: {error_message}")
+        # Add error recovery options
+        error_box = QMessageBox(self)
+        error_box.setIcon(QMessageBox.Critical)
+        error_box.setText("API Error")
+        error_box.setInformativeText(f"Error communicating with OpenAI: {error_message}")
+        error_box.setDetailedText(f"Full error: {error_message}\nModel: {tab.model_label.text() if tab else 'Unknown'}")
+        retry_button = error_box.addButton("Retry", QMessageBox.AcceptRole)
+        error_box.addButton("Dismiss", QMessageBox.RejectRole)
+        error_box.exec()
+
+        if error_box.clickedButton() == retry_button:
+            self.retry_message(tab)
 
     def on_branch_changed(self, tab):
         """Handle branch navigation events"""

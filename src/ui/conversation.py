@@ -519,34 +519,6 @@ class ConversationBranchTab(QWidget):
         html_parts.append('</ul>')
         return "".join(html_parts)
 
-    def measure_ui_operations(self):
-        """Measure time taken for various UI operations"""
-        import time
-
-        print("Starting UI performance measurements...")
-
-        # Measure branch nav update
-        start = time.time()
-        current_branch = self.conversation_tree.get_current_branch()
-        self.branch_nav.update_branch(current_branch)
-        nav_time = time.time() - start
-
-        # Measure graph view update
-        start = time.time()
-        self.graph_view.update_tree(self.conversation_tree)
-        graph_time = time.time() - start
-
-        # Measure chat display update
-        start = time.time()
-        self.update_chat_display()
-        chat_time = time.time() - start
-
-        print(f"UI Operation Times:")
-        print(f"- Branch Navigation: {nav_time:.4f} seconds")
-        print(f"- Graph View: {graph_time:.4f} seconds")
-        print(f"- Chat Display: {chat_time:.4f} seconds")
-        print(f"- Total: {nav_time + graph_time + chat_time:.4f} seconds")
-
     def update_chat_streaming(self, chunk):
         """Update the chat display during streaming for efficiency"""
         try:
@@ -1050,31 +1022,6 @@ class ConversationBranchTab(QWidget):
         """Clear all attachments"""
         self.current_attachments = []
         self.update_attachments_ui()
-
-    def debug_streaming_test(self, chunk):
-        """Test method to debug streaming issues"""
-        # Get current text
-        current_text = self.chat_display.toPlainText()
-
-        # Find the last assistant message
-        last_assistant_idx = current_text.rfind("🤖 Assistant")
-
-        if last_assistant_idx >= 0:
-            # Replace everything after the assistant prefix with updated content
-            prefix_text = current_text[:last_assistant_idx + len("🤖 Assistant (gpt-4o-mini-2024-07-18): ")]
-            assistant_content = self.conversation_tree.current_node.content
-
-            # Set the complete text
-            self.chat_display.setPlainText(prefix_text + assistant_content)
-
-            # Move cursor to end
-            cursor = self.chat_display.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            self.chat_display.setTextCursor(cursor)
-
-        # Process events to update UI
-        from PyQt6.QtCore import QCoreApplication
-        QCoreApplication.processEvents()
 
     def format_size(self, size_bytes):
         """Format file size in a human-readable way."""
