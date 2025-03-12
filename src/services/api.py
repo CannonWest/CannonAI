@@ -183,7 +183,9 @@ class OpenAIAPIWorker(QObject):
         }
 
         # Add response format if specified (now under 'text' parameter)
-        if "response_format" in self.settings:
+        if "text" in self.settings and "format" in self.settings["text"]:
+            params["text"] = self.settings["text"]
+        elif "response_format" in self.settings:
             format_type = self.settings.get("response_format", {}).get("type", "text")
             params["text"] = {"format": {"type": format_type}}
 
@@ -195,8 +197,9 @@ class OpenAIAPIWorker(QObject):
 
         # Add reasoning configuration for o1/o3 models
         is_reasoning_model = model in REASONING_MODELS
-        if is_reasoning_model:
-            self.logger.info(f"Using reasoning model: {model}")
+        if is_reasoning_model and "reasoning" in self.settings:
+            params["reasoning"] = self.settings["reasoning"]
+        elif is_reasoning_model:
             reasoning_effort = self.settings.get("reasoning_effort", "medium")
             params["reasoning"] = {"effort": reasoning_effort}
 
@@ -250,7 +253,7 @@ class OpenAIAPIWorker(QObject):
 
         return params
 
-    #########END BLOCK ADD##########
+    #########END BLOCK ADD###########
 
     def _handle_streaming_response(self, stream, api_type="responses"):
         """Handle streaming response from either API"""
@@ -470,6 +473,7 @@ class OpenAIAPIWorker(QObject):
         self.logger.info("Worker marked for cancellation")
 
     #########NEW CODE###########
+    #########NEW CODE###########
     def _handle_completed_event(self, event):
         """Handle completion event for Response API streaming"""
         # Emit usage information if available
@@ -510,6 +514,7 @@ class OpenAIAPIWorker(QObject):
                 }
                 self.system_info.emit(model_info)
 
+    #########END BLOCK ADD##########
     #########END BLOCK ADD###########
     #########NEW CODE###########
     def _normalize_token_usage(self, usage, api_type="responses"):
@@ -610,6 +615,8 @@ class OpenAIAPIWorker(QObject):
                 prepared_messages.append(prepared_message)
 
             return prepared_messages
+
+
 
     def _get_file_extension(self, filename):
         """Extract extension from filename for syntax highlighting"""

@@ -485,6 +485,7 @@ class SettingsDialog(QDialog):
         self.api_key_input.setText(current_settings.get("api_key", ""))
         adv_layout.addRow("API Key:", self.api_key_input)
 
+        self.api_base_input = QLineEdit()
         self.api_base_input.setText(current_settings.get("api_base", ""))
         adv_layout.addRow("API Base URL:", self.api_base_input)
 
@@ -665,7 +666,7 @@ class SettingsDialog(QDialog):
             "service_tier": self.service_tier_combo.currentText(),
             "metadata": metadata,
             "api_key": self.api_key_input.text(),
-            "api_base": self.api_base_input,
+            "api_base": self.api_base_input.text(),
             "api_type": self.api_type_combo.currentText()
         }
 
