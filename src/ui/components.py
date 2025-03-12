@@ -654,21 +654,30 @@ class SettingsDialog(QDialog):
                 metadata[key] = value
 
         # Build settings dict with conditional parameters
+        token_value = self.max_tokens.value()
         settings = {
             "model": model_id,
             "temperature": self.temperature.value(),
-            "max_output_tokens": self.max_tokens.value(),
             "top_p": self.top_p.value(),
             "text": text_format,
             "stream": self.stream_checkbox.isChecked(),
             "store": self.store_checkbox.isChecked(),
-            "seed": seed_value,
             "service_tier": self.service_tier_combo.currentText(),
             "metadata": metadata,
             "api_key": self.api_key_input.text(),
             "api_base": self.api_base_input.text(),
             "api_type": self.api_type_combo.currentText()
         }
+
+        # Set seed value properly
+        if seed_value is not None:
+            settings["seed"] = seed_value
+
+        # Add token count parameters for different APIs
+        # This ensures compatibility with both API types
+        settings["max_tokens"] = token_value
+        settings["max_output_tokens"] = token_value
+        settings["max_completion_tokens"] = token_value
 
         # Add reasoning effort for appropriate models
         if model_id in REASONING_MODELS:

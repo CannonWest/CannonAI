@@ -170,28 +170,44 @@ class OpenAIAPIWorker(QObject):
     #########NEW CODE###########
     def _prepare_response_api_params(self, model):
         """Prepare parameters for the Response API"""
+        # Log the settings for debugging
+        self.logger.debug(f"Settings for prepare_response_api_params: {self.settings}")
+
         # Process messages for the Response API format
         prepared_input = self.prepare_input(self.messages, "responses")
 
-        # Extract model parameters from settings for Response API
+        # Extract model parameters from settings for Response API with safe defaults
         params = {
             "model": model,
             "input": prepared_input,
-            "temperature": self.settings.get("temperature"),
-            "top_p": self.settings.get("top_p"),
+            "temperature": self.settings.get("temperature", 0.7),
+            "top_p": self.settings.get("top_p", 1.0),
             "stream": self.settings.get("stream", True),
         }
 
-        # Add response format if specified (now under 'text' parameter)
-        if "text" in self.settings and "format" in self.settings["text"]:
-            format_type = self.settings["text"]["format"]["type"]
-            params["text"] = self.settings["text"]
-        elif "response_format" in self.settings:
-            format_type = self.settings.get("response_format", {}).get("type", "text")
+        # Add response format with safer dictionary access
+        format_type = "text"  # default format type
+
+        if self.settings.get("text") is not None:
+            # Handle text format settings safely
+            text_setting = self.settings.get("text", {})
+            if isinstance(text_setting, dict) and "format" in text_setting:
+                format_dict = text_setting.get("format", {})
+                if isinstance(format_dict, dict):
+                    format_type = format_dict.get("type", "text")
+                params["text"] = text_setting
+            else:
+                # Default text format if structure is invalid
+                params["text"] = {"format": {"type": "text"}}
+        elif self.settings.get("response_format") is not None:
+            # Handle response_format safely
+            response_format = self.settings.get("response_format", {})
+            if isinstance(response_format, dict):
+                format_type = response_format.get("type", "text")
             params["text"] = {"format": {"type": format_type}}
         else:
-            format_type = "text"
-            params["text"] = {"format": {"type": format_type}}
+            # Default if no format specified
+            params["text"] = {"format": {"type": "text"}}
 
         # For json_object format, ensure input contains the word "json"
         if format_type == "json_object":
@@ -204,73 +220,93 @@ class OpenAIAPIWorker(QObject):
                     params["instructions"] += " Please provide the response in JSON format."
                 else:
                     # Create instructions if they don't exist
-                    system_message = next((msg for msg in self.messages if msg["role"] == "system"), None)
-                    if system_message:
+                    system_message = None
+                    try:
+                        system_message = next((msg for msg in self.messages if msg.get("role") == "system"), None)
+                    except (StopIteration, AttributeError, TypeError):
+                        pass
+
+                    if system_message and isinstance(system_message, dict) and "content" in system_message:
                         params["instructions"] = system_message["content"] + " Please provide the response in JSON format."
                     else:
                         params["instructions"] = "Please provide the response in JSON format."
 
-        # Add max_completion_tokens parameter (new API naming convention)
-        if "max_completion_tokens" in self.settings:
-            params["max_completion_tokens"] = self.settings.get("max_completion_tokens")
-        elif "max_tokens" in self.settings:
-            params["max_completion_tokens"] = self.settings.get("max_tokens")
+        # For Responses API, the parameter name should be max_output_tokens
+        # Get the token limit from settings (try all possible names)
+        # NOTE: OpenAI API parameter naming is inconsistent across models and endpoints:
+        # - Responses API always uses "max_output_tokens"
+        # - Chat Completions API uses:
+        #   - "max_tokens" for most models (GPT-3.5, GPT-4, etc.)
+        #   - "max_completion_tokens" for o1 and o3 models
+        # This inconsistency requires specific handling based on model and API type.
+        token_limit = None
+        for param_name in ["max_output_tokens", "max_completion_tokens", "max_tokens"]:
+            if param_name in self.settings and self.settings.get(param_name) is not None:
+                token_limit = self.settings.get(param_name)
+                break
 
-        # Add reasoning configuration for o1/o3 models
-        is_reasoning_model = model in REASONING_MODELS
-        if is_reasoning_model and "reasoning" in self.settings:
-            params["reasoning"] = self.settings["reasoning"]
-        elif is_reasoning_model:
-            reasoning_effort = self.settings.get("reasoning_effort", "medium")
-            params["reasoning"] = {"effort": reasoning_effort}
+        # Set the parameter with the correct name for Responses API
+        if token_limit is not None:
+            params["max_output_tokens"] = token_limit
 
-        # Add seed if specified
-        if self.settings.get("seed") is not None:
-            params["seed"] = self.settings.get("seed")
-
-        # Add store parameter if specified
-        if "store" in self.settings:
-            params["store"] = self.settings.get("store")
-
-            # Add metadata if present and store is enabled
-            if self.settings.get("metadata") and len(self.settings.get("metadata")) > 0:
-                params["metadata"] = self.settings.get("metadata")
-
-        # Add system instructions if available (from system message)
-        system_message = next((msg for msg in self.messages if msg["role"] == "system"), None)
-        if system_message:
-            params["instructions"] = system_message["content"]
+        # Log the final parameters
+        self.logger.debug(f"Final Responses API parameters: {params}")
 
         return params
 
     def _prepare_chat_completions_params(self, model):
         """Prepare parameters for the Chat Completions API"""
+        # Log the settings for debugging
+        self.logger.debug(f"Settings for prepare_chat_completions_params: {self.settings}")
+
         # Process messages for the Chat API format
         prepared_messages = self.prepare_input(self.messages, "chat_completions")
 
-        # Extract model parameters from settings for Chat API
+        # Extract model parameters from settings for Chat API with safe defaults
         params = {
             "model": model,
             "messages": prepared_messages,
-            "temperature": self.settings.get("temperature"),
-            "top_p": self.settings.get("top_p"),
+            "temperature": self.settings.get("temperature", 0.7),
+            "top_p": self.settings.get("top_p", 1.0),
             "stream": self.settings.get("stream", True),
         }
 
         # Add response format if specified
-        if "response_format" in self.settings:
-            format_type = self.settings.get("response_format", {}).get("type", "text")
-            params["response_format"] = {"type": format_type}
+        if "response_format" in self.settings and self.settings.get("response_format") is not None:
+            response_format = self.settings.get("response_format", {})
+            if isinstance(response_format, dict):
+                format_type = response_format.get("type", "text")
+                params["response_format"] = {"type": format_type}
 
-        # Add max_tokens parameter
-        if "max_completion_tokens" in self.settings:
-            params["max_tokens"] = self.settings.get("max_completion_tokens")
-        elif "max_tokens" in self.settings:
-            params["max_tokens"] = self.settings.get("max_tokens")
+        # Get the token limit from settings (try all possible names)
+        token_limit = None
+        for param_name in ["max_tokens", "max_completion_tokens", "max_output_tokens"]:
+            if param_name in self.settings and self.settings.get(param_name) is not None:
+                token_limit = self.settings.get(param_name)
+                break
+
+        if token_limit is not None:
+            # For o1/o3 models, use max_completion_tokens instead of max_tokens
+            # NOTE: OpenAI API parameter naming is inconsistent across models and endpoints:
+            # - Responses API always uses "max_output_tokens"
+            # - Chat Completions API uses:
+            #   - "max_tokens" for most models (GPT-3.5, GPT-4, etc.)
+            #   - "max_completion_tokens" for o1 and o3 models
+            # This inconsistency requires specific handling based on model and API type.
+            if "o1" in model or "o3" in model:
+                self.logger.info(f"Using max_completion_tokens for model {model}")
+                params["max_completion_tokens"] = token_limit
+            else:
+                # For other models, use max_tokens
+                self.logger.info(f"Using max_tokens for model {model}")
+                params["max_tokens"] = token_limit
 
         # Add seed if specified
         if self.settings.get("seed") is not None:
             params["seed"] = self.settings.get("seed")
+
+        # Log the final parameters
+        self.logger.debug(f"Final Chat Completions API parameters: {params}")
 
         return params
 
