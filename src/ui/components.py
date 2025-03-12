@@ -222,6 +222,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, current_settings: Dict[str, Any], parent=None):
         super().__init__(parent)
+        self.api_base_input = "responses"
         self.setWindowTitle("Chat Settings")
         self.setMinimumWidth(600)
         self.setMinimumHeight(700)
@@ -484,9 +485,29 @@ class SettingsDialog(QDialog):
         self.api_key_input.setText(current_settings.get("api_key", ""))
         adv_layout.addRow("API Key:", self.api_key_input)
 
-        self.api_base_input = QLineEdit()
         self.api_base_input.setText(current_settings.get("api_base", ""))
         adv_layout.addRow("API Base URL:", self.api_base_input)
+
+        # API Type selection
+        api_type_layout = QHBoxLayout()
+        self.api_type_combo = QComboBox()
+        self.api_type_combo.addItems(["responses", "chat_completions"])
+        current_api_type = current_settings.get("api_type", "responses")
+        self.api_type_combo.setCurrentText(current_api_type)
+        api_type_layout.addWidget(self.api_type_combo)
+
+        api_type_explanation = QPushButton("?")
+        api_type_explanation.setToolTip("Select which OpenAI API endpoint to use")
+        api_type_explanation.setFixedWidth(25)
+        api_type_explanation.clicked.connect(lambda: QMessageBox.information(
+            self,
+            "API Type",
+            "Choose between:\n\n"
+            "- responses: New endpoint for single-turn completions\n"
+            "- chat_completions: Traditional chat endpoint for multi-turn conversations"
+        ))
+        api_type_layout.addWidget(api_type_explanation)
+        adv_layout.addRow("API Type:", api_type_layout)
 
         # Add metadata options
         self.metadata_layout = QGridLayout()
@@ -644,7 +665,8 @@ class SettingsDialog(QDialog):
             "service_tier": self.service_tier_combo.currentText(),
             "metadata": metadata,
             "api_key": self.api_key_input.text(),
-            "api_base": self.api_base_input.text()
+            "api_base": self.api_base_input,
+            "api_type": self.api_type_combo.currentText()
         }
 
         # Add reasoning effort for appropriate models

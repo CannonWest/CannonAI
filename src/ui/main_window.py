@@ -15,7 +15,7 @@ from PyQt6.QtGui import QFont, QIcon, QColor, QPalette, QAction, QTextCursor
 
 from src.utils import DARK_MODE
 from src.models import DBConversationManager, DBMessageNode
-from src.services import OpenAIResponseWorker, OpenAIThreadManager, SettingsManager
+from src.services import OpenAIAPIWorker, OpenAIThreadManager, SettingsManager
 from src.ui.conversation import ConversationBranchTab
 from src.ui.components import SettingsDialog, SearchDialog
 from src.models.db_manager import DatabaseManager

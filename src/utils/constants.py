@@ -191,6 +191,7 @@ DEFAULT_PARAMS: Dict[str, Any] = {
     "store": True,  # Whether to store responses for later retrieval
     "seed": None,    # For deterministic outputs
     "api_key": DEFAULT_API_KEY,
+    "api_type": "responses",  # Options: "responses" or "chat_completions"
 }
 
 # Theme Colors
