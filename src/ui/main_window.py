@@ -681,57 +681,13 @@ class MainWindow(QMainWindow):
             self.logger.error(f"Error in handle_assistant_response: {str(e)}")
 
     def handle_chunk(self, tab, chunk):
-        """Handle a streaming chunk from the API with optimized database access"""
-        if not chunk:
-            return
-
-        try:
-            # Add debug logging
-            print(f"DEBUG: Received streaming chunk in handle_chunk: '{chunk[:20]}...' (length: {len(chunk)})")
-            self.logger.debug(f"Received chunk in handle_chunk: {chunk[:20]}...")
-
-            # Get the conversation
-            conversation = tab.conversation_tree
-
-            # Manage the chunk buffer
-            self._manage_chunk_buffer(tab, chunk)
-
-            # Determine if database update is needed
-            try:
-                is_first_chunk = conversation.current_node.role != "assistant"
-            except Exception as e:
-                self.logger.warning(f"Error determining chunk type: {str(e)}")
-                is_first_chunk = False  # Default to not first chunk in case of error
-
-            should_flush = self._should_flush_buffer(tab, is_first_chunk)
-
-            if should_flush:
-                try:
-                    self._flush_buffer_to_database(tab, conversation, is_first_chunk)
-                except Exception as db_error:
-                    self.logger.error(f"Database error in handle_chunk: {str(db_error)}")
-                    # Continue without crashing, even if flush fails
-
-            # Update UI
-            try:
-                self._update_ui_for_chunk(tab, conversation, chunk, is_first_chunk)
-            except Exception as ui_error:
-                self.logger.error(f"UI error in handle_chunk: {str(ui_error)}")
-                # Continue without crashing, even if UI update fails
-
-            # Save conversation if needed
-            try:
-                self._maybe_save_conversation(tab, conversation, chunk)
-            except Exception as save_error:
-                self.logger.error(f"Error saving conversation: {str(save_error)}")
-                # Continue without crashing, even if save fails
-
-        except Exception as e:
-            self.logger.error(f"Critical error in handle_chunk: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            # Don't propagate the exception - we want to continue processing chunks
-            # even if one fails
+        """
+        DEPRECATED: This method should not be called directly anymore.
+        Use _handle_chunk_db_only for database operations or let
+        _create_chunk_handler handle both UI and database updates.
+        """
+        self.logger.warning("Deprecated handle_chunk called directly - use _handle_chunk_db_only instead")
+        self._handle_chunk_db_only(tab, chunk)
 
     def _manage_chunk_buffer(self, tab, chunk):
         """Initialize and update the chunk buffer for a tab"""
@@ -1321,14 +1277,54 @@ class MainWindow(QMainWindow):
                 else:
                     print("ERROR: Tab doesn't have update_chat_streaming method")
 
-                # Also handle the chunk in the standard way (for database updates)
-                self.handle_chunk(tab, chunk)
+                # Handle database updates, but NOT UI updates
+                self._handle_chunk_db_only(tab, chunk)
             except Exception as e:
                 print(f"Error in chunk handler: {str(e)}")
                 import traceback
                 traceback.print_exc()
 
         return handle_chunk
+
+    def _handle_chunk_db_only(self, tab, chunk):
+        """Handle database updates for a chunk without updating UI"""
+        if not chunk:
+            return
+
+        try:
+            # Get the conversation
+            conversation = tab.conversation_tree
+
+            # Manage the chunk buffer
+            self._manage_chunk_buffer(tab, chunk)
+
+            # Determine if database update is needed
+            try:
+                is_first_chunk = conversation.current_node.role != "assistant"
+            except Exception as e:
+                self.logger.warning(f"Error determining chunk type: {str(e)}")
+                is_first_chunk = False  # Default to not first chunk in case of error
+
+            should_flush = self._should_flush_buffer(tab, is_first_chunk)
+
+            if should_flush:
+                try:
+                    self._flush_buffer_to_database(tab, conversation, is_first_chunk)
+                except Exception as db_error:
+                    self.logger.error(f"Database error in handle_chunk: {str(db_error)}")
+
+            # Skip UI update - this is the key change!
+
+            # Save conversation if needed
+            try:
+                self._maybe_save_conversation(tab, conversation, chunk)
+            except Exception as save_error:
+                self.logger.error(f"Error saving conversation: {str(save_error)}")
+
+        except Exception as e:
+            self.logger.error(f"Critical error in _handle_chunk_db_only: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def _create_streaming_finalizer(self, tab):
         """Create a handler for streaming finalization that doesn't use lambdas"""
