@@ -563,7 +563,12 @@ class ConversationBranchTab(QWidget):
                 self._streaming_started = True
                 print("DEBUG: First chunk detected - initializing streaming display")
 
-                # Remove any loading indicator text if present
+                # First ensure loading indicator is stopped
+                if hasattr(self, '_loading_active') and self._loading_active:
+                    print("DEBUG: Stopping loading indicator on first chunk")
+                    self.stop_loading_indicator()
+
+                # Remove any loading indicator text if present (redundant but safe)
                 if hasattr(self, '_has_loading_text') and self._has_loading_text:
                     print("DEBUG: Removing loading indicator text")
                     try:
@@ -625,7 +630,9 @@ class ConversationBranchTab(QWidget):
                 except Exception as append_error:
                     print(f"Error using append fallback: {str(append_error)}")
         except Exception as e:
-            self.logger.warning(f"Error extracting thinking step: {str(e)}")
+            print(f"Error in update_chat_streaming: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def complete_streaming_update(self):
@@ -635,10 +642,17 @@ class ConversationBranchTab(QWidget):
         # Reset streaming flag first
         self._is_streaming = False
 
-        # Stop loading indicator if it's still active
+        # Force stop loading indicator if it's still active
         if hasattr(self, '_loading_active') and self._loading_active:
             print("DEBUG: Stopping any active loading indicator")
             self.stop_loading_indicator()
+        else:
+            print("DEBUG: Loading indicator not active during completion")
+
+        # Double-check loading indicator timer is stopped
+        if hasattr(self, '_loading_timer') and self._loading_timer.isActive():
+            print("DEBUG: Forcibly stopping loading timer")
+            self._loading_timer.stop()
 
         # Ensure any loading text is removed
         if hasattr(self, '_has_loading_text') and self._has_loading_text:
@@ -806,6 +820,14 @@ class ConversationBranchTab(QWidget):
                     thread_manager.cancel_worker(self._active_thread_id)
                     print(f"Cancelled thread: {self._active_thread_id}")
 
+                    # Make sure to stop the loading indicator
+                    if hasattr(self, '_loading_active') and self._loading_active:
+                        print("DEBUG: Stopping loading indicator after cancellation")
+                        self.stop_loading_indicator()
+
+                    # Reset processing state
+                    self._processing_message = False
+
             # Check if conversation tree is valid
             if not self.conversation_tree:
                 print("ERROR: No conversation tree available")
@@ -882,20 +904,15 @@ class ConversationBranchTab(QWidget):
             # Store attachments for use in the main window's send_message method
             self._pending_attachments = attachments_copy
 
-            # Start loading indicator
-            try:
-                self.start_loading_indicator()
-            except Exception as indicator_error:
-                print(f"Error starting loading indicator: {str(indicator_error)}")
-                # Continue anyway
-
             # Emit signal to send message
             try:
+                print(f"DEBUG: Emitting send_message signal with: '{message[:30]}...'")
                 self.send_message.emit(message)
             except Exception as emit_error:
                 print(f"Error emitting send message signal: {str(emit_error)}")
                 # Try to recover from emission error
-                self.stop_loading_indicator()
+                if hasattr(self, '_loading_active') and self._loading_active:
+                    self.stop_loading_indicator()
 
                 from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.critical(
@@ -1493,13 +1510,22 @@ class ConversationBranchTab(QWidget):
         # Check if already inactive
         if not hasattr(self, '_loading_active') or not self._loading_active:
             print("DEBUG: Loading indicator already inactive")
-            return
+            # Regardless, make sure state is cleaned up
+            self._loading_active = False
 
-        # Stop the timer first
+            # Still try to remove any loading text if present
+            if hasattr(self, '_has_loading_text') and self._has_loading_text:
+                print("DEBUG: Loading text still present despite inactive indicator")
+
+        # Stop the timer first - do this unconditionally
         if hasattr(self, '_loading_timer'):
-            self._loading_timer.stop()
+            if self._loading_timer.isActive():
+                print("DEBUG: Stopping active loading timer")
+                self._loading_timer.stop()
+            else:
+                print("DEBUG: Loading timer already stopped")
 
-        # Update state flags
+        # Always update state flags
         self._loading_active = False
 
         # Always attempt to remove the loading text for consistency
@@ -1508,18 +1534,36 @@ class ConversationBranchTab(QWidget):
                 print("DEBUG: Removing loading indicator text")
                 cursor = self.chat_display.textCursor()
                 cursor.movePosition(QTextCursor.MoveOperation.End)
+
+                # Save the current position
+                end_position = cursor.position()
+
+                # Move up to select the loading text line
                 cursor.movePosition(QTextCursor.MoveOperation.Up, QTextCursor.MoveMode.KeepAnchor, 1)
-                cursor.removeSelectedText()
+
+                # Only remove if we actually moved (means there was a line to select)
+                if cursor.position() < end_position:
+                    cursor.removeSelectedText()
+                    print("DEBUG: Loading text removed successfully")
+                else:
+                    print("DEBUG: No text to remove at cursor position")
+
                 self._has_loading_text = False
-                print("DEBUG: Loading text removed successfully")
 
                 # Ensure cursor is at the end after removal
                 cursor.movePosition(QTextCursor.MoveOperation.End)
                 self.chat_display.setTextCursor(cursor)
+
+                # Make sure any changes are visible
+                self.chat_display.ensureCursorVisible()
             except Exception as e:
                 print(f"ERROR: Failed to remove loading indicator text: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 # Even if we fail to remove it, mark it as gone to prevent duplicate attempts
                 self._has_loading_text = False
+        else:
+            print("DEBUG: No loading text to remove")
 
     def _update_loading_indicator(self):
         """Update the loading indicator text with improved reliability"""

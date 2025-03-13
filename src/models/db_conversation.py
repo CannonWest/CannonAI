@@ -38,6 +38,7 @@ class DBMessageNode:
             attached_files: List[Dict] = None,
             response_id: Optional[str] = None  # New: store OpenAI Response ID
     ):
+        self._reasoning_steps = None
         self.id = id
         self.conversation_id = conversation_id
         self.role = role

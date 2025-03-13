@@ -458,24 +458,39 @@ class MainWindow(QMainWindow):
     def send_message(self, tab, message):
         """Send a user message and get a response"""
         try:
+            # First, make sure we're not already processing a message
+            if hasattr(tab, '_processing_message') and tab._processing_message:
+                print("DEBUG: Already processing a message, canceling duplicate send request")
+                return
+
+            # Mark that we're starting to process a message
+            tab._processing_message = True
+
             # Get the active conversation
             conversation = tab.conversation_tree
 
             # Check if there are file attachments to include
             attached_files = getattr(tab, '_pending_attachments', None)
 
+            # Debugging
+            print(f"DEBUG: Sending message: '{message[:30]}...' with {len(attached_files) if attached_files else 0} attachments")
+
             try:
                 # Add the user message
                 conversation.add_user_message(message, attached_files=attached_files)
 
-                # Update the UI
+                # Update the UI to show the new user message
                 tab.update_ui()
 
-                # Start message processing
+                # The loading indicator will be started in _start_message_processing
+                # Start message processing - this will handle the API call
                 self._start_message_processing(tab, conversation.get_current_messages())
             except Exception as e:
                 self.logger.error(f"Error sending message: {str(e)}")
                 self.handle_error(f"Error sending message: {str(e)}")
+
+                # Make sure to reset processing flag on error
+                tab._processing_message = False
         except Exception as e:
             self.logger.error(f"Critical error in send_message: {str(e)}")
             from PyQt6.QtWidgets import QMessageBox
@@ -520,7 +535,17 @@ class MainWindow(QMainWindow):
             print("WARNING: Tab is already processing a message, cancelling previous request")
             try:
                 if hasattr(tab, '_active_thread_id'):
-                    self.thread_manager.cancel_worker(tab._active_thread_id)
+                    thread_id = tab._active_thread_id
+                    print(f"DEBUG: Cancelling previous worker thread: {thread_id}")
+                    self.thread_manager.cancel_worker(thread_id)
+
+                    # Force cleanup loading indicators
+                    if hasattr(tab, 'stop_loading_indicator') and tab._loading_active:
+                        print("DEBUG: Cleaning up previous loading indicator")
+                        tab.stop_loading_indicator()
+
+                    # Reset processing state to allow new processing
+                    tab._processing_message = False
             except Exception as e:
                 print(f"Error cancelling previous worker: {str(e)}")
 
@@ -1279,9 +1304,25 @@ class MainWindow(QMainWindow):
 
         def handle_chunk(chunk):
             try:
+                # Log the chunk for debugging
+                print(f"DEBUG: Chunk handler received: {chunk[:20]}... (length: {len(chunk)})")
+
+                # Ensure that streaming mode is set
+                if hasattr(tab, '_is_streaming'):
+                    tab._is_streaming = True
+
+                # Directly update the chat display with the chunk
+                if hasattr(tab, 'update_chat_streaming'):
+                    tab.update_chat_streaming(chunk)
+                else:
+                    print("ERROR: Tab doesn't have update_chat_streaming method")
+
+                # Also handle the chunk in the standard way (for database updates)
                 self.handle_chunk(tab, chunk)
             except Exception as e:
                 print(f"Error in chunk handler: {str(e)}")
+                import traceback
+                traceback.print_exc()
 
         return handle_chunk
 
