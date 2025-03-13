@@ -1070,6 +1070,9 @@ class ConversationBranchTab(QWidget):
             if hasattr(self, '_loading_active') and self._loading_active:
                 self.stop_loading_indicator()
 
+            # Log steps being set for debugging
+            print(f"DEBUG: Setting reasoning steps. Steps type: {type(steps)}, o3-mini?: {'o3' in self.model_label.text() if hasattr(self, 'model_label') else 'unknown'}")
+
             # Ensure steps is a valid list
             if steps is None:
                 steps = []

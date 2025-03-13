@@ -190,6 +190,10 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def get_node_metadata(self, node_id):
+        """Public method to get metadata for a node - forwards to _get_node_metadata"""
+        return self._get_node_metadata(node_id)
+
     # Add this method to the DatabaseManager class
     def get_message(self, message_id):
         """Get a message by ID"""

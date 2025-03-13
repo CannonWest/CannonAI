@@ -5,6 +5,7 @@ API services for interacting with the OpenAI API.
 from typing import Dict, List, Optional, Any, Callable
 from PyQt6.QtCore import QThread, pyqtSignal, QObject, pyqtSlot
 
+import openai
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
@@ -108,16 +109,20 @@ class OpenAIAPIWorker(QObject):
 
     @pyqtSlot()
     def process(self):
-        """Execute the API call when the thread starts"""
+        """Execute the API call with enhanced error handling"""
         try:
             api_key = self.settings.get("api_key")
             api_base = self.settings.get("api_base")
             model = self.settings.get("model")
-            api_type = self.settings.get("api_type", "responses")  # Get API type
+            api_type = self.settings.get("api_type", "responses")
 
-            # Log which model and API type we're using
             self.logger.info(f"Using model: {model} with API type: {api_type}")
 
+            # Check for API key
+            if not api_key:
+                raise ValueError("No API key provided. Please check your settings.")
+
+            # Create client
             client_kwargs = {}
             if api_key:
                 client_kwargs["api_key"] = api_key
@@ -126,7 +131,7 @@ class OpenAIAPIWorker(QObject):
 
             client = OpenAI(**client_kwargs)
 
-            # Prepare parameters based on selected API type
+            # Prepare parameters
             if api_type == "responses":
                 params = self._prepare_response_api_params(model)
             else:
@@ -141,41 +146,92 @@ class OpenAIAPIWorker(QObject):
             try:
                 # Handle streaming vs non-streaming
                 if params.get("stream", False):
-                    # Make streaming request based on API type
-                    if api_type == "responses":
-                        stream = client.responses.create(**params)
+                    # Make streaming request
+                    try:
+                        if api_type == "responses":
+                            stream = client.responses.create(**params)
+                        else:
+                            stream = client.chat.completions.create(**params)
+
                         self._handle_streaming_response(stream, api_type)
-                    else:
-                        stream = client.chat.completions.create(**params)
-                        self._handle_streaming_response(stream, api_type)
+                    except openai.BadRequestError as e:
+                        # Bad request - often parameter or formatting issues
+                        self.logger.error(f"Bad request error: {str(e)}")
+                        self.error_occurred.emit(f"Bad request: {str(e)}")
+                    except openai.RateLimitError as e:
+                        # Rate limit issues
+                        self.logger.error(f"Rate limit error: {str(e)}")
+                        self.error_occurred.emit(f"Rate limit exceeded: {str(e)}")
+                    except openai.APITimeoutError as e:
+                        # Timeout issues
+                        self.logger.error(f"API timeout: {str(e)}")
+                        self.error_occurred.emit(f"Request timed out: {str(e)}")
+                    except openai.APIConnectionError as e:
+                        # Connection issues
+                        self.logger.error(f"API connection error: {str(e)}")
+                        self.error_occurred.emit(f"Connection error: {str(e)}")
+                    except openai.AuthenticationError as e:
+                        # Authentication issues
+                        self.logger.error(f"Authentication error: {str(e)}")
+                        self.error_occurred.emit(f"Authentication failed: Please check your API key")
+                    except openai.InternalServerError as e:
+                        # OpenAI server issues
+                        self.logger.error(f"OpenAI server error: {str(e)}")
+                        self.error_occurred.emit(f"OpenAI server error: Please try again later")
+                    except Exception as e:
+                        # Other unexpected errors
+                        self.logger.error(f"Unexpected error during streaming: {str(e)}")
+                        self.error_occurred.emit(f"Unexpected error: {str(e)}")
                 else:
-                    # Make non-streaming request based on API type
-                    if api_type == "responses":
-                        response = client.responses.create(**params)
+                    # Make non-streaming request
+                    try:
+                        if api_type == "responses":
+                            response = client.responses.create(**params)
+                        else:
+                            response = client.chat.completions.create(**params)
+
                         self._handle_full_response(response, api_type)
-                    else:
-                        response = client.chat.completions.create(**params)
-                        self._handle_full_response(response, api_type)
+                    except openai.BadRequestError as e:
+                        self.logger.error(f"Bad request error: {str(e)}")
+                        self.error_occurred.emit(f"Bad request: {str(e)}")
+                    except openai.RateLimitError as e:
+                        self.logger.error(f"Rate limit error: {str(e)}")
+                        self.error_occurred.emit(f"Rate limit exceeded: {str(e)}")
+                    except openai.APITimeoutError as e:
+                        self.logger.error(f"API timeout: {str(e)}")
+                        self.error_occurred.emit(f"Request timed out: {str(e)}")
+                    except openai.APIConnectionError as e:
+                        self.logger.error(f"API connection error: {str(e)}")
+                        self.error_occurred.emit(f"Connection error: {str(e)}")
+                    except openai.AuthenticationError as e:
+                        self.logger.error(f"Authentication error: {str(e)}")
+                        self.error_occurred.emit(f"Authentication failed: Please check your API key")
+                    except openai.InternalServerError as e:
+                        self.logger.error(f"OpenAI server error: {str(e)}")
+                        self.error_occurred.emit(f"OpenAI server error: Please try again later")
+                    except Exception as e:
+                        self.logger.error(f"Unexpected error during request: {str(e)}")
+                        self.error_occurred.emit(f"Unexpected error: {str(e)}")
+
             except Exception as e:
-                # Log the error for debugging
                 self.logger.error(f"API request failed: {str(e)}")
-                self.error_occurred.emit(str(e))
+                self.error_occurred.emit(f"API request failed: {str(e)}")
 
         except Exception as e:
+            self.logger.error(f"Error in process method: {str(e)}")
             self.error_occurred.emit(str(e))
         finally:
             # Signal completion
             self.worker_finished.emit()
 
     def _prepare_response_api_params(self, model):
-        """Prepare parameters for the Response API"""
-        # Log the settings for debugging
+        """Prepare parameters for the Response API with cleaner parameter handling"""
         self.logger.debug(f"Settings for prepare_response_api_params: {self.settings}")
 
         # Process messages for the Response API format
         prepared_input = self.prepare_input(self.messages, "responses")
 
-        # Extract model parameters from settings for Response API with safe defaults
+        # Base parameters (common across all API types)
         params = {
             "model": model,
             "input": prepared_input,
@@ -184,128 +240,85 @@ class OpenAIAPIWorker(QObject):
             "stream": self.settings.get("stream", True),
         }
 
-        # Add response format with safer dictionary access
-        format_type = "text"  # default format type
+        # Add Response API specific parameters
+        if "store" in self.settings:
+            params["store"] = self.settings.get("store")
 
-        if self.settings.get("text") is not None:
-            # Handle text format settings safely
-            text_setting = self.settings.get("text", {})
-            if isinstance(text_setting, dict) and "format" in text_setting:
-                format_dict = text_setting.get("format", {})
-                if isinstance(format_dict, dict):
-                    format_type = format_dict.get("type", "text")
-                params["text"] = text_setting
-            else:
-                # Default text format if structure is invalid
-                params["text"] = {"format": {"type": "text"}}
-        elif self.settings.get("response_format") is not None:
-            # Handle response_format safely
-            response_format = self.settings.get("response_format", {})
-            if isinstance(response_format, dict):
-                format_type = response_format.get("type", "text")
-            params["text"] = {"format": {"type": format_type}}
+        # Handle text format (response format)
+        format_type = "text"  # default format type
+        if self.settings.get("text") and isinstance(self.settings["text"], dict):
+            params["text"] = self.settings["text"]
+            # Extract format type for potential JSON handling
+            if "format" in self.settings["text"] and isinstance(self.settings["text"]["format"], dict):
+                format_type = self.settings["text"]["format"].get("type", "text")
         else:
-            # Default if no format specified
+            # Default text format
             params["text"] = {"format": {"type": "text"}}
 
-        # For json_object format, ensure input contains the word "json"
-        if format_type == "json_object":
-            input_content = prepared_input.lower() if prepared_input else ""
-            has_json_keyword = "json" in input_content
-
-            if not has_json_keyword:
-                # Add JSON hint to the input or instructions
-                if "instructions" in params:
-                    params["instructions"] += " Please provide the response in JSON format."
-                else:
-                    # Create instructions if they don't exist
-                    system_message = None
-                    try:
-                        system_message = next((msg for msg in self.messages if msg.get("role") == "system"), None)
-                    except (StopIteration, AttributeError, TypeError):
-                        pass
-
-                    if system_message and isinstance(system_message, dict) and "content" in system_message:
-                        params["instructions"] = system_message["content"] + " Please provide the response in JSON format."
-                    else:
-                        params["instructions"] = "Please provide the response in JSON format."
-
-        # For Responses API, the parameter name should be max_output_tokens
-        # Get the token limit from settings (try all possible names)
-        # NOTE: OpenAI API parameter naming is inconsistent across models and endpoints:
-        # - Responses API always uses "max_output_tokens"
-        # - Chat Completions API uses:
-        #   - "max_tokens" for most models (GPT-3.5, GPT-4, etc.)
-        #   - "max_completion_tokens" for o1 and o3 models
-        # This inconsistency requires specific handling based on model and API type.
-        token_limit = None
-        for param_name in ["max_output_tokens", "max_completion_tokens", "max_tokens"]:
-            if param_name in self.settings and self.settings.get(param_name) is not None:
-                token_limit = self.settings.get(param_name)
-                break
-
-        # Set the parameter with the correct name for Responses API
-        if token_limit is not None:
-            params["max_output_tokens"] = token_limit
-
-        # Log the final parameters
-        self.logger.debug(f"Final Responses API parameters: {params}")
-
-        return params
-
-    def _prepare_chat_completions_params(self, model):
-        """Prepare parameters for the Chat Completions API"""
-        # Log the settings for debugging
-        self.logger.debug(f"Settings for prepare_chat_completions_params: {self.settings}")
-
-        # Process messages for the Chat API format
-        prepared_messages = self.prepare_input(self.messages, "chat_completions")
-
-        # Extract model parameters from settings for Chat API with safe defaults
-        params = {
-            "model": model,
-            "messages": prepared_messages,
-            "temperature": self.settings.get("temperature", 0.7),
-            "top_p": self.settings.get("top_p", 1.0),
-            "stream": self.settings.get("stream", True),
-        }
-
-        # Add response format if specified
-        if "response_format" in self.settings and self.settings.get("response_format") is not None:
-            response_format = self.settings.get("response_format", {})
-            if isinstance(response_format, dict):
-                format_type = response_format.get("type", "text")
-                params["response_format"] = {"type": format_type}
-
-        # Get the token limit from settings (try all possible names)
-        token_limit = None
-        for param_name in ["max_tokens", "max_completion_tokens", "max_output_tokens"]:
-            if param_name in self.settings and self.settings.get(param_name) is not None:
-                token_limit = self.settings.get(param_name)
-                break
-
-        if token_limit is not None:
-            # For o1/o3 models, use max_completion_tokens instead of max_tokens
-            # NOTE: OpenAI API parameter naming is inconsistent across models and endpoints:
-            # - Responses API always uses "max_output_tokens"
-            # - Chat Completions API uses:
-            #   - "max_tokens" for most models (GPT-3.5, GPT-4, etc.)
-            #   - "max_completion_tokens" for o1 and o3 models
-            # This inconsistency requires specific handling based on model and API type.
-            if "o1" in model or "o3" in model:
-                self.logger.info(f"Using max_completion_tokens for model {model}")
-                params["max_completion_tokens"] = token_limit
+        # For json_object format, ensure input contains JSON hint
+        if format_type == "json_object" and "json" not in prepared_input.lower():
+            if "instructions" in params:
+                params["instructions"] += " Please provide the response in JSON format."
             else:
-                # For other models, use max_tokens
-                self.logger.info(f"Using max_tokens for model {model}")
-                params["max_tokens"] = token_limit
+                # Try to extract system message
+                system_message = next((msg for msg in self.messages if msg.get("role") == "system"), None)
+                if system_message and isinstance(system_message, dict) and "content" in system_message:
+                    params["instructions"] = system_message["content"] + " Please provide the response in JSON format."
+                else:
+                    params["instructions"] = "Please provide the response in JSON format."
+
+        # Handle token limit - for Responses API, we always use max_output_tokens
+        token_limit = self.settings.get("max_output_tokens", self.settings.get("max_tokens", 1024))
+        params["max_output_tokens"] = token_limit
+
+        # Add reasoning parameters for supported models
+        if model in self.settings.get("reasoning_models", []) and "reasoning" in self.settings:
+            params["reasoning"] = self.settings["reasoning"]
 
         # Add seed if specified
         if self.settings.get("seed") is not None:
             params["seed"] = self.settings.get("seed")
 
-        # Log the final parameters
-        self.logger.debug(f"Final Chat Completions API parameters: {params}")
+        # Add user identifier if present
+        if self.settings.get("user") is not None:
+            params["user"] = self.settings.get("user")
+
+        # Add advanced parameters if present
+        for param in ["metadata", "include", "previous_response_id", "parallel_tool_calls"]:
+            if param in self.settings and self.settings[param] is not None:
+                params[param] = self.settings[param]
+
+        self.logger.debug(f"Final Responses API parameters: {params}")
+        return params
+
+    def _prepare_chat_completions_params(self, model):
+        """Prepare parameters for the Chat Completions API"""
+        # Process messages for the Chat API format
+        prepared_messages = self.prepare_input(self.messages, "chat_completions")
+
+        # Extract model parameters from settings for Chat API
+        params = {
+            "model": model,
+            "messages": prepared_messages,
+            "temperature": self.settings.get("temperature"),
+            "top_p": self.settings.get("top_p"),
+            "stream": self.settings.get("stream", True),
+        }
+
+        # Add response format if specified
+        if "response_format" in self.settings:
+            format_type = self.settings.get("response_format", {}).get("type", "text")
+            params["response_format"] = {"type": format_type}
+
+        # Add max_tokens parameter
+        if "max_completion_tokens" in self.settings:
+            params["max_tokens"] = self.settings.get("max_completion_tokens")
+        elif "max_tokens" in self.settings:
+            params["max_tokens"] = self.settings.get("max_tokens")
+
+        # Add seed if specified
+        if self.settings.get("seed") is not None:
+            params["seed"] = self.settings.get("seed")
 
         return params
 
@@ -317,129 +330,165 @@ class OpenAIAPIWorker(QObject):
             self.logger.info(f"Starting to process streaming response from {api_type} API")
 
             if api_type == "responses":
-                # Handle Response API streaming
+                # Track response metadata
+                response_id = None
+                model_info = {}
+
+                # Process each event in the stream
                 for event in stream:
-                    # Check for cancellation during streaming
+                    # Check for cancellation
                     if self._is_cancelled:
                         self.logger.info("API request cancelled during streaming")
                         break
 
-                    # Process various event types
+                    # Process by event type
                     event_type = getattr(event, 'type', None)
+
                     if not event_type:
-                        self.logger.warning("Received event with no type, skipping")
                         continue
 
-                    # Handle response.created event
                     if event_type == "response.created":
-                        response_id = getattr(event.response, 'id', None)
-                        if response_id:
+                        # Capture response ID from creation event
+                        if hasattr(event, 'response') and hasattr(event.response, 'id'):
+                            response_id = event.response.id
                             self.completion_id.emit(response_id)
 
-                    # Handle text deltas - these are the actual content chunks
                     elif event_type == "response.output_text.delta":
-                        # Get the delta text and emit it
+                        # Process text delta (the actual content chunk)
                         delta = getattr(event, 'delta', '')
                         if delta:
                             self._current_text_content += delta
                             full_text += delta
                             self.chunk_received.emit(delta)
 
-                    # Handle reasoning steps (for o1/o3 models)
-                    elif event_type == "response.thinking_step.added" or (hasattr(event, 'thinking') and event.thinking):
-                        # Extract thinking step info
-                        if hasattr(event, 'thinking') and event.thinking:
-                            thinking_info = event.thinking
+                    elif event_type in ["response.thinking_step.added", "response.thinking.added"]:
+                        # Extract reasoning step information
+                        step_info = self._extract_thinking_step(event)
+                        if step_info:
+                            step_name, step_content = step_info
+                            self.collected_reasoning_steps.append({
+                                "name": step_name,
+                                "content": step_content
+                            })
+                            self.thinking_step.emit(step_name, step_content)
 
-                            if isinstance(thinking_info, dict):
-                                step_name = thinking_info.get("step", "Reasoning")
-                                step_content = thinking_info.get("content", "")
-                            else:
-                                step_name = getattr(thinking_info, "step", "Reasoning")
-                                step_content = getattr(thinking_info, "content", "")
-                        elif hasattr(event, 'step'):
-                            if isinstance(event.step, dict):
-                                step_name = event.step.get("name", "Reasoning")
-                                step_content = event.step.get("content", "")
-                            else:
-                                step_name = getattr(event.step, "name", "Reasoning")
-                                step_content = getattr(event.step, "content", "")
-                        else:
-                            step_name = "Reasoning"
-                            step_content = str(event)
-
-                        self.collected_reasoning_steps.append({
-                            "name": step_name,
-                            "content": step_content
-                        })
-                        self.thinking_step.emit(step_name, step_content)
-
-                    # Handle completed response
                     elif event_type == "response.completed":
-                        self._handle_completed_event(event)
+                        # Process completion event (final usage stats, etc.)
+                        if hasattr(event, 'response'):
+                            self._process_completion_metadata(event.response)
 
-            else:
-                # Handle Chat Completions API streaming
+                            # Store model information
+                            if hasattr(event.response, 'model'):
+                                model_info["model"] = event.response.model
+                                self.system_info.emit(model_info)
+
+            else:  # Chat Completions API
                 for chunk in stream:
                     # Check for cancellation
                     if self._is_cancelled:
                         self.logger.info("API request cancelled during streaming")
                         break
 
-                    # Get delta content from the chunk
-                    delta_content = ""
+                    # Extract content from the chunk
                     if hasattr(chunk, 'choices') and len(chunk.choices) > 0:
                         choice = chunk.choices[0]
+
+                        # Process content delta
                         if hasattr(choice, 'delta') and hasattr(choice.delta, 'content'):
                             delta_content = choice.delta.content or ""
+                            if delta_content:
+                                self._current_text_content += delta_content
+                                full_text += delta_content
+                                self.chunk_received.emit(delta_content)
 
-                    # Emit the chunk if it has content
-                    if delta_content:
-                        self._current_text_content += delta_content
-                        full_text += delta_content
-                        self.chunk_received.emit(delta_content)
-
-                    # Check for completion (finish_reason is present)
-                    if hasattr(chunk, 'choices') and len(chunk.choices) > 0:
-                        choice = chunk.choices[0]
+                        # Check for completion
                         if choice.finish_reason is not None:
-                            # Emit completion ID if available
+                            # Emit completion ID
                             if hasattr(chunk, 'id'):
                                 self.completion_id.emit(chunk.id)
 
-                            # Emit usage info if available in the final chunk
-                            if hasattr(chunk, 'usage') and chunk.usage is not None:
-                                try:
-                                    usage_data = self._normalize_token_usage(
-                                        {
-                                            "prompt_tokens": getattr(chunk.usage, 'prompt_tokens', 0),
-                                            "completion_tokens": getattr(chunk.usage, 'completion_tokens', 0),
-                                            "total_tokens": getattr(chunk.usage, 'total_tokens', 0)
-                                        },
-                                        "chat_completions"
-                                    )
-                                    self.usage_info.emit(usage_data)
-                                except Exception as e:
-                                    self.logger.warning(f"Error processing usage data: {str(e)}")
+                            # Process usage statistics
+                            if hasattr(chunk, 'usage'):
+                                self._process_chat_usage(chunk.usage)
 
-                            # Emit model info
-                            model_info = {"model": getattr(chunk, "model", "unknown")}
-                            self.system_info.emit(model_info)
+                            # Process model info
+                            if hasattr(chunk, 'model'):
+                                self.system_info.emit({"model": chunk.model})
 
-            # Emit the full content at the end
+            # Emit the full collected content
             if full_text:
                 self.message_received.emit(full_text)
             else:
-                # Emit empty message to ensure completion
                 self.message_received.emit("")
 
-            # Emit reasoning steps if collected
+            # Emit collected reasoning steps
             if self.collected_reasoning_steps:
                 self.reasoning_steps.emit(self.collected_reasoning_steps)
 
         except Exception as e:
             self.logger.error(f"Error handling streaming response: {str(e)}")
             self.error_occurred.emit(f"Streaming error: {str(e)}")
+
+    def _extract_thinking_step(self, event):
+        """Extract thinking step name and content from various event formats"""
+        try:
+            # Handle different event structures
+            if hasattr(event, 'thinking') and event.thinking:
+                thinking_info = event.thinking
+
+                if isinstance(thinking_info, dict):
+                    step_name = thinking_info.get("step", "Reasoning")
+                    step_content = thinking_info.get("content", "")
+                else:
+                    step_name = getattr(thinking_info, "step", "Reasoning")
+                    step_content = getattr(thinking_info, "content", "")
+
+            elif hasattr(event, 'step'):
+                if isinstance(event.step, dict):
+                    step_name = event.step.get("name", "Reasoning")
+                    step_content = event.step.get("content", "")
+                else:
+                    step_name = getattr(event.step, "name", "Reasoning")
+                    step_content = getattr(event.step, "content", "")
+            else:
+                return None
+
+            return step_name, step_content
+        except Exception as e:
+            self.logger.warning(f"Error extracting thinking step: {str(e)}")
+            return None
+
+    def _process_completion_metadata(self, response):
+        """Process metadata from a completed response"""
+        try:
+            if hasattr(response, "usage"):
+                usage_data = self._normalize_token_usage(
+                    {
+                        "input_tokens": getattr(response.usage, "input_tokens", 0),
+                        "output_tokens": getattr(response.usage, "output_tokens", 0),
+                        "total_tokens": getattr(response.usage, "total_tokens", 0),
+                        "output_tokens_details": getattr(response.usage, "output_tokens_details", None)
+                    },
+                    "responses"
+                )
+                self.usage_info.emit(usage_data)
+        except Exception as e:
+            self.logger.error(f"Error processing completion metadata: {str(e)}")
+
+    def _process_chat_usage(self, usage):
+        """Process usage information from chat completion"""
+        try:
+            usage_data = self._normalize_token_usage(
+                {
+                    "prompt_tokens": getattr(usage, 'prompt_tokens', 0),
+                    "completion_tokens": getattr(usage, 'completion_tokens', 0),
+                    "total_tokens": getattr(usage, 'total_tokens', 0)
+                },
+                "chat_completions"
+            )
+            self.usage_info.emit(usage_data)
+        except Exception as e:
+            self.logger.warning(f"Error processing usage data: {str(e)}")
 
     def _handle_full_response(self, response, api_type="responses"):
         """Handle non-streaming response from either API"""
@@ -580,12 +629,26 @@ class OpenAIAPIWorker(QObject):
         """Normalize token usage data to a consistent format regardless of API type"""
         normalized = {}
 
+        # Log the incoming usage data for better debugging
+        self.logger.debug(f"Normalizing token usage from {api_type} API: {usage}")
+
         if api_type == "responses":
+            # Handle Response API token usage
             normalized["prompt_tokens"] = usage.get("input_tokens", 0)
             normalized["completion_tokens"] = usage.get("output_tokens", 0)
-            normalized["total_tokens"] = usage.get("total_tokens", 0)
 
-            # Include reasoning tokens if available
+            # Ensure total_tokens gets set even if not in the response
+            if "total_tokens" in usage:
+                normalized["total_tokens"] = usage.get("total_tokens", 0)
+            else:
+                # Calculate if not provided
+                normalized["total_tokens"] = normalized["prompt_tokens"] + normalized["completion_tokens"]
+
+            # Handle o3-mini model specifically
+            model = self.settings.get("model", "")
+            is_o3_model = "o3" in model
+
+            # Include reasoning tokens if available or set to 0 for o3 models that may not report it
             if "output_tokens_details" in usage and usage["output_tokens_details"]:
                 details = usage["output_tokens_details"]
                 # Handle both dictionary and object types
@@ -598,6 +661,14 @@ class OpenAIAPIWorker(QObject):
                     normalized["completion_tokens_details"] = {
                         "reasoning_tokens": getattr(details, "reasoning_tokens", 0)
                     }
+            elif is_o3_model:
+                # For o3 models, add a placeholder for reasoning tokens even if not provided
+                normalized["completion_tokens_details"] = {
+                    "reasoning_tokens": 0
+                }
+                self.logger.debug(f"Added placeholder reasoning tokens for {model}")
+
+        self.logger.debug(f"Normalized token usage: {normalized}")
         return normalized
 
     def prepare_input(self, messages, api_type="responses"):
@@ -674,3 +745,61 @@ class OpenAIAPIWorker(QObject):
                 prepared_messages.append(prepared_message)
 
             return prepared_messages
+
+
+
+    def _get_file_extension(self, filename):
+        """Extract extension from filename for syntax highlighting"""
+        try:
+            ext = filename.split('.')[-1].lower()
+            # Map common extensions to language names for syntax highlighting
+            extension_map = {
+                'py': 'python',
+                'js': 'javascript',
+                'ts': 'typescript',
+                'html': 'html',
+                'css': 'css',
+                'java': 'java',
+                'c': 'c',
+                'cpp': 'cpp',
+                'h': 'cpp',
+                'json': 'json',
+                'md': 'markdown',
+                'txt': '',  # No specific highlighting
+                'csv': '',
+                'sh': 'bash',
+                'sql': 'sql',
+                'xml': 'xml',
+                'yml': 'yaml',
+                'yaml': 'yaml'
+            }
+            return extension_map.get(ext, '')
+        except IndexError:
+            return ''  # If no extension is found
+
+    def _extract_step_name(self, content: str) -> str:
+        """Extract a step name from content if possible"""
+        content_strip = content.strip()
+        if content_strip.startswith("Step "):
+            try:
+                return content_strip.split('\n')[0].strip()
+            except:
+                pass
+        return "Reasoning"
+
+    def _is_reasoning_step(self, content: str) -> bool:
+        """
+        Detect if a chunk appears to be a reasoning step
+        Enhanced to handle more reasoning patterns
+        """
+        content_strip = content.strip()
+        return (
+                content_strip.startswith("Step ") or
+                content_strip.startswith("Let's think") or
+                content_strip.startswith("I'll solve") or
+                content_strip.startswith("Let me think") or
+                content_strip.startswith("First, I") or
+                content_strip.startswith("**Solution:") or
+                content_strip.startswith("**Step") or
+                content_strip.startswith("**Puzzle:")
+        )
