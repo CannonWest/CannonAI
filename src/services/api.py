@@ -543,6 +543,57 @@ class OpenAIAPIWorker(QObject):
                                 self.system_info.emit(model_info)
                             except Exception as model_error:
                                 self.logger.error(f"Error extracting model info: {str(model_error)}")
+            else:
+                # This is the chat_completions API streaming
+                self.logger.info("Processing chat completions streaming")
+                model_info = {}
+
+                # Process each chunk in the stream
+                for chunk in stream:
+                    # Check for cancellation
+                    if self._is_cancelled:
+                        self.logger.info("API request cancelled during streaming")
+                        break
+
+                    self.logger.debug(f"Got chat completion chunk: {chunk}")
+
+                    # Process the chunk based on the OpenAI API structure
+                    if hasattr(chunk, 'choices') and len(chunk.choices) > 0:
+                        choice = chunk.choices[0]
+
+                        # Extract the model info if available
+                        if hasattr(chunk, 'model') and chunk.model:
+                            model_info["model"] = chunk.model
+                            self.logger.debug(f"Extracted model: {chunk.model}")
+                            self.system_info.emit(model_info)
+
+                        # Extract completion ID if available
+                        if hasattr(chunk, 'id') and chunk.id:
+                            self.logger.debug(f"Extracted completion ID: {chunk.id}")
+                            self.completion_id.emit(chunk.id)
+
+                        # Handle delta content
+                        if hasattr(choice, 'delta') and hasattr(choice.delta, 'content') and choice.delta.content:
+                            delta = choice.delta.content
+                            self.logger.debug(f"Extracted content delta: {delta[:20]}...")
+                            self._current_text_content += delta
+                            full_text += delta
+                            self.chunk_received.emit(delta)
+
+                        # Check for finish reason
+                        if hasattr(choice, 'finish_reason') and choice.finish_reason:
+                            self.logger.debug(f"Chat completion finished with reason: {choice.finish_reason}")
+
+                    # Extract usage data if this is the final chunk
+                    if hasattr(chunk, 'usage') and chunk.usage:
+                        self.logger.debug(f"Extracted usage data: {chunk.usage}")
+                        usage_data = self._normalize_token_usage(chunk.usage, "chat_completions")
+                        self.usage_info.emit(usage_data)
+
+                # Emit the full message when done
+                if full_text:
+                    self.logger.debug(f"Emitting complete message (length: {len(full_text)})")
+                    self.message_received.emit(full_text)
         except Exception as e:
             self.logger.warning(f"Error: {str(e)}")
             return None

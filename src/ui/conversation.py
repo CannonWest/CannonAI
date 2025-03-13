@@ -547,12 +547,14 @@ class ConversationBranchTab(QWidget):
         """Update the chat display during streaming with improved reliability"""
         try:
             # Add debug logging
-            print(f"DEBUG: Received streaming chunk: '{chunk[:20]}...' (length: {len(chunk)})")
+            print(f"DEBUG: Received streaming chunk in update_chat_streaming: '{chunk[:20]}...' (length: {len(chunk)})")
+            self.logger.debug(f"Processing chunk in update_chat_streaming: {chunk[:20]}...")
 
             # Safety check for extremely large chunks that could cause memory issues
             if len(chunk) > 10000:  # 10KB limit for a single chunk
                 chunk = chunk[:10000] + "... [CHUNK TRUNCATED - TOO LARGE]"
                 print("WARNING: Chunk size exceeded limits - truncated")
+                self.logger.debug(f"Processing chunk in update_chat_streaming: {chunk[:20]}...")
 
             # Set streaming mode flag
             self._is_streaming = True
@@ -563,12 +565,7 @@ class ConversationBranchTab(QWidget):
                 self._streaming_started = True
                 print("DEBUG: First chunk detected - initializing streaming display")
 
-                # First ensure loading indicator is stopped
-                if hasattr(self, '_loading_active') and self._loading_active:
-                    print("DEBUG: Stopping loading indicator on first chunk")
-                    self.stop_loading_indicator()
-
-                # Remove any loading indicator text if present (redundant but safe)
+                # Remove any loading indicator text if present
                 if hasattr(self, '_has_loading_text') and self._has_loading_text:
                     print("DEBUG: Removing loading indicator text")
                     try:

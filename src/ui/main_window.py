@@ -686,6 +686,10 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            # Add debug logging
+            print(f"DEBUG: Received streaming chunk in handle_chunk: '{chunk[:20]}...' (length: {len(chunk)})")
+            self.logger.debug(f"Received chunk in handle_chunk: {chunk[:20]}...")
+
             # Get the conversation
             conversation = tab.conversation_tree
 
