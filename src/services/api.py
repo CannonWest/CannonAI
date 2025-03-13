@@ -489,7 +489,12 @@ class OpenAIAPIWorker(QObject):
                         else:
                             self.logger.debug("Empty delta in output_text.delta event")
 
+
                     elif event_type in ["response.thinking_step.added", "response.thinking.added", "response.thinking_step"]:
+                        # Comment out reasoning extraction for now as it's not supported
+                        # Keeping structure for future updates
+                        self.logger.info(f"Received thinking step event: {event_type} - skipping as reasoning extraction is disabled")
+                        """
                         # Extract reasoning step information with improved logging
                         self.logger.info(f"Processing thinking step event: {event_type}")
                         step_info = self._extract_thinking_step(event)
@@ -503,6 +508,7 @@ class OpenAIAPIWorker(QObject):
                             self.thinking_step.emit(step_name, step_content)
                         else:
                             self.logger.warning(f"Failed to extract thinking step from event: {event}")
+                        """
 
                     elif event_type == "response.completed":
                         # Process completion event (final usage stats, etc.)
@@ -908,100 +914,105 @@ class OpenAIAPIWorker(QObject):
             except Exception as content_error:
                 self.logger.error(f"Error extracting content: {str(content_error)}")
 
-            # STEP 5: Extract any reasoning steps if available
-            try:
-                # Extract reasoning steps with robust fallbacks
-                if api_type == "responses":
-                    reasoning_extracted = False
+                # STEP 5: Extract any reasoning steps if available
+                try:
+                    # Reasoning extraction is currently disabled since it's not supported by OpenAI API
+                    # Keeping the structure for future updates when reasoning becomes available
+                    self.logger.debug("Reasoning extraction is disabled - skipping reasoning step extraction")
+                    """
+                    # Extract reasoning steps with robust fallbacks
+                    if api_type == "responses":
+                        reasoning_extracted = False
 
-                    # Method 1: Standard reasoning attribute
-                    if hasattr(response, "reasoning"):
-                        reasoning_obj = response.reasoning
+                        # Method 1: Standard reasoning attribute
+                        if hasattr(response, "reasoning"):
+                            reasoning_obj = response.reasoning
 
-                        # Extract summary if available
-                        if hasattr(reasoning_obj, "summary") and reasoning_obj.summary:
-                            self.collected_reasoning_steps.append({
-                                "name": "Reasoning Summary",
-                                "content": reasoning_obj.summary
-                            })
-                            reasoning_extracted = True
-                            self.logger.debug("Extracted reasoning summary")
-
-                        # Extract steps list if available
-                        if hasattr(reasoning_obj, "steps") and reasoning_obj.steps:
-                            steps_list = reasoning_obj.steps
-                            for step in steps_list:
-                                if isinstance(step, dict):
-                                    self.collected_reasoning_steps.append({
-                                        "name": step.get("name", "Step"),
-                                        "content": step.get("content", "")
-                                    })
-                                else:
-                                    self.collected_reasoning_steps.append({
-                                        "name": getattr(step, "name", "Step"),
-                                        "content": getattr(step, "content", "")
-                                    })
-                            reasoning_extracted = True
-                            self.logger.debug(f"Extracted {len(steps_list)} reasoning steps")
-
-                    # Method 2: Check for thinking_steps attribute
-                    if not reasoning_extracted and hasattr(response, "thinking_steps"):
-                        thinking_steps = response.thinking_steps
-                        if isinstance(thinking_steps, list):
-                            for i, step in enumerate(thinking_steps):
-                                step_dict = {}
-                                if isinstance(step, dict):
-                                    step_dict = step
-                                elif hasattr(step, "__dict__"):
-                                    step_dict = {k: v for k, v in step.__dict__.items() if not k.startswith('_')}
-                                else:
-                                    # Create from attributes
-                                    step_dict = {
-                                        "name": getattr(step, "name", f"Step {i + 1}"),
-                                        "content": getattr(step, "content", str(step))
-                                    }
-
+                            # Extract summary if available
+                            if hasattr(reasoning_obj, "summary") and reasoning_obj.summary:
                                 self.collected_reasoning_steps.append({
-                                    "name": step_dict.get("name", f"Step {i + 1}"),
-                                    "content": step_dict.get("content", "")
+                                    "name": "Reasoning Summary",
+                                    "content": reasoning_obj.summary
                                 })
-                            reasoning_extracted = True
-                            self.logger.debug(f"Extracted {len(thinking_steps)} thinking steps")
+                                reasoning_extracted = True
+                                self.logger.debug("Extracted reasoning summary")
 
-                    # Check for o3-mini and other reasoning models
-                    model_name = model_info.get("model", "").lower()
-                    is_reasoning_model = ("o1" in model_name or "o3" in model_name or
-                                          "deepseek-reasoner" in model_name or
-                                          model_name in self.settings.get("reasoning_models", []))
+                            # Extract steps list if available
+                            if hasattr(reasoning_obj, "steps") and reasoning_obj.steps:
+                                steps_list = reasoning_obj.steps
+                                for step in steps_list:
+                                    if isinstance(step, dict):
+                                        self.collected_reasoning_steps.append({
+                                            "name": step.get("name", "Step"),
+                                            "content": step.get("content", "")
+                                        })
+                                    else:
+                                        self.collected_reasoning_steps.append({
+                                            "name": getattr(step, "name", "Step"),
+                                            "content": getattr(step, "content", "")
+                                        })
+                                reasoning_extracted = True
+                                self.logger.debug(f"Extracted {len(steps_list)} reasoning steps")
 
-                    # For o3-mini, check usage data for reasoning tokens
-                    if not reasoning_extracted and is_reasoning_model and hasattr(response, "usage"):
-                        usage_obj = response.usage
-                        reasoning_tokens = 0
+                        # Method 2: Check for thinking_steps attribute
+                        if not reasoning_extracted and hasattr(response, "thinking_steps"):
+                            thinking_steps = response.thinking_steps
+                            if isinstance(thinking_steps, list):
+                                for i, step in enumerate(thinking_steps):
+                                    step_dict = {}
+                                    if isinstance(step, dict):
+                                        step_dict = step
+                                    elif hasattr(step, "__dict__"):
+                                        step_dict = {k: v for k, v in step.__dict__.items() if not k.startswith('_')}
+                                    else:
+                                        # Create from attributes
+                                        step_dict = {
+                                            "name": getattr(step, "name", f"Step {i + 1}"),
+                                            "content": getattr(step, "content", str(step))
+                                        }
 
-                        # Try to extract reasoning tokens
-                        if hasattr(usage_obj, "output_tokens_details"):
-                            details = usage_obj.output_tokens_details
-                            if isinstance(details, dict):
-                                reasoning_tokens = details.get("reasoning_tokens", 0)
-                            else:
-                                reasoning_tokens = getattr(details, "reasoning_tokens", 0)
+                                    self.collected_reasoning_steps.append({
+                                        "name": step_dict.get("name", f"Step {i + 1}"),
+                                        "content": step_dict.get("content", "")
+                                    })
+                                reasoning_extracted = True
+                                self.logger.debug(f"Extracted {len(thinking_steps)} thinking steps")
 
-                        # Add placeholder step for models that used reasoning
-                        if reasoning_tokens > 0:
-                            self.collected_reasoning_steps.append({
-                                "name": f"{model_name.upper()} Reasoning",
-                                "content": f"Model performed internal reasoning using {reasoning_tokens} tokens (detailed steps not available)"
-                            })
-                            reasoning_extracted = True
-                            self.logger.debug(f"Added reasoning placeholder for {model_name} with {reasoning_tokens} reasoning tokens")
+                        # Check for o3-mini and other reasoning models
+                        model_name = model_info.get("model", "").lower()
+                        is_reasoning_model = ("o1" in model_name or "o3" in model_name or
+                                              "deepseek-reasoner" in model_name or
+                                              model_name in self.settings.get("reasoning_models", []))
 
-                # Emit collected reasoning steps if any were found
-                if self.collected_reasoning_steps:
-                    self.reasoning_steps.emit(self.collected_reasoning_steps)
-                    self.logger.debug(f"Emitted {len(self.collected_reasoning_steps)} reasoning steps")
-            except Exception as reasoning_error:
-                self.logger.error(f"Error extracting reasoning steps: {str(reasoning_error)}")
+                        # For o3-mini, check usage data for reasoning tokens
+                        if not reasoning_extracted and is_reasoning_model and hasattr(response, "usage"):
+                            usage_obj = response.usage
+                            reasoning_tokens = 0
+
+                            # Try to extract reasoning tokens
+                            if hasattr(usage_obj, "output_tokens_details"):
+                                details = usage_obj.output_tokens_details
+                                if isinstance(details, dict):
+                                    reasoning_tokens = details.get("reasoning_tokens", 0)
+                                else:
+                                    reasoning_tokens = getattr(details, "reasoning_tokens", 0)
+
+                            # Add placeholder step for models that used reasoning
+                            if reasoning_tokens > 0:
+                                self.collected_reasoning_steps.append({
+                                    "name": f"{model_name.upper()} Reasoning",
+                                    "content": f"Model performed internal reasoning using {reasoning_tokens} tokens (detailed steps not available)"
+                                })
+                                reasoning_extracted = True
+                                self.logger.debug(f"Added reasoning placeholder for {model_name} with {reasoning_tokens} reasoning tokens")
+
+                    # Emit collected reasoning steps if any were found
+                    if self.collected_reasoning_steps:
+                        self.reasoning_steps.emit(self.collected_reasoning_steps)
+                        self.logger.debug(f"Emitted {len(self.collected_reasoning_steps)} reasoning steps")
+                    """
+                except Exception as reasoning_error:
+                    self.logger.error(f"Error extracting reasoning steps: {str(reasoning_error)}")
 
             # STEP 6: FINALLY emit the content or error message
             if content:

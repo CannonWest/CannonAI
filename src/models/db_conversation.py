@@ -78,6 +78,8 @@ class DBMessageNode:
     @property
     def reasoning_steps(self):
         """Get reasoning steps if they exist"""
+        # Note: Reasoning steps are currently not supported by the OpenAI API
+        # This property is kept for future compatibility when reasoning becomes available
         if hasattr(self, '_reasoning_steps'):
             return self._reasoning_steps
 

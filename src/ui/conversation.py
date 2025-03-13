@@ -472,6 +472,11 @@ class ConversationBranchTab(QWidget):
 
     def _render_reasoning_steps(self, node):
         """Render reasoning steps for an assistant message with comprehensive model support"""
+        # Reasoning steps are currently disabled as OpenAI API doesn't support them
+        # Return empty string to avoid displaying any reasoning
+        print(f"DEBUG: Reasoning rendering disabled for node {node.id}, role: {node.role}")
+        return ""
+        """
         # Check for reasoning tokens or reasoning steps
         reasoning_tokens = 0
         if node.token_usage and "completion_tokens_details" in node.token_usage:
@@ -517,6 +522,7 @@ class ConversationBranchTab(QWidget):
         if not should_show_reasoning:
             print("DEBUG: No reasoning indicators found for this node")
             return ""
+        """
 
     def _render_attachments(self, attachments):
         """Render file attachments HTML"""
@@ -1297,6 +1303,24 @@ class ConversationBranchTab(QWidget):
 
     def set_reasoning_steps(self, steps):
         """Store reasoning steps for the current response with improved debugging and handling"""
+        # Currently disabled as OpenAI API doesn't support reasoning steps
+        # Method kept for future use when the API supports this feature
+        print(f"Received reasoning steps (currently disabled): {len(steps) if steps else 0} steps")
+
+        # Still reset streaming state for proper UI updates
+        if hasattr(self, '_is_streaming'):
+            self._is_streaming = False
+        if hasattr(self, '_chunk_counter'):
+            self._chunk_counter = 0
+        if hasattr(self, '_extracting_reasoning'):
+            self._extracting_reasoning = False
+
+        # Update UI without processing reasoning steps
+        from PyQt6.QtCore import QTimer
+        self.update_chat_display()
+        QTimer.singleShot(300, lambda: self.update_ui())
+
+        """
         try:
             # Stop loading indicator if it's still active
             if hasattr(self, '_loading_active') and self._loading_active:
@@ -1406,6 +1430,7 @@ class ConversationBranchTab(QWidget):
             print(f"Error in set_reasoning_steps: {str(e)}")
             import traceback
             traceback.print_exc()
+        """
 
     def log_loading_state(self):
         """Log the current state of the loading indicator for debugging"""
