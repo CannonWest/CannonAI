@@ -600,32 +600,60 @@ class MainWindow(QMainWindow):
             return False
 
     def handle_assistant_response(self, tab, content, response_id=None):
-        """Handle the complete response from the assistant"""
+        """Handle the complete response from the assistant with improved state management"""
+        self.logger.debug(f"Handling complete assistant response with content length: {len(content)}")
+
         if not content:
+            self.logger.warning("Empty content in assistant response")
+            # Even with empty content, we need to cleanup
+            if hasattr(tab, 'stop_loading_indicator'):
+                tab.stop_loading_indicator()
             return
 
-        # Stop loading indicator if it's active
-        if hasattr(tab, 'stop_loading_indicator'):
-            tab.stop_loading_indicator()
+        try:
+            # Stop loading indicator if it's active
+            if hasattr(tab, 'stop_loading_indicator'):
+                self.logger.debug("Stopping loading indicator")
+                tab.stop_loading_indicator()
 
-        # Get the conversation
-        conversation = tab.conversation_tree
+            # Clear any streaming flags to ensure proper state
+            if hasattr(tab, '_is_streaming'):
+                tab._is_streaming = False
+            if hasattr(tab, '_streaming_started'):
+                tab._streaming_started = False
+            if hasattr(tab, '_has_loading_text'):
+                tab._has_loading_text = False
 
-        # We need to save token usage and model info along with the response
-        # This will be updated later when we receive usage_info and system_info signals
-        # For now, create with empty dictionaries that will be updated
-        conversation.add_assistant_response(
-            content,
-            model_info={},
-            token_usage={},
-            response_id=response_id  # Add Response ID if available
-        )
+            # Get the conversation
+            conversation = tab.conversation_tree
 
-        # Update the UI
-        tab.update_ui()
+            # We need to save token usage and model info along with the response
+            # This will be updated later when we receive usage_info and system_info signals
+            self.logger.debug(f"Adding assistant response to conversation, ID: {conversation.id}")
+            conversation.add_assistant_response(
+                content,
+                model_info={},
+                token_usage={},
+                response_id=response_id  # Add Response ID if available
+            )
 
-        # Save the conversation
-        self.save_conversation(conversation.id)
+            # Update the UI
+            self.logger.debug("Updating UI after adding assistant response")
+            tab.update_ui()
+
+            # Save the conversation
+            self.logger.debug(f"Saving conversation: {conversation.id}")
+            self.save_conversation(conversation.id)
+
+            # Ensure chat display cursor is at the end
+            if hasattr(tab, 'chat_display'):
+                self.logger.debug("Ensuring cursor at end of chat display")
+                cursor = tab.chat_display.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                tab.chat_display.setTextCursor(cursor)
+                tab.chat_display.ensureCursorVisible()
+        except Exception as e:
+            self.logger.error(f"Error in handle_assistant_response: {str(e)}")
 
     def handle_chunk(self, tab, chunk):
         """Handle a streaming chunk from the API with optimized database access"""
@@ -794,43 +822,72 @@ class MainWindow(QMainWindow):
     # Make sure we clean up buffer on completion
     # This would typically be called from message_received signal handle
     def finalize_streaming(self, tab, full_content):
-        """Finalize the streaming process, ensuring all content is saved"""
+        """Finalize the streaming process, ensuring all content is saved and UI is cleaned up"""
         try:
+            self.logger.info(f"Finalizing streaming with content length: {len(full_content)}")
             conversation = tab.conversation_tree
 
             # Get the response ID if it was stored
             response_id = getattr(tab, '_response_id', None)
+            self.logger.debug(f"Response ID: {response_id}")
 
             # Ensure any remaining buffer is flushed completely
             try:
                 if hasattr(tab, '_chunk_buffer') and tab._chunk_buffer:
+                    self.logger.debug(f"Flushing final content buffer (size: {len(tab._chunk_buffer)})")
                     self._flush_final_content(tab, conversation, full_content, response_id)
                 else:
                     # Even if no buffer, ensure the final content is consistent
+                    self.logger.debug("No buffer to flush, ensuring content consistency")
                     self._ensure_content_consistency(tab, conversation, full_content, response_id)
             except Exception as e:
                 self.logger.error(f"Error flushing content in finalize_streaming: {str(e)}")
                 # Try direct database update as last resort
                 try:
+                    self.logger.warning("Attempting emergency content update")
                     self._emergency_content_update(tab, conversation, full_content, response_id)
                 except Exception as e2:
                     self.logger.error(f"Emergency content update failed: {str(e2)}")
 
-            # Reset streaming state flags
+            # Stop loading indicator if still active
+            if hasattr(tab, '_loading_active') and tab._loading_active:
+                self.logger.debug("Stopping loading indicator that's still active")
+                tab.stop_loading_indicator()
+
+            # Reset streaming state flags (call our helper directly)
             self._reset_streaming_state(tab)
 
             # Mark streaming as complete and trigger deferred UI updates
             if hasattr(tab, 'complete_streaming_update'):
                 try:
+                    self.logger.debug("Calling complete_streaming_update")
                     tab.complete_streaming_update()
                 except Exception as ui_error:
                     self.logger.error(f"Error updating UI in finalize_streaming: {str(ui_error)}")
+                    # Try to manually correct display issues
+                    try:
+                        tab._is_streaming = False
+                        tab.update_ui()
+                    except Exception:
+                        pass
 
             # Always save the conversation at the end
             try:
+                self.logger.debug(f"Saving conversation: {conversation.id}")
                 self.save_conversation(conversation.id)
             except Exception as save_error:
                 self.logger.error(f"Error saving conversation in finalize_streaming: {str(save_error)}")
+
+            # Final UI cleanup to ensure everything is visible
+            try:
+                if hasattr(tab, 'chat_display'):
+                    cursor = tab.chat_display.textCursor()
+                    cursor.movePosition(QTextCursor.MoveOperation.End)
+                    tab.chat_display.setTextCursor(cursor)
+                    tab.chat_display.ensureCursorVisible()
+                    self.logger.debug("Ensured cursor visibility at end of finalization")
+            except Exception as cursor_error:
+                self.logger.error(f"Error setting final cursor position: {str(cursor_error)}")
 
         except Exception as e:
             self.logger.error(f"Critical error in finalize_streaming: {str(e)}")

@@ -462,17 +462,22 @@ class OpenAIAPIWorker(QObject):
                         self.logger.info("API request cancelled during streaming")
                         break
 
-                    # Process by event type
+                    # Log detailed event information for debugging
                     event_type = getattr(event, 'type', None)
+                    self.logger.debug(f"Processing event type: {event_type}")
 
                     if not event_type:
+                        self.logger.debug(f"Event without type: {event}")
                         continue
 
                     if event_type == "response.created":
                         # Capture response ID from creation event
                         if hasattr(event, 'response') and hasattr(event.response, 'id'):
                             response_id = event.response.id
+                            self.logger.info(f"Captured response ID: {response_id}")
                             self.completion_id.emit(response_id)
+                        else:
+                            self.logger.debug(f"Response created but couldn't extract ID: {event}")
 
                     elif event_type == "response.output_text.delta":
                         # Process text delta (the actual content chunk)
@@ -481,74 +486,66 @@ class OpenAIAPIWorker(QObject):
                             self._current_text_content += delta
                             full_text += delta
                             self.chunk_received.emit(delta)
+                        else:
+                            self.logger.debug("Empty delta in output_text.delta event")
 
-                    elif event_type in ["response.thinking_step.added", "response.thinking.added"]:
-                        # Extract reasoning step information
+                    elif event_type in ["response.thinking_step.added", "response.thinking.added", "response.thinking_step"]:
+                        # Extract reasoning step information with improved logging
+                        self.logger.info(f"Processing thinking step event: {event_type}")
                         step_info = self._extract_thinking_step(event)
                         if step_info:
                             step_name, step_content = step_info
+                            self.logger.debug(f"Extracted thinking step: {step_name}")
                             self.collected_reasoning_steps.append({
                                 "name": step_name,
                                 "content": step_content
                             })
                             self.thinking_step.emit(step_name, step_content)
+                        else:
+                            self.logger.warning(f"Failed to extract thinking step from event: {event}")
 
                     elif event_type == "response.completed":
                         # Process completion event (final usage stats, etc.)
+                        self.logger.info("Processing completion event")
                         if hasattr(event, 'response'):
-                            self._process_completion_metadata(event.response)
+                            # Log the entire response object
+                            self.logger.debug(f"Completion response: {event.response}")
 
-                            # Store model information
-                            if hasattr(event.response, 'model'):
-                                model_info["model"] = event.response.model
+                            # Try to extract usage data with fallbacks
+                            try:
+                                if hasattr(event.response, 'usage'):
+                                    self.logger.debug(f"Usage data from response: {event.response.usage}")
+                                    usage_data = self._normalize_token_usage(event.response.usage, "responses")
+                                    self.usage_info.emit(usage_data)
+                                elif hasattr(event.response, 'token_usage'):
+                                    self.logger.debug(f"Token usage data found: {event.response.token_usage}")
+                                    usage_data = self._normalize_token_usage(event.response.token_usage, "responses")
+                                    self.usage_info.emit(usage_data)
+                                else:
+                                    self.logger.warning("No usage data found in completion response")
+                            except Exception as usage_error:
+                                self.logger.error(f"Error processing usage data: {str(usage_error)}")
+
+                            # Store model information with safe extraction
+                            try:
+                                if hasattr(event.response, 'model'):
+                                    model_info["model"] = event.response.model
+                                else:
+                                    # Try to get model from different possible locations
+                                    possible_model = getattr(event.response, 'model_name', None)
+                                    if possible_model:
+                                        model_info["model"] = possible_model
+                                    else:
+                                        # Use the model from settings as fallback
+                                        model_info["model"] = self.settings.get("model", "unknown")
+
+                                self.logger.info(f"Emitting model info: {model_info}")
                                 self.system_info.emit(model_info)
-
-            else:  # Chat Completions API
-                for chunk in stream:
-                    # Check for cancellation
-                    if self._is_cancelled:
-                        self.logger.info("API request cancelled during streaming")
-                        break
-
-                    # Extract content from the chunk
-                    if hasattr(chunk, 'choices') and len(chunk.choices) > 0:
-                        choice = chunk.choices[0]
-
-                        # Process content delta
-                        if hasattr(choice, 'delta') and hasattr(choice.delta, 'content'):
-                            delta_content = choice.delta.content or ""
-                            if delta_content:
-                                self._current_text_content += delta_content
-                                full_text += delta_content
-                                self.chunk_received.emit(delta_content)
-
-                        # Check for completion
-                        if choice.finish_reason is not None:
-                            # Emit completion ID
-                            if hasattr(chunk, 'id'):
-                                self.completion_id.emit(chunk.id)
-
-                            # Process usage statistics
-                            if hasattr(chunk, 'usage'):
-                                self._process_chat_usage(chunk.usage)
-
-                            # Process model info
-                            if hasattr(chunk, 'model'):
-                                self.system_info.emit({"model": chunk.model})
-
-            # Emit the full collected content
-            if full_text:
-                self.message_received.emit(full_text)
-            else:
-                self.message_received.emit("")
-
-            # Emit collected reasoning steps
-            if self.collected_reasoning_steps:
-                self.reasoning_steps.emit(self.collected_reasoning_steps)
-
+                            except Exception as model_error:
+                                self.logger.error(f"Error extracting model info: {str(model_error)}")
         except Exception as e:
-            self.logger.error(f"Error handling streaming response: {str(e)}")
-            self.error_occurred.emit(f"Streaming error: {str(e)}")
+            self.logger.warning(f"Error: {str(e)}")
+            return None
 
     def _extract_thinking_step(self, event):
         """Extract thinking step name and content from various event formats"""
@@ -580,21 +577,62 @@ class OpenAIAPIWorker(QObject):
             return None
 
     def _process_completion_metadata(self, response):
-        """Process metadata from a completed response"""
+        """Process metadata from a completed response with comprehensive extraction"""
         try:
+            self.logger.debug(f"Processing completion metadata. Response type: {type(response)}")
+            self.logger.debug(f"Response attributes: {[attr for attr in dir(response) if not attr.startswith('_') and not callable(getattr(response, attr))]}")
+
+            # Try multiple ways to get usage data
+            usage_data = None
+
+            # Method 1: Direct usage attribute
             if hasattr(response, "usage"):
-                usage_data = self._normalize_token_usage(
-                    {
-                        "input_tokens": getattr(response.usage, "input_tokens", 0),
-                        "output_tokens": getattr(response.usage, "output_tokens", 0),
-                        "total_tokens": getattr(response.usage, "total_tokens", 0),
-                        "output_tokens_details": getattr(response.usage, "output_tokens_details", None)
-                    },
-                    "responses"
-                )
+                self.logger.debug("Found usage attribute")
+                usage_data = self._normalize_token_usage(response.usage, "responses")
+
+            # Method 2: token_usage attribute
+            elif hasattr(response, "token_usage"):
+                self.logger.debug("Found token_usage attribute")
+                usage_data = self._normalize_token_usage(response.token_usage, "responses")
+
+            # Method 3: Try other possible attribute names
+            else:
+                for attr_name in dir(response):
+                    if ("usage" in attr_name.lower() or "token" in attr_name.lower()) and not attr_name.startswith("_"):
+                        attr_value = getattr(response, attr_value)
+                        if attr_value is not None:
+                            self.logger.debug(f"Found potential usage data in {attr_name}")
+                            usage_data = self._normalize_token_usage(attr_value, "responses")
+                            break
+
+            # Method 4: Last resort - try to build usage data from response properties
+            if usage_data is None:
+                self.logger.debug("Building usage data from response properties")
+                model = getattr(response, "model", self.settings.get("model", "unknown"))
+                token_data = {}
+
+                # Search for token-related properties
+                for attr_name in dir(response):
+                    if "token" in attr_name.lower() and not attr_name.startswith("_"):
+                        value = getattr(response, attr_name)
+                        if isinstance(value, (int, float)):
+                            token_data[attr_name] = value
+
+                # If we found any token data, try to normalize it
+                if token_data:
+                    self.logger.debug(f"Found token data: {token_data}")
+                    usage_data = self._normalize_token_usage(token_data, "responses")
+
+            # Emit usage data if we found it
+            if usage_data:
+                self.logger.debug(f"Emitting usage data: {usage_data}")
                 self.usage_info.emit(usage_data)
+            else:
+                self.logger.warning("No usage data found in completion metadata")
         except Exception as e:
             self.logger.error(f"Error processing completion metadata: {str(e)}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
 
     def _process_chat_usage(self, usage):
         """Process usage information from chat completion"""
@@ -612,94 +650,324 @@ class OpenAIAPIWorker(QObject):
             self.logger.warning(f"Error processing usage data: {str(e)}")
 
     def _handle_full_response(self, response, api_type="responses"):
-        """Handle non-streaming response from either API"""
+        """
+        Handle non-streaming response from either API with comprehensive error handling.
+        Works with any model type and API format by extracting data in the proper order.
+        """
         try:
             content = ""
+            self.logger.info(f"Processing full response from {api_type} API")
+            response_id = None
 
-            if api_type == "responses":
-                # Extract content from Response API
-                for output_item in response.output:
-                    if output_item.type == "message" and output_item.role == "assistant":
-                        for content_part in output_item.content:
-                            if content_part.type == "output_text":
-                                content = content_part.text
-                                break
+            # Log response type and structure for debugging
+            self.logger.debug(f"Response type: {type(response)}")
+            try:
+                self.logger.debug(f"Response attributes: {[attr for attr in dir(response) if not attr.startswith('_') and not callable(getattr(response, attr))]}")
+            except Exception:
+                pass  # Silently handle attribute inspection errors
 
-                # Extract reasoning steps if available
-                if hasattr(response, "reasoning") and response.reasoning:
-                    if hasattr(response.reasoning, "summary") and response.reasoning.summary:
-                        self.collected_reasoning_steps.append({
-                            "name": "Reasoning Summary",
-                            "content": response.reasoning.summary
-                        })
+            # STEP 1: Extract model information (do this FIRST)
+            try:
+                model_info = {}
+                # Try multiple possible locations for model info
+                if hasattr(response, "model"):
+                    model_info["model"] = response.model
+                    self.logger.debug(f"Found model attribute: {response.model}")
+                elif hasattr(response, "model_name"):
+                    model_info["model"] = response.model_name
+                    self.logger.debug(f"Found model_name attribute: {response.model_name}")
+                elif hasattr(response, "completion") and hasattr(response.completion, "model"):
+                    model_info["model"] = response.completion.model
+                    self.logger.debug(f"Found completion.model attribute: {response.completion.model}")
+                elif api_type == "responses" and hasattr(response, "metadata") and hasattr(response.metadata, "model_name"):
+                    model_info["model"] = response.metadata.model_name
+                    self.logger.debug(f"Found metadata.model_name attribute: {response.metadata.model_name}")
+                else:
+                    # Use model from settings as fallback
+                    model_info["model"] = self.settings.get("model", "unknown")
+                    self.logger.debug(f"Using fallback model from settings: {model_info['model']}")
 
-                # Emit completion ID
-                self.completion_id.emit(response.id)
+                # Emit model info first (critical for UI display)
+                self.system_info.emit(model_info)
+                self.logger.debug(f"Emitted model info: {model_info}")
+            except Exception as model_error:
+                self.logger.error(f"Error extracting model info: {str(model_error)}")
+                # Still emit fallback model info to prevent UI issues
+                self.system_info.emit({"model": self.settings.get("model", "unknown")})
 
-                # Emit usage information
+            # STEP 2: Extract completion/response ID (second priority)
+            try:
+                if hasattr(response, "id"):
+                    response_id = response.id
+                    self.logger.debug(f"Found ID directly: {response_id}")
+                elif api_type == "responses" and hasattr(response, "metadata") and hasattr(response.metadata, "id"):
+                    response_id = response.metadata.id
+                    self.logger.debug(f"Found ID in metadata: {response_id}")
+                elif hasattr(response, "completion") and hasattr(response.completion, "id"):
+                    response_id = response.completion.id
+                    self.logger.debug(f"Found ID in completion: {response_id}")
+
+                if response_id:
+                    self.completion_id.emit(response_id)
+                    self.logger.debug(f"Emitted completion ID: {response_id}")
+            except Exception as id_error:
+                self.logger.error(f"Error extracting completion ID: {str(id_error)}")
+
+            # STEP 3: Extract and emit usage information (third priority)
+            try:
+                usage_data = None
+                # Try all possible locations for usage data
                 if hasattr(response, "usage"):
-                    usage_data = self._normalize_token_usage(
-                        {
-                            "input_tokens": response.usage.input_tokens,
-                            "output_tokens": response.usage.output_tokens,
-                            "total_tokens": response.usage.total_tokens,
-                            "output_tokens_details": getattr(response.usage, "output_tokens_details", None)
-                        },
-                        "responses"
-                    )
+                    self.logger.debug(f"Found usage attribute")
+                    usage_data = self._normalize_token_usage(response.usage, api_type)
+                elif hasattr(response, "token_usage"):
+                    self.logger.debug(f"Found token_usage attribute")
+                    usage_data = self._normalize_token_usage(response.token_usage, api_type)
+                elif hasattr(response, "completion") and hasattr(response.completion, "usage"):
+                    self.logger.debug(f"Found completion.usage attribute")
+                    usage_data = self._normalize_token_usage(response.completion.usage, api_type)
+                elif api_type == "responses" and hasattr(response, "metadata") and hasattr(response.metadata, "usage"):
+                    self.logger.debug(f"Found metadata.usage attribute")
+                    usage_data = self._normalize_token_usage(response.metadata.usage, api_type)
+
+                # If no direct match, search for any usage-like attributes
+                if not usage_data:
+                    for attr_name in dir(response):
+                        if ("usage" in attr_name.lower() or "token" in attr_name.lower()) and not attr_name.startswith("_"):
+                            try:
+                                attr_value = getattr(response, attr_name)
+                                if attr_value is not None:
+                                    self.logger.debug(f"Found potential usage data in {attr_name}")
+                                    usage_data = self._normalize_token_usage(attr_value, api_type)
+                                    break
+                            except Exception:
+                                continue
+
+                # Emit usage data if found
+                if usage_data:
                     self.usage_info.emit(usage_data)
+                    self.logger.debug(f"Emitted usage data: {usage_data}")
+            except Exception as usage_error:
+                self.logger.error(f"Error extracting usage data: {str(usage_error)}")
 
-                # Emit system information
-                model_info = {"model": response.model}
-                self.system_info.emit(model_info)
+            # STEP 4: Extract content based on API type (different for each API)
+            try:
+                if api_type == "responses":
+                    # Response API content extraction with multiple fallbacks
 
-            else:
-                # Extract content from Chat Completions API
-                if hasattr(response, 'choices') and len(response.choices) > 0:
-                    content = response.choices[0].message.content or ""
+                    # Method 1: Direct output_text attribute (common in newer versions)
+                    if hasattr(response, "output_text"):
+                        content = response.output_text
+                        self.logger.debug(f"Found content in output_text attribute, length: {len(content)}")
 
-                # Emit completion ID
-                if hasattr(response, 'id'):
-                    self.completion_id.emit(response.id)
+                    # Method 2: Classic format using output[].content[].text
+                    elif hasattr(response, "output") and isinstance(response.output, list):
+                        for output_item in response.output:
+                            if hasattr(output_item, "type") and output_item.type == "message" and getattr(output_item, "role", "") == "assistant":
+                                if hasattr(output_item, "content") and isinstance(output_item.content, list):
+                                    for content_part in output_item.content:
+                                        if hasattr(content_part, "type") and content_part.type == "output_text":
+                                            content = getattr(content_part, "text", "")
+                                            if content:
+                                                self.logger.debug(f"Found content in output.content, length: {len(content)}")
+                                                break
 
-                # Emit usage information
-                if hasattr(response, "usage"):
-                    try:
-                        # Create usage data dictionary with safe attribute access
-                        usage_data_dict = {
-                            "input_tokens": getattr(response.usage, "input_tokens", 0),
-                            "output_tokens": getattr(response.usage, "output_tokens", 0),
-                            "total_tokens": getattr(response.usage, "total_tokens", 0)
-                        }
+                    # Method 3: Check for completion.content or similar structure
+                    elif hasattr(response, "completion") and hasattr(response.completion, "content"):
+                        content = response.completion.content
+                        self.logger.debug(f"Found content in completion.content, length: {len(content)}")
 
-                        # Handle output_tokens_details safely
-                        if hasattr(response.usage, "output_tokens_details"):
-                            usage_data_dict["output_tokens_details"] = response.usage.output_tokens_details
+                    # Method 4: Check for message.content structure (used by some models)
+                    elif hasattr(response, "message") and hasattr(response.message, "content"):
+                        content = response.message.content
+                        self.logger.debug(f"Found content in message.content, length: {len(content)}")
 
-                        usage_data = self._normalize_token_usage(usage_data_dict, "responses")
-                        self.usage_info.emit(usage_data)
-                    except Exception as e:
-                        self.logger.error(f"Error processing usage data: {str(e)}")
+                    # Method 5: Check for choices structure (used by some Response API versions)
+                    elif hasattr(response, "choices") and len(getattr(response, "choices", [])) > 0:
+                        choice = response.choices[0]
+                        if hasattr(choice, "message") and hasattr(choice.message, "content"):
+                            content = choice.message.content
+                            self.logger.debug(f"Found content in choices[0].message.content, length: {len(content)}")
+                        elif hasattr(choice, "text"):
+                            content = choice.text
+                            self.logger.debug(f"Found content in choices[0].text, length: {len(content)}")
 
-                # Emit system information
-                model_info = {"model": response.model}
-                self.system_info.emit(model_info)
+                    # Method 6: Look for direct text or content attributes
+                    elif hasattr(response, "text"):
+                        content = response.text
+                        self.logger.debug(f"Found content in text attribute, length: {len(content)}")
+                    elif hasattr(response, "content"):
+                        content = response.content
+                        self.logger.debug(f"Found content in content attribute, length: {len(content)}")
 
-            # Emit the content
+                else:  # Chat Completions API
+                    # Chat Completions API content extraction
+                    if hasattr(response, "choices") and len(getattr(response, "choices", [])) > 0:
+                        choice = response.choices[0]
+                        if hasattr(choice, "message") and hasattr(choice.message, "content"):
+                            content = choice.message.content or ""
+                            self.logger.debug(f"Found content in choices[0].message.content, length: {len(content)}")
+                        elif hasattr(choice, "text"):
+                            content = choice.text
+                            self.logger.debug(f"Found content in choices[0].text, length: {len(content)}")
+                    elif hasattr(response, "message") and hasattr(response.message, "content"):
+                        content = response.message.content
+                        self.logger.debug(f"Found content in message.content, length: {len(content)}")
+                    elif hasattr(response, "content"):
+                        content = response.content
+                        self.logger.debug(f"Found content in content attribute, length: {len(content)}")
+
+                # If still no content found, try last resort search
+                if not content:
+                    self.logger.warning("Could not extract content from standard locations, trying fallback methods")
+
+                    # Last resort - search recursively for any content-like attribute
+                    def search_for_content(obj, depth=0, max_depth=3):
+                        if depth > max_depth or obj is None:
+                            return None
+
+                        # Check direct string attributes first
+                        for attr_name in ["content", "text", "output_text", "value", "result"]:
+                            if hasattr(obj, attr_name):
+                                value = getattr(obj, attr_name)
+                                if isinstance(value, str) and len(value) > 10:
+                                    return value
+
+                        # Then recursively check object attributes
+                        for attr_name in dir(obj):
+                            if attr_name.startswith('_') or callable(getattr(obj, attr_name, None)):
+                                continue
+                            try:
+                                attr_value = getattr(obj, attr_name)
+                                if isinstance(attr_value, str) and len(attr_value) > 10:
+                                    return attr_value
+                                elif isinstance(attr_value, (dict, list)) or hasattr(attr_value, "__dict__"):
+                                    result = search_for_content(attr_value, depth + 1, max_depth)
+                                    if result:
+                                        return result
+                            except Exception:
+                                continue
+                        return None
+
+                    # Try to find content recursively
+                    found_content = search_for_content(response)
+                    if found_content:
+                        content = found_content
+                        self.logger.debug(f"Found content via recursive search, length: {len(content)}")
+            except Exception as content_error:
+                self.logger.error(f"Error extracting content: {str(content_error)}")
+
+            # STEP 5: Extract any reasoning steps if available
+            try:
+                # Extract reasoning steps with robust fallbacks
+                if api_type == "responses":
+                    reasoning_extracted = False
+
+                    # Method 1: Standard reasoning attribute
+                    if hasattr(response, "reasoning"):
+                        reasoning_obj = response.reasoning
+
+                        # Extract summary if available
+                        if hasattr(reasoning_obj, "summary") and reasoning_obj.summary:
+                            self.collected_reasoning_steps.append({
+                                "name": "Reasoning Summary",
+                                "content": reasoning_obj.summary
+                            })
+                            reasoning_extracted = True
+                            self.logger.debug("Extracted reasoning summary")
+
+                        # Extract steps list if available
+                        if hasattr(reasoning_obj, "steps") and reasoning_obj.steps:
+                            steps_list = reasoning_obj.steps
+                            for step in steps_list:
+                                if isinstance(step, dict):
+                                    self.collected_reasoning_steps.append({
+                                        "name": step.get("name", "Step"),
+                                        "content": step.get("content", "")
+                                    })
+                                else:
+                                    self.collected_reasoning_steps.append({
+                                        "name": getattr(step, "name", "Step"),
+                                        "content": getattr(step, "content", "")
+                                    })
+                            reasoning_extracted = True
+                            self.logger.debug(f"Extracted {len(steps_list)} reasoning steps")
+
+                    # Method 2: Check for thinking_steps attribute
+                    if not reasoning_extracted and hasattr(response, "thinking_steps"):
+                        thinking_steps = response.thinking_steps
+                        if isinstance(thinking_steps, list):
+                            for i, step in enumerate(thinking_steps):
+                                step_dict = {}
+                                if isinstance(step, dict):
+                                    step_dict = step
+                                elif hasattr(step, "__dict__"):
+                                    step_dict = {k: v for k, v in step.__dict__.items() if not k.startswith('_')}
+                                else:
+                                    # Create from attributes
+                                    step_dict = {
+                                        "name": getattr(step, "name", f"Step {i + 1}"),
+                                        "content": getattr(step, "content", str(step))
+                                    }
+
+                                self.collected_reasoning_steps.append({
+                                    "name": step_dict.get("name", f"Step {i + 1}"),
+                                    "content": step_dict.get("content", "")
+                                })
+                            reasoning_extracted = True
+                            self.logger.debug(f"Extracted {len(thinking_steps)} thinking steps")
+
+                    # Check for o3-mini and other reasoning models
+                    model_name = model_info.get("model", "").lower()
+                    is_reasoning_model = ("o1" in model_name or "o3" in model_name or
+                                          "deepseek-reasoner" in model_name or
+                                          model_name in self.settings.get("reasoning_models", []))
+
+                    # For o3-mini, check usage data for reasoning tokens
+                    if not reasoning_extracted and is_reasoning_model and hasattr(response, "usage"):
+                        usage_obj = response.usage
+                        reasoning_tokens = 0
+
+                        # Try to extract reasoning tokens
+                        if hasattr(usage_obj, "output_tokens_details"):
+                            details = usage_obj.output_tokens_details
+                            if isinstance(details, dict):
+                                reasoning_tokens = details.get("reasoning_tokens", 0)
+                            else:
+                                reasoning_tokens = getattr(details, "reasoning_tokens", 0)
+
+                        # Add placeholder step for models that used reasoning
+                        if reasoning_tokens > 0:
+                            self.collected_reasoning_steps.append({
+                                "name": f"{model_name.upper()} Reasoning",
+                                "content": f"Model performed internal reasoning using {reasoning_tokens} tokens (detailed steps not available)"
+                            })
+                            reasoning_extracted = True
+                            self.logger.debug(f"Added reasoning placeholder for {model_name} with {reasoning_tokens} reasoning tokens")
+
+                # Emit collected reasoning steps if any were found
+                if self.collected_reasoning_steps:
+                    self.reasoning_steps.emit(self.collected_reasoning_steps)
+                    self.logger.debug(f"Emitted {len(self.collected_reasoning_steps)} reasoning steps")
+            except Exception as reasoning_error:
+                self.logger.error(f"Error extracting reasoning steps: {str(reasoning_error)}")
+
+            # STEP 6: FINALLY emit the content or error message
             if content:
+                self.logger.debug(f"Emitting message content, length: {len(content)}")
                 self.message_received.emit(content)
-
-            # Emit reasoning steps if collected
-            if self.collected_reasoning_steps:
-                self.reasoning_steps.emit(self.collected_reasoning_steps)
-
-        except Exception as e:
-            self.logger.error(f"Error handling full response: {str(e)}")
-            self.error_occurred.emit(f"Response processing error: {str(e)}")
+            else:
+                self.logger.error(f"Failed to extract content from {api_type} response!")
+                # Send a fallback message so UI isn't stuck
+                error_msg = f"Error: Unable to extract response from {model_info.get('model', 'model')}. Please try again."
+                self.message_received.emit(error_msg)
 
         except Exception as e:
-            self.logger.error(f"Error handling full response: {str(e)}")
-            self.error_occurred.emit(f"Response processing error: {str(e)}")
+            self.logger.error(f"Critical error in _handle_full_response: {str(e)}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            # Send a fallback message so UI isn't stuck
+            self.message_received.emit("Error processing response. Please try again.")
 
     def cancel(self):
         """Mark the worker for cancellation"""
@@ -753,44 +1021,125 @@ class OpenAIAPIWorker(QObject):
         # Log the incoming usage data for better debugging
         self.logger.debug(f"Normalizing token usage from {api_type} API: {usage}")
 
+        # Perform type detection to handle different response structures
+        usage_dict = {}
+        is_dict = isinstance(usage, dict)
+
+        # Extract data from various object types
+        if is_dict:
+            usage_dict = usage
+        elif hasattr(usage, "__dict__"):
+            # Standard Python object with __dict__
+            usage_dict = {k: v for k, v in usage.__dict__.items() if not k.startswith('_')}
+        elif hasattr(usage, "model_dump"):
+            # Pydantic model with model_dump() method
+            usage_dict = usage.model_dump()
+        elif hasattr(usage, "dict"):
+            # Object with dict() method
+            usage_dict = usage.dict()
+        else:
+            # Last resort - try to get attributes directly
+            usage_dict = {}
+            for attr in dir(usage):
+                if not attr.startswith('_') and not callable(getattr(usage, attr)):
+                    usage_dict[attr] = getattr(usage, attr)
+
+        # Log the extracted dictionary for debugging
+        self.logger.debug(f"Extracted usage dictionary: {usage_dict}")
+
+        # Handle different API types
         if api_type == "responses":
-            # Handle Response API token usage
-            normalized["prompt_tokens"] = usage.get("input_tokens", 0)
-            normalized["completion_tokens"] = usage.get("output_tokens", 0)
+            # Response API uses input_tokens/output_tokens
+            normalized["prompt_tokens"] = self._safe_get(usage, usage_dict, "input_tokens", 0)
+            normalized["completion_tokens"] = self._safe_get(usage, usage_dict, "output_tokens", 0)
+            normalized["total_tokens"] = self._safe_get(usage, usage_dict, "total_tokens",
+                                                        normalized["prompt_tokens"] + normalized["completion_tokens"])
+        else:
+            # Chat Completions API uses prompt_tokens/completion_tokens
+            normalized["prompt_tokens"] = self._safe_get(usage, usage_dict, "prompt_tokens", 0)
+            normalized["completion_tokens"] = self._safe_get(usage, usage_dict, "completion_tokens", 0)
+            normalized["total_tokens"] = self._safe_get(usage, usage_dict, "total_tokens",
+                                                        normalized["prompt_tokens"] + normalized["completion_tokens"])
 
-            # Ensure total_tokens gets set even if not in the response
-            if "total_tokens" in usage:
-                normalized["total_tokens"] = usage.get("total_tokens", 0)
-            else:
-                # Calculate if not provided
-                normalized["total_tokens"] = normalized["prompt_tokens"] + normalized["completion_tokens"]
+        # Process reasoning data - check multiple possible locations
+        model = self.settings.get("model", "")
+        is_reasoning_model = model in REASONING_MODELS or "o1" in model or "o3" in model
+        self.logger.debug(f"Processing model {model}, is_reasoning_model: {is_reasoning_model}")
 
-            # Handle o3-mini model specifically
-            model = self.settings.get("model", "")
-            is_o3_model = "o3" in model
+        # Extract output_tokens_details using multiple methods
+        details_dict = {}
 
-            # Include reasoning tokens if available or set to 0 for o3 models that may not report it
-            if "output_tokens_details" in usage and usage["output_tokens_details"]:
-                details = usage["output_tokens_details"]
-                # Handle both dictionary and object types
-                if isinstance(details, dict):
-                    normalized["completion_tokens_details"] = {
-                        "reasoning_tokens": details.get("reasoning_tokens", 0)
-                    }
-                else:
-                    # Handle OutputTokensDetails as an object with attributes
-                    normalized["completion_tokens_details"] = {
-                        "reasoning_tokens": getattr(details, "reasoning_tokens", 0)
-                    }
-            elif is_o3_model:
-                # For o3 models, add a placeholder for reasoning tokens even if not provided
-                normalized["completion_tokens_details"] = {
-                    "reasoning_tokens": 0
-                }
-                self.logger.debug(f"Added placeholder reasoning tokens for {model}")
+        # Method 1: Try to get directly from usage_dict
+        if "output_tokens_details" in usage_dict:
+            raw_details = usage_dict["output_tokens_details"]
+            details_dict = self._extract_details_dict(raw_details)
+            self.logger.debug(f"Found output_tokens_details in usage_dict: {details_dict}")
+
+        # Method 2: Try to get via attribute access
+        elif hasattr(usage, "output_tokens_details"):
+            raw_details = getattr(usage, "output_tokens_details")
+            details_dict = self._extract_details_dict(raw_details)
+            self.logger.debug(f"Found output_tokens_details via attribute: {details_dict}")
+
+        # Method 3: Try other possible field names for reasoning metrics
+        elif "reasoning_output_tokens" in usage_dict:
+            details_dict["reasoning_tokens"] = usage_dict["reasoning_output_tokens"]
+            self.logger.debug(f"Found reasoning_output_tokens: {details_dict['reasoning_tokens']}")
+        elif "reasoning_tokens" in usage_dict:
+            details_dict["reasoning_tokens"] = usage_dict["reasoning_tokens"]
+            self.logger.debug(f"Found direct reasoning_tokens: {details_dict['reasoning_tokens']}")
+
+        # Create standardized completion_tokens_details
+        if details_dict:
+            normalized["completion_tokens_details"] = {
+                "reasoning_tokens": details_dict.get("reasoning_tokens", 0),
+                "accepted_prediction_tokens": details_dict.get("accepted_prediction_tokens", 0),
+                "rejected_prediction_tokens": details_dict.get("rejected_prediction_tokens", 0)
+            }
+        # Add placeholder for reasoning models even if not found
+        elif is_reasoning_model:
+            normalized["completion_tokens_details"] = {
+                "reasoning_tokens": 0,
+                "accepted_prediction_tokens": 0,
+                "rejected_prediction_tokens": 0
+            }
+            self.logger.debug(f"Added placeholder reasoning data for {model}")
 
         self.logger.debug(f"Normalized token usage: {normalized}")
         return normalized
+
+    def _safe_get(self, obj, obj_dict, key, default=0):
+        """Safely get a value from either dict or object attributes"""
+        # Try dict access first
+        if key in obj_dict:
+            return obj_dict[key]
+        # Then try attribute access
+        elif hasattr(obj, key):
+            return getattr(obj, key)
+        # Finally return default
+        return default
+
+    def _extract_details_dict(self, details):
+        """Extract a dictionary from details object regardless of type"""
+        if details is None:
+            return {}
+        if isinstance(details, dict):
+            return details
+        # Try standard object with __dict__
+        if hasattr(details, "__dict__"):
+            return {k: v for k, v in details.__dict__.items() if not k.startswith('_')}
+        # Try Pydantic model
+        if hasattr(details, "model_dump"):
+            return details.model_dump()
+        # Try dict() method
+        if hasattr(details, "dict"):
+            return details.dict()
+        # Manually extract attributes
+        result = {}
+        for attr in ["reasoning_tokens", "accepted_prediction_tokens", "rejected_prediction_tokens"]:
+            if hasattr(details, attr):
+                result[attr] = getattr(details, attr)
+        return result
 
     def prepare_input(self, messages, api_type="responses"):
         """
@@ -866,8 +1215,6 @@ class OpenAIAPIWorker(QObject):
                 prepared_messages.append(prepared_message)
 
             return prepared_messages
-
-
 
     def _get_file_extension(self, filename):
         """Extract extension from filename for syntax highlighting"""
