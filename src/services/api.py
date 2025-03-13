@@ -100,20 +100,54 @@ class OpenAIAPIWorker(QObject):
 
     def __init__(self, messages, settings):
         super().__init__()
-        self.messages = messages
-        self.settings = settings
-        self.logger = get_logger(f"{__name__}.OpenAIAPIWorker")
-        self.collected_reasoning_steps = []
-        self._is_cancelled = False
-        self._current_text_content = ""  # To accumulate text during streaming
+        try:
+            # Make copies of input data to prevent shared state issues
+            self.messages = list(messages) if messages else []
+            self.settings = settings.copy() if settings else {}
+
+            # Initialize logger
+            self.logger = get_logger(f"{__name__}.OpenAIAPIWorker")
+
+            # Initialize worker state
+            self.collected_reasoning_steps = []
+            self._is_cancelled = False
+            self._current_text_content = ""  # To accumulate text during streaming
+
+            # Add worker ID for debugging
+            import uuid
+            self._worker_id = str(uuid.uuid4())[:8]
+            self.logger.debug(f"Worker {self._worker_id} initialized")
+
+            # Set max content size to prevent memory issues
+            self._max_content_size = 1024 * 1024  # 1MB limit
+
+            # Initialize processing state
+            self._is_processing = False
+        except Exception as e:
+            print(f"Error initializing API worker: {str(e)}")
+            # Continue anyway, we'll handle errors in the process method
 
     @pyqtSlot()
     def process(self):
-        """Execute the API call with enhanced error handling"""
+        """Execute the API call with memory safety and robust error handling"""
+        # Prevent duplicate processing
+        if self._is_processing:
+            self.logger.warning(f"Worker {self._worker_id} already processing, ignoring duplicate call")
+            return
+
+        self._is_processing = True
+
         try:
-            api_key = self.settings.get("api_key")
-            api_base = self.settings.get("api_base")
-            model = self.settings.get("model")
+            self.logger.info(f"Worker {self._worker_id} starting processing")
+
+            # Check if we have valid input
+            if not self.messages:
+                raise ValueError("No messages provided")
+
+            # Extract settings with defaults
+            api_key = self.settings.get("api_key", "")
+            api_base = self.settings.get("api_base", "")
+            model = self.settings.get("model", "gpt-4o")
             api_type = self.settings.get("api_type", "responses")
 
             self.logger.info(f"Using model: {model} with API type: {api_type}")
@@ -122,30 +156,58 @@ class OpenAIAPIWorker(QObject):
             if not api_key:
                 raise ValueError("No API key provided. Please check your settings.")
 
-            # Create client
-            client_kwargs = {}
-            if api_key:
-                client_kwargs["api_key"] = api_key
+            # Create client with timeout
+            client_kwargs = {
+                "api_key": api_key,
+                "timeout": 60.0  # 60 second timeout
+            }
+
             if api_base:
                 client_kwargs["base_url"] = api_base
 
-            client = OpenAI(**client_kwargs)
+            # Create client in a try block
+            try:
+                client = OpenAI(**client_kwargs)
+            except Exception as client_error:
+                self.logger.error(f"Error creating OpenAI client: {str(client_error)}")
+                self.error_occurred.emit(f"Error initializing API client: {str(client_error)}")
+                raise
 
-            # Prepare parameters
-            if api_type == "responses":
-                params = self._prepare_response_api_params(model)
-            else:
-                params = self._prepare_chat_completions_params(model)
+            # Prepare parameters in a separate try block
+            try:
+                if api_type == "responses":
+                    params = self._prepare_response_api_params(model)
+                else:
+                    params = self._prepare_chat_completions_params(model)
+
+                # Limit max tokens to reasonable values to prevent memory issues
+                if "max_tokens" in params and params["max_tokens"] > 16384:
+                    self.logger.warning(f"Limiting max_tokens from {params['max_tokens']} to 16384")
+                    params["max_tokens"] = 16384
+
+                if "max_output_tokens" in params and params["max_output_tokens"] > 16384:
+                    self.logger.warning(f"Limiting max_output_tokens from {params['max_output_tokens']} to 16384")
+                    params["max_output_tokens"] = 16384
+            except Exception as param_error:
+                self.logger.error(f"Error preparing parameters: {str(param_error)}")
+                self.error_occurred.emit(f"Error preparing request: {str(param_error)}")
+                raise
 
             # Check for cancellation before making the request
             if self._is_cancelled:
-                self.logger.info("API request cancelled before execution")
-                self.worker_finished.emit()
+                self.logger.info(f"Worker {self._worker_id} cancelled before execution")
                 return
 
+            # Import needed modules right before use
+            import openai
+            import gc
+
+            # Execute API call with proper error handling
             try:
                 # Handle streaming vs non-streaming
-                if params.get("stream", False):
+                streaming_mode = params.get("stream", False)
+
+                if streaming_mode:
                     # Make streaming request
                     try:
                         if api_type == "responses":
@@ -153,37 +215,50 @@ class OpenAIAPIWorker(QObject):
                         else:
                             stream = client.chat.completions.create(**params)
 
+                        # Stream is ready, process it with timeout protection
+                        import threading
+                        from PyQt6.QtCore import QTimer
+
+                        # Set a timer to abort if streaming takes too long
+                        self._stream_timeout = QTimer()
+                        self._stream_timeout.setSingleShot(True)
+                        self._stream_timeout.timeout.connect(self._handle_stream_timeout)
+                        self._stream_timeout.start(60000)  # 60 second timeout
+
+                        # Process the stream
                         self._handle_streaming_response(stream, api_type)
-                    except openai.BadRequestError as e:
-                        # Bad request - often parameter or formatting issues
-                        self.logger.error(f"Bad request error: {str(e)}")
-                        self.error_occurred.emit(f"Bad request: {str(e)}")
-                    except openai.RateLimitError as e:
-                        # Rate limit issues
-                        self.logger.error(f"Rate limit error: {str(e)}")
-                        self.error_occurred.emit(f"Rate limit exceeded: {str(e)}")
-                    except openai.APITimeoutError as e:
-                        # Timeout issues
-                        self.logger.error(f"API timeout: {str(e)}")
-                        self.error_occurred.emit(f"Request timed out: {str(e)}")
-                    except openai.APIConnectionError as e:
-                        # Connection issues
-                        self.logger.error(f"API connection error: {str(e)}")
-                        self.error_occurred.emit(f"Connection error: {str(e)}")
-                    except openai.AuthenticationError as e:
-                        # Authentication issues
-                        self.logger.error(f"Authentication error: {str(e)}")
-                        self.error_occurred.emit(f"Authentication failed: Please check your API key")
-                    except openai.InternalServerError as e:
-                        # OpenAI server issues
-                        self.logger.error(f"OpenAI server error: {str(e)}")
-                        self.error_occurred.emit(f"OpenAI server error: Please try again later")
-                    except Exception as e:
-                        # Other unexpected errors
-                        self.logger.error(f"Unexpected error during streaming: {str(e)}")
-                        self.error_occurred.emit(f"Unexpected error: {str(e)}")
+
+                        # Stop the timeout timer
+                        self._stream_timeout.stop()
+
+                    except Exception as stream_error:
+                        # Classify and handle different types of errors
+                        error_type = type(stream_error).__name__
+                        error_msg = str(stream_error)
+
+                        if hasattr(openai, 'BadRequestError') and isinstance(stream_error, openai.BadRequestError):
+                            self.logger.error(f"Bad request error: {error_msg}")
+                            self.error_occurred.emit(f"Bad request: {error_msg}")
+                        elif hasattr(openai, 'RateLimitError') and isinstance(stream_error, openai.RateLimitError):
+                            self.logger.error(f"Rate limit error: {error_msg}")
+                            self.error_occurred.emit(f"Rate limit exceeded: {error_msg}")
+                        elif hasattr(openai, 'APITimeoutError') and isinstance(stream_error, openai.APITimeoutError):
+                            self.logger.error(f"API timeout: {error_msg}")
+                            self.error_occurred.emit(f"Request timed out: {error_msg}")
+                        elif hasattr(openai, 'APIConnectionError') and isinstance(stream_error, openai.APIConnectionError):
+                            self.logger.error(f"API connection error: {error_msg}")
+                            self.error_occurred.emit(f"Connection error: {error_msg}")
+                        elif hasattr(openai, 'AuthenticationError') and isinstance(stream_error, openai.AuthenticationError):
+                            self.logger.error(f"Authentication error: {error_msg}")
+                            self.error_occurred.emit(f"Authentication failed: Please check your API key")
+                        elif hasattr(openai, 'InternalServerError') and isinstance(stream_error, openai.InternalServerError):
+                            self.logger.error(f"OpenAI server error: {error_msg}")
+                            self.error_occurred.emit(f"OpenAI server error: Please try again later")
+                        else:
+                            self.logger.error(f"Unexpected error ({error_type}) during streaming: {error_msg}")
+                            self.error_occurred.emit(f"Unexpected error: {error_msg}")
                 else:
-                    # Make non-streaming request
+                    # Make non-streaming request with timeout protection
                     try:
                         if api_type == "responses":
                             response = client.responses.create(**params)
@@ -191,38 +266,58 @@ class OpenAIAPIWorker(QObject):
                             response = client.chat.completions.create(**params)
 
                         self._handle_full_response(response, api_type)
-                    except openai.BadRequestError as e:
-                        self.logger.error(f"Bad request error: {str(e)}")
-                        self.error_occurred.emit(f"Bad request: {str(e)}")
-                    except openai.RateLimitError as e:
-                        self.logger.error(f"Rate limit error: {str(e)}")
-                        self.error_occurred.emit(f"Rate limit exceeded: {str(e)}")
-                    except openai.APITimeoutError as e:
-                        self.logger.error(f"API timeout: {str(e)}")
-                        self.error_occurred.emit(f"Request timed out: {str(e)}")
-                    except openai.APIConnectionError as e:
-                        self.logger.error(f"API connection error: {str(e)}")
-                        self.error_occurred.emit(f"Connection error: {str(e)}")
-                    except openai.AuthenticationError as e:
-                        self.logger.error(f"Authentication error: {str(e)}")
-                        self.error_occurred.emit(f"Authentication failed: Please check your API key")
-                    except openai.InternalServerError as e:
-                        self.logger.error(f"OpenAI server error: {str(e)}")
-                        self.error_occurred.emit(f"OpenAI server error: Please try again later")
-                    except Exception as e:
-                        self.logger.error(f"Unexpected error during request: {str(e)}")
-                        self.error_occurred.emit(f"Unexpected error: {str(e)}")
+                    except Exception as resp_error:
+                        # Classify and handle different types of errors
+                        error_type = type(resp_error).__name__
+                        error_msg = str(resp_error)
 
-            except Exception as e:
-                self.logger.error(f"API request failed: {str(e)}")
-                self.error_occurred.emit(f"API request failed: {str(e)}")
+                        if hasattr(openai, 'BadRequestError') and isinstance(resp_error, openai.BadRequestError):
+                            self.logger.error(f"Bad request error: {error_msg}")
+                            self.error_occurred.emit(f"Bad request: {error_msg}")
+                        elif hasattr(openai, 'RateLimitError') and isinstance(resp_error, openai.RateLimitError):
+                            self.logger.error(f"Rate limit error: {error_msg}")
+                            self.error_occurred.emit(f"Rate limit exceeded: {error_msg}")
+                        elif hasattr(openai, 'APITimeoutError') and isinstance(resp_error, openai.APITimeoutError):
+                            self.logger.error(f"API timeout: {error_msg}")
+                            self.error_occurred.emit(f"Request timed out: {error_msg}")
+                        elif hasattr(openai, 'APIConnectionError') and isinstance(resp_error, openai.APIConnectionError):
+                            self.logger.error(f"API connection error: {error_msg}")
+                            self.error_occurred.emit(f"Connection error: {error_msg}")
+                        elif hasattr(openai, 'AuthenticationError') and isinstance(resp_error, openai.AuthenticationError):
+                            self.logger.error(f"Authentication error: {error_msg}")
+                            self.error_occurred.emit(f"Authentication failed: Please check your API key")
+                        elif hasattr(openai, 'InternalServerError') and isinstance(resp_error, openai.InternalServerError):
+                            self.logger.error(f"OpenAI server error: {error_msg}")
+                            self.error_occurred.emit(f"OpenAI server error: Please try again later")
+                        else:
+                            self.logger.error(f"Unexpected error ({error_type}) during request: {error_msg}")
+                            self.error_occurred.emit(f"Unexpected error: {error_msg}")
 
-        except Exception as e:
-            self.logger.error(f"Error in process method: {str(e)}")
-            self.error_occurred.emit(str(e))
+            except Exception as api_error:
+                self.logger.error(f"API request failed: {str(api_error)}")
+                self.error_occurred.emit(f"API request failed: {str(api_error)}")
+
+            # Force garbage collection after API calls
+            gc.collect()
+
+        except Exception as process_error:
+            self.logger.error(f"Critical error in process method: {str(process_error)}")
+            self.error_occurred.emit(f"Critical error: {str(process_error)}")
+
+            # Log stack trace for debugging
+            import traceback
+            self.logger.error(f"Stack trace: {traceback.format_exc()}")
         finally:
+            # Reset processing flag
+            self._is_processing = False
+
             # Signal completion
-            self.worker_finished.emit()
+            try:
+                self.worker_finished.emit()
+            except Exception as signal_error:
+                self.logger.error(f"Error emitting worker finished signal: {str(signal_error)}")
+
+            self.logger.info(f"Worker {self._worker_id} finished processing")
 
     def _prepare_response_api_params(self, model):
         """Prepare parameters for the Response API with cleaner parameter handling"""
@@ -323,7 +418,7 @@ class OpenAIAPIWorker(QObject):
         return params
 
     def _handle_streaming_response(self, stream, api_type="responses"):
-        """Handle streaming response from either API"""
+        """Handle streaming response from either API with improved structure"""
         full_text = ""
 
         try:
@@ -803,3 +898,16 @@ class OpenAIAPIWorker(QObject):
                 content_strip.startswith("**Step") or
                 content_strip.startswith("**Puzzle:")
         )
+
+    def _handle_stream_timeout(self):
+        """Handle timeout for streaming responses"""
+        self.logger.warning(f"Worker {self._worker_id} streaming operation timed out")
+        self._is_cancelled = True
+        self.error_occurred.emit("Streaming operation timed out. Please try again.")
+
+        # Force completion with current content
+        if self._current_text_content:
+            try:
+                self.message_received.emit(self._current_text_content)
+            except Exception as e:
+                self.logger.error(f"Error emitting message in timeout handler: {str(e)}")

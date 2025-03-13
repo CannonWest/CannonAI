@@ -110,3 +110,47 @@ def log_exception(logger: logging.Logger, exc: Exception, message: str = "An exc
         message: Optional message to include with the exception
     """
     logger.exception(f"{message} {str(exc)}")
+
+
+def monitor_stack_depth(max_depth=500):
+    """
+    Decorator to monitor stack depth to help catch potential stack overflow issues.
+
+    Usage:
+        @monitor_stack_depth(max_depth=50)
+        def my_recursive_function(...):
+            ...
+    """
+    import sys
+    import traceback
+    import functools
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            frame = sys._getframe()
+            depth = 0
+
+            # Count stack frames
+            while frame:
+                depth += 1
+                frame = frame.f_back
+
+                # Check if we're approaching a dangerous depth
+                if depth > max_depth:
+                    # Get the stack trace
+                    stack_trace = traceback.format_stack()
+                    # Log warning with stack trace
+                    print(f"WARNING: Deep recursion detected in {func.__name__} - depth {depth} exceeds {max_depth}")
+                    print("Stack trace:")
+                    for line in stack_trace[-20:]:  # Print the last 20 frames
+                        print(line.strip())
+                    # Return early to prevent stack overflow
+                    return None
+
+            # Call the original function
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator

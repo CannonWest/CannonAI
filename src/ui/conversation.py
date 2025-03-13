@@ -219,15 +219,15 @@ class ConversationBranchTab(QWidget):
         self.zoom_out_btn.setToolTip("Zoom Out")
         self.zoom_out_btn.clicked.connect(lambda: self.graph_view.scale(0.8, 0.8))
 
-        fit_btn = QPushButton("Fit")
-        fit_btn.setToolTip("Fit View")
-        fit_btn.clicked.connect(lambda: self.graph_view.fitInView(
+        self.fit_btn = QPushButton("Fit")
+        self.fit_btn.setToolTip("Fit View")
+        self.fit_btn.clicked.connect(lambda: self.graph_view.fitInView(
             self.graph_view._scene.sceneRect(),
             Qt.AspectRatioMode.KeepAspectRatio
         ))
 
         self.zoom_layout.addWidget(self.zoom_out_btn)
-        self.zoom_layout.addWidget(fit_btn)
+        self.zoom_layout.addWidget(self.fit_btn)
         self.zoom_layout.addWidget(self.zoom_in_btn)
 
         self.tree_layout.addWidget(self.zoom_container)
@@ -259,6 +259,9 @@ class ConversationBranchTab(QWidget):
         # Add state tracking for deferred UI updates
         self._ui_update_pending = False
         self._is_streaming = False
+        self._updating_ui = False
+        self._streaming_started = False
+        self._has_loading_text = False
 
         self._message_cache = {}  # node_id -> rendered html
         self._last_branch_ids = set()  # Track which messages were last displayed
@@ -274,32 +277,54 @@ class ConversationBranchTab(QWidget):
 
     def update_ui(self):
         """Update the UI with the current conversation state"""
+        # Protect against recursion
+        if hasattr(self, '_updating_ui') and self._updating_ui:
+            print("WARNING: Prevented recursive UI update")
+            return
+
         if not self.conversation_tree:
             return
 
-        # Don't do expensive UI updates during streaming
-        if self._is_streaming:
-            # Mark that we need a full update when streaming ends
-            self._ui_update_pending = True
-            # Only update the chat display during streaming
-            self.update_chat_display()
-            return
+        try:
+            self._updating_ui = True
 
-        # Normal full UI update when not streaming
-        current_branch = self.conversation_tree.get_current_branch()
-        self.branch_nav.update_branch(current_branch)
+            # Don't do expensive UI updates during streaming
+            if hasattr(self, '_is_streaming') and self._is_streaming:
+                # Mark that we need a full update when streaming ends
+                self._ui_update_pending = True
+                # Only update the chat display during streaming
+                self.update_chat_display()
+                return
 
-        # Update tree view
-        self.graph_view.update_tree(self.conversation_tree)
+            # Normal full UI update when not streaming
+            try:
+                current_branch = self.conversation_tree.get_current_branch()
+                self.branch_nav.update_branch(current_branch)
+            except Exception as e:
+                print(f"Error updating branch nav: {str(e)}")
 
-        # Update chat display
-        self.update_chat_display()
+            # Update tree view
+            try:
+                self.graph_view.update_tree(self.conversation_tree)
+            except Exception as e:
+                print(f"Error updating graph view: {str(e)}")
 
-        # Update retry button state
-        self.update_retry_button()
+            # Update chat display
+            try:
+                self.update_chat_display()
+            except Exception as e:
+                print(f"Error updating chat display: {str(e)}")
 
-        # Reset pending update flag since we just did a full update
-        self._ui_update_pending = False
+            # Update retry button state
+            try:
+                self.update_retry_button()
+            except Exception as e:
+                print(f"Error updating retry button: {str(e)}")
+
+            # Reset pending update flag since we just did a full update
+            self._ui_update_pending = False
+        finally:
+            self._updating_ui = False
 
     def update_model_info(self, model_id):
         """Update the model information display with the current model details"""
@@ -522,6 +547,11 @@ class ConversationBranchTab(QWidget):
     def update_chat_streaming(self, chunk):
         """Update the chat display during streaming for efficiency"""
         try:
+            # Safety check for extremely large chunks that could cause memory issues
+            if len(chunk) > 10000:  # 10KB limit for a single chunk
+                chunk = chunk[:10000] + "... [CHUNK TRUNCATED - TOO LARGE]"
+                print("WARNING: Chunk size exceeded limits - truncated")
+
             # Set streaming mode flag
             self._is_streaming = True
             self._ui_update_pending = True
@@ -532,31 +562,49 @@ class ConversationBranchTab(QWidget):
 
                 # Remove any loading indicator text if present
                 if hasattr(self, '_has_loading_text') and self._has_loading_text:
-                    cursor = self.chat_display.textCursor()
-                    cursor.movePosition(QTextCursor.MoveOperation.End)
-                    cursor.movePosition(QTextCursor.MoveOperation.Up, QTextCursor.MoveMode.KeepAnchor, 1)
-                    cursor.removeSelectedText()
-                    self._has_loading_text = False
+                    try:
+                        cursor = self.chat_display.textCursor()
+                        cursor.movePosition(QTextCursor.MoveOperation.End)
+                        cursor.movePosition(QTextCursor.MoveOperation.Up, QTextCursor.MoveMode.KeepAnchor, 1)
+                        cursor.removeSelectedText()
+                        self._has_loading_text = False
+                    except Exception as cursor_error:
+                        print(f"Error removing loading text: {str(cursor_error)}")
+                        # Just continue if cursor operations fail
 
-            # Get cursor position at the end
-            cursor = self.chat_display.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            self.chat_display.setTextCursor(cursor)
+            try:
+                # Get cursor position at the end
+                cursor = self.chat_display.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                self.chat_display.setTextCursor(cursor)
 
-            # Insert the chunk as plain text
-            self.chat_display.insertPlainText(chunk)
+                # Insert the chunk as plain text
+                self.chat_display.insertPlainText(chunk)
+            except Exception as text_error:
+                print(f"Error inserting text: {str(text_error)}")
+                # Try an alternative method if the first fails
+                try:
+                    self.chat_display.append(chunk)
+                except Exception:
+                    pass  # Silently fail if both methods fail
 
             # Only process events every 20 chunks for better performance
             if not hasattr(self, '_chunk_counter'):
                 self._chunk_counter = 0
             self._chunk_counter += 1
 
-            if self._chunk_counter % 20 == 0:
-                from PyQt6.QtCore import QCoreApplication
-                QCoreApplication.processEvents()
+            # Reduce event processing frequency to prevent overload
+            if self._chunk_counter % 50 == 0:  # Increased from 20 to 50
+                try:
+                    from PyQt6.QtCore import QCoreApplication
+                    QCoreApplication.processEvents()
+                except Exception as event_error:
+                    print(f"Error processing events: {str(event_error)}")
 
         except Exception as e:
-            print(f"Error in update_chat_streaming: {str(e)}")
+            print(f"Critical error in update_chat_streaming: {str(e)}")
+            # Reset streaming state to avoid being stuck
+            self._is_streaming = False
 
     def complete_streaming_update(self):
         """Perform a full UI update after streaming is complete"""
@@ -670,45 +718,153 @@ class ConversationBranchTab(QWidget):
             self.update_ui()
             self.branch_changed.emit()
 
-
     def on_send(self):
-        """Handle sending a new message"""
-        if not self.conversation_tree:
-            return
+        """Handle sending a new message with improved error handling"""
+        try:
+            # First, check if we're already processing a message
+            if hasattr(self, '_processing_message') and self._processing_message:
+                from PyQt6.QtWidgets import QMessageBox
 
-        message = self.text_input.toPlainText().strip()
+                # Show warning dialog
+                reply = QMessageBox.question(
+                    self,
+                    "Message in Progress",
+                    "A message is already being processed. Do you want to cancel it and send a new one?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
 
-        # Prepare attachments if present but don't add them directly to the message text
-        attachments_copy = None
-        if self.current_attachments:
-            # Just note that there are attachments in the UI message
-            if message:
-                # We no longer append file info to the message text
-                # The API service will handle the file content formatting
-                attachment_count = len(self.current_attachments)
-                file_text = f"\n\n[{attachment_count} file{'s' if attachment_count > 1 else ''} attached]"
-                message += file_text
-            else:
-                message = f"[Attached {len(self.current_attachments)} file{'s' if len(self.current_attachments) > 1 else ''}]"
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
 
-            # Copy attachments before clearing
-            attachments_copy = self.current_attachments.copy()
+                # Cancel the current processing
+                if hasattr(self, '_active_thread_id'):
+                    from src.services.api import OpenAIThreadManager
+                    thread_manager = OpenAIThreadManager()
+                    thread_manager.cancel_worker(self._active_thread_id)
+                    print(f"Cancelled thread: {self._active_thread_id}")
 
-        if not message:
-            return
+            # Check if conversation tree is valid
+            if not self.conversation_tree:
+                print("ERROR: No conversation tree available")
+                return
 
-        self.text_input.clear()
+            # Get message text with safety checks
+            try:
+                message = self.text_input.toPlainText().strip()
+            except Exception as text_error:
+                print(f"Error getting message text: {str(text_error)}")
+                message = ""
 
-        # Store attachments for use in the main window's send_message method
-        self._pending_attachments = attachments_copy
+            # Check if message is too long (prevent memory issues)
+            if len(message) > 100000:  # 100KB limit
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self,
+                    "Message Too Long",
+                    "Your message is too long. Please shorten it or split it into multiple messages."
+                )
+                return
 
-        # Start loading indicator
-        self.start_loading_indicator()
+            # Prepare attachments if present
+            attachments_copy = None
+            try:
+                if hasattr(self, 'current_attachments') and self.current_attachments:
+                    # Calculate total attachment size
+                    total_size = sum(len(attachment.get('content', '')) for attachment in self.current_attachments)
 
-        self.send_message.emit(message)
+                    # Check if total size is too large
+                    if total_size > 10 * 1024 * 1024:  # 10MB limit
+                        from PyQt6.QtWidgets import QMessageBox
+                        QMessageBox.warning(
+                            self,
+                            "Attachments Too Large",
+                            "Your attachments are too large. Please reduce their size or number."
+                        )
+                        return
 
-        # Clear attachments after sending
-        self.clear_attachments()
+                    # Just note that there are attachments in the UI message
+                    if message:
+                        attachment_count = len(self.current_attachments)
+                        file_text = f"\n\n[{attachment_count} file{'s' if attachment_count > 1 else ''} attached]"
+                        message += file_text
+                    else:
+                        message = f"[Attached {len(self.current_attachments)} file{'s' if len(self.current_attachments) > 1 else ''}]"
+
+                    # Make a deep copy of attachments to prevent memory issues
+                    attachments_copy = []
+                    for attachment in self.current_attachments:
+                        # Create a new dict with only the essential fields
+                        clean_attachment = {
+                            'file_name': attachment.get('file_name', 'unnamed_file'),
+                            'mime_type': attachment.get('mime_type', 'text/plain'),
+                            'content': attachment.get('content', ''),
+                            'token_count': attachment.get('token_count', 0)
+                        }
+                        attachments_copy.append(clean_attachment)
+            except Exception as attach_error:
+                print(f"Error processing attachments: {str(attach_error)}")
+                attachments_copy = None
+
+            # Final check for empty message
+            if not message:
+                return
+
+            # Clear the input field
+            try:
+                self.text_input.clear()
+            except Exception as clear_error:
+                print(f"Error clearing input field: {str(clear_error)}")
+                # Continue anyway
+
+            # Store attachments for use in the main window's send_message method
+            self._pending_attachments = attachments_copy
+
+            # Start loading indicator
+            try:
+                self.start_loading_indicator()
+            except Exception as indicator_error:
+                print(f"Error starting loading indicator: {str(indicator_error)}")
+                # Continue anyway
+
+            # Emit signal to send message
+            try:
+                self.send_message.emit(message)
+            except Exception as emit_error:
+                print(f"Error emitting send message signal: {str(emit_error)}")
+                # Try to recover from emission error
+                self.stop_loading_indicator()
+
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.critical(
+                    self,
+                    "Error Sending Message",
+                    f"Failed to send message: {str(emit_error)}"
+                )
+                return
+
+            # Clear attachments after sending
+            try:
+                self.clear_attachments()
+            except Exception as clear_attach_error:
+                print(f"Error clearing attachments: {str(clear_attach_error)}")
+                # Continue anyway
+
+        except Exception as e:
+            print(f"Critical error in on_send: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+            # Try to show error dialog
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.critical(
+                    self,
+                    "Error Sending Message",
+                    f"An unexpected error occurred: {str(e)}"
+                )
+            except:
+                pass  # Last resort, just ignore if even the error dialog fails
 
     def on_retry(self):
         """Handle retry button click"""

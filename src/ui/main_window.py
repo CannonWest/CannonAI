@@ -19,7 +19,10 @@ from src.services import OpenAIAPIWorker, OpenAIThreadManager, SettingsManager
 from src.ui.conversation import ConversationBranchTab
 from src.ui.components import SettingsDialog, SearchDialog
 from src.models.db_manager import DatabaseManager
+from src.utils.logging_utils import get_logger
 
+# Get a logger for this module
+logger = get_logger(__name__)
 
 class MainWindow(QMainWindow):
     """Main application window"""
@@ -28,6 +31,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("OpenAI Chat Interface")
         self.setMinimumSize(900, 700)
+        self.logger = get_logger(f"{__name__}.MainWindow")
 
         # Initialize settings and conversation managers
         self.settings_manager = SettingsManager()
@@ -453,23 +457,33 @@ class MainWindow(QMainWindow):
 
     def send_message(self, tab, message):
         """Send a user message and get a response"""
-        tab.measure_ui_operations()
-        # Get the active conversation
-        conversation = tab.conversation_tree
+        try:
+            # Get the active conversation
+            conversation = tab.conversation_tree
 
-        # Check if there are file attachments to include
-        attached_files = getattr(tab, '_pending_attachments', None)
+            # Check if there are file attachments to include
+            attached_files = getattr(tab, '_pending_attachments', None)
 
-        # Add the user message
-        conversation.add_user_message(message, attached_files=attached_files)
+            try:
+                # Add the user message
+                conversation.add_user_message(message, attached_files=attached_files)
 
-        # Update the UI
-        tab.update_ui()
+                # Update the UI
+                tab.update_ui()
 
-        # Start message processing
-        self._start_message_processing(tab, conversation.get_current_messages())
-
-        tab.measure_ui_operations()
+                # Start message processing
+                self._start_message_processing(tab, conversation.get_current_messages())
+            except Exception as e:
+                self.logger.error(f"Error sending message: {str(e)}")
+                self.handle_error(f"Error sending message: {str(e)}")
+        except Exception as e:
+            self.logger.error(f"Critical error in send_message: {str(e)}")
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                self,
+                "Critical Error",
+                f"An unexpected error occurred while processing your message. Details: {str(e)}"
+            )
 
     def retry_message(self, tab):
         """Retry the current message with possibly different settings"""
@@ -490,52 +504,100 @@ class MainWindow(QMainWindow):
 
     def _start_message_processing(self, tab, messages):
         """
-        Start processing a message request.
+        Start processing a message request with robust error handling.
 
         Args:
             tab: The tab containing the conversation
             messages: Messages to send to the API
         """
-        # Clear any existing chain of thought steps
-        tab.clear_cot()
+        # Safety check
+        if not tab or not messages:
+            print("ERROR: Invalid tab or messages in _start_message_processing")
+            return
 
-        # Start loading indicator
-        if hasattr(tab, 'start_loading_indicator'):
-            tab.start_loading_indicator()
+        # Check if tab is already processing a message
+        if hasattr(tab, '_processing_message') and tab._processing_message:
+            print("WARNING: Tab is already processing a message, cancelling previous request")
+            try:
+                if hasattr(tab, '_active_thread_id'):
+                    self.thread_manager.cancel_worker(tab._active_thread_id)
+            except Exception as e:
+                print(f"Error cancelling previous worker: {str(e)}")
 
-        # Mark the tab as processing a message
-        tab._processing_message = True
+        try:
+            # Clear any existing chain of thought steps
+            if hasattr(tab, 'clear_cot'):
+                tab.clear_cot()
 
-        # Create worker and thread using the manager
-        thread_id, worker = self.thread_manager.create_worker(
-            messages,
-            self.settings
-        )
+            # Start loading indicator
+            if hasattr(tab, 'start_loading_indicator'):
+                tab.start_loading_indicator()
 
-        # Store thread_id with the tab for potential cancellation
-        tab._active_thread_id = thread_id
+            # Mark the tab as processing a message
+            tab._processing_message = True
 
-        # Connect signals
-        if self.settings.get("stream", True):
-            # For streaming mode
-            worker.chunk_received.connect(lambda chunk: self.handle_chunk(tab, chunk))
-            worker.message_received.connect(lambda content: self.finalize_streaming(tab, content))
-            worker.completion_id.connect(lambda id: setattr(tab, '_response_id', id))
-        else:
-            # For non-streaming mode
-            worker.message_received.connect(lambda content: self.handle_assistant_response(tab, content))
-            worker.completion_id.connect(lambda id: self.handle_assistant_response(tab, tab.chat_display.toPlainText(), id))
+            # Make a copy of messages to prevent potential memory issues
+            messages_copy = list(messages)
 
-        # Connect other signals
-        worker.thinking_step.connect(lambda step, content: tab.add_cot_step(step, content))
-        worker.reasoning_steps.connect(lambda steps: tab.set_reasoning_steps(steps))
-        worker.error_occurred.connect(self.handle_error)
-        worker.usage_info.connect(lambda info: self.handle_usage_info(tab, info))
-        worker.system_info.connect(lambda info: self.handle_system_info(tab, info))
-        worker.worker_finished.connect(lambda: self._on_worker_finished(tab))
+            # Create worker and thread using the manager
+            try:
+                thread_id, worker = self.thread_manager.create_worker(
+                    messages_copy,
+                    self.settings.copy()  # Use a copy of settings to avoid shared state issues
+                )
 
-        # Start the worker thread
-        self.thread_manager.start_worker(thread_id)
+                # Store thread_id with the tab for potential cancellation
+                tab._active_thread_id = thread_id
+
+                # Set a reference to the worker in the tab to prevent it from being garbage collected
+                tab._current_worker = worker
+
+                # Disconnect any existing connections to prevent signal conflicts
+                try:
+                    self._disconnect_worker_signals(tab)
+                except Exception as e:
+                    print(f"Error disconnecting signals: {str(e)}")
+                    # Continue anyway
+
+                # Connect signals using direct methods instead of lambdas to reduce memory usage
+                streaming_mode = self.settings.get("stream", True)
+                if streaming_mode:
+                    worker.chunk_received.connect(self._create_chunk_handler(tab))
+                    worker.message_received.connect(self._create_streaming_finalizer(tab))
+                    worker.completion_id.connect(self._create_response_id_handler(tab))
+                else:
+                    worker.message_received.connect(self._create_message_handler(tab))
+                    worker.completion_id.connect(self._create_completion_id_handler(tab))
+
+                # Connect other signals using factory methods
+                worker.thinking_step.connect(self._create_thinking_step_handler(tab))
+                worker.reasoning_steps.connect(self._create_reasoning_steps_handler(tab))
+                worker.error_occurred.connect(self.handle_error)
+                worker.usage_info.connect(self._create_usage_info_handler(tab))
+                worker.system_info.connect(self._create_system_info_handler(tab))
+                worker.worker_finished.connect(self._create_worker_finished_handler(tab))
+
+                # Start the worker thread
+                self.thread_manager.start_worker(thread_id)
+
+                print(f"Started message processing with thread ID: {thread_id}")
+                return True
+            except Exception as worker_error:
+                print(f"ERROR creating worker: {str(worker_error)}")
+                if hasattr(tab, 'stop_loading_indicator'):
+                    tab.stop_loading_indicator()
+                tab._processing_message = False
+                return False
+        except Exception as e:
+            print(f"CRITICAL ERROR in _start_message_processing: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+            # Clean up
+            if hasattr(tab, 'stop_loading_indicator'):
+                tab.stop_loading_indicator()
+            tab._processing_message = False
+            return False
 
     def handle_assistant_response(self, tab, content, response_id=None):
         """Handle the complete response from the assistant"""
@@ -578,35 +640,64 @@ class MainWindow(QMainWindow):
             self._manage_chunk_buffer(tab, chunk)
 
             # Determine if database update is needed
-            is_first_chunk = conversation.current_node.role != "assistant"
+            try:
+                is_first_chunk = conversation.current_node.role != "assistant"
+            except Exception as e:
+                self.logger.warning(f"Error determining chunk type: {str(e)}")
+                is_first_chunk = False  # Default to not first chunk in case of error
+
             should_flush = self._should_flush_buffer(tab, is_first_chunk)
 
             if should_flush:
-                self._flush_buffer_to_database(tab, conversation, is_first_chunk)
+                try:
+                    self._flush_buffer_to_database(tab, conversation, is_first_chunk)
+                except Exception as db_error:
+                    self.logger.error(f"Database error in handle_chunk: {str(db_error)}")
+                    # Continue without crashing, even if flush fails
 
             # Update UI
-            self._update_ui_for_chunk(tab, conversation, chunk, is_first_chunk)
+            try:
+                self._update_ui_for_chunk(tab, conversation, chunk, is_first_chunk)
+            except Exception as ui_error:
+                self.logger.error(f"UI error in handle_chunk: {str(ui_error)}")
+                # Continue without crashing, even if UI update fails
 
             # Save conversation if needed
-            self._maybe_save_conversation(tab, conversation, chunk)
+            try:
+                self._maybe_save_conversation(tab, conversation, chunk)
+            except Exception as save_error:
+                self.logger.error(f"Error saving conversation: {str(save_error)}")
+                # Continue without crashing, even if save fails
 
         except Exception as e:
-            print(f"DEBUG: Error in handle_chunk: {str(e)}")
+            self.logger.error(f"Critical error in handle_chunk: {str(e)}")
             import traceback
             traceback.print_exc()
+            # Don't propagate the exception - we want to continue processing chunks
+            # even if one fails
 
     def _manage_chunk_buffer(self, tab, chunk):
         """Initialize and update the chunk buffer for a tab"""
-        # Initialize buffer if needed
-        if not hasattr(tab, '_chunk_buffer'):
-            tab._chunk_buffer = ""
-            tab._chunk_counter = 0
-            tab._buffer_flush_threshold = 100  # Increased threshold to reduce DB writes
-            tab._last_flush_time = time.time()
+        try:
+            # Initialize buffer if needed
+            if not hasattr(tab, '_chunk_buffer') or tab._chunk_buffer is None:
+                tab._chunk_buffer = ""
+                tab._chunk_counter = 0
+                tab._buffer_flush_threshold = 100  # Increased threshold to reduce DB writes
+                tab._last_flush_time = time.time()
+                self.logger.debug("Initialized chunk buffer for tab")
 
-        # Add new chunk to buffer
-        tab._chunk_buffer += chunk
-        tab._chunk_counter += 1
+            # Add new chunk to buffer
+            tab._chunk_buffer += chunk
+            tab._chunk_counter += 1
+        except Exception as e:
+            self.logger.error(f"Error managing chunk buffer: {str(e)}")
+            # Re-initialize buffer in case of corruption
+            tab._chunk_buffer = chunk
+            tab._chunk_counter = 1
+            tab._buffer_flush_threshold = 100
+            tab._last_flush_time = time.time()
+            self.logger.debug("Re-initialized chunk buffer after error")
 
     def _should_flush_buffer(self, tab, is_first_chunk):
         """Determine if the buffer should be flushed to the database with better timing"""
@@ -704,27 +795,94 @@ class MainWindow(QMainWindow):
     # This would typically be called from message_received signal handle
     def finalize_streaming(self, tab, full_content):
         """Finalize the streaming process, ensuring all content is saved"""
-        conversation = tab.conversation_tree
+        try:
+            conversation = tab.conversation_tree
 
-        # Get the response ID if it was stored
-        response_id = getattr(tab, '_response_id', None)
+            # Get the response ID if it was stored
+            response_id = getattr(tab, '_response_id', None)
 
-        # Ensure any remaining buffer is flushed completely
-        if hasattr(tab, '_chunk_buffer') and tab._chunk_buffer:
-            self._flush_final_content(tab, conversation, full_content, response_id)
-        else:
-            # Even if no buffer, ensure the final content is consistent
-            self._ensure_content_consistency(tab, conversation, full_content, response_id)
+            # Ensure any remaining buffer is flushed completely
+            try:
+                if hasattr(tab, '_chunk_buffer') and tab._chunk_buffer:
+                    self._flush_final_content(tab, conversation, full_content, response_id)
+                else:
+                    # Even if no buffer, ensure the final content is consistent
+                    self._ensure_content_consistency(tab, conversation, full_content, response_id)
+            except Exception as e:
+                self.logger.error(f"Error flushing content in finalize_streaming: {str(e)}")
+                # Try direct database update as last resort
+                try:
+                    self._emergency_content_update(tab, conversation, full_content, response_id)
+                except Exception as e2:
+                    self.logger.error(f"Emergency content update failed: {str(e2)}")
 
-        # Reset streaming state flags
-        self._reset_streaming_state(tab)
+            # Reset streaming state flags
+            self._reset_streaming_state(tab)
 
-        # Mark streaming as complete and trigger deferred UI updates
-        if hasattr(tab, 'complete_streaming_update'):
-            tab.complete_streaming_update()
+            # Mark streaming as complete and trigger deferred UI updates
+            if hasattr(tab, 'complete_streaming_update'):
+                try:
+                    tab.complete_streaming_update()
+                except Exception as ui_error:
+                    self.logger.error(f"Error updating UI in finalize_streaming: {str(ui_error)}")
 
-        # Always save the conversation at the end
-        self.save_conversation(conversation.id)
+            # Always save the conversation at the end
+            try:
+                self.save_conversation(conversation.id)
+            except Exception as save_error:
+                self.logger.error(f"Error saving conversation in finalize_streaming: {str(save_error)}")
+
+        except Exception as e:
+            self.logger.error(f"Critical error in finalize_streaming: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def _emergency_content_update(self, tab, conversation, full_content, response_id=None):
+        """Last resort method to update content directly in the database when other methods fail"""
+        self.logger.warning("Using emergency content update method")
+
+        if not hasattr(conversation, 'current_node') or not conversation.current_node:
+            self.logger.error("No current node available for emergency update")
+            return
+
+        node_id = conversation.current_node.id
+
+        # Direct database connection
+        conn = None
+        try:
+            from src.models.db_manager import DatabaseManager
+            db_manager = DatabaseManager()
+            conn = db_manager.get_connection()
+            cursor = conn.cursor()
+
+            # Simple update query
+            if response_id:
+                cursor.execute(
+                    'UPDATE messages SET content = ?, response_id = ? WHERE id = ?',
+                    (full_content, response_id, node_id)
+                )
+            else:
+                cursor.execute(
+                    'UPDATE messages SET content = ? WHERE id = ?',
+                    (full_content, node_id)
+                )
+
+            conn.commit()
+            self.logger.info(f"Emergency content update successful for node {node_id}")
+
+            # Update in-memory content if possible
+            if hasattr(conversation.current_node, 'content'):
+                conversation.current_node.content = full_content
+                if response_id:
+                    conversation.current_node.response_id = response_id
+
+        except Exception as e:
+            self.logger.error(f"Emergency database update failed: {str(e)}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+                conn.close()
 
     def _flush_final_content(self, tab, conversation, full_content, response_id=None):
         """Flush any remaining buffer and ensure content is complete"""
@@ -1039,3 +1197,132 @@ class MainWindow(QMainWindow):
 
         # Accept the close event
         event.accept()
+
+    def _disconnect_worker_signals(self, tab):
+        """Disconnect all signals from the worker to prevent conflicts"""
+        if hasattr(tab, '_current_worker'):
+            worker = tab._current_worker
+            try:
+                # Attempt to disconnect all signals
+                worker.chunk_received.disconnect()
+                worker.message_received.disconnect()
+                worker.completion_id.disconnect()
+                worker.thinking_step.disconnect()
+                worker.reasoning_steps.disconnect()
+                worker.error_occurred.disconnect()
+                worker.usage_info.disconnect()
+                worker.system_info.disconnect()
+                worker.worker_finished.disconnect()
+            except:
+                # Ignore exceptions as some signals might not be connected
+                pass
+
+    def _create_chunk_handler(self, tab):
+        """Create a handler for chunks that doesn't use lambdas"""
+
+        def handle_chunk(chunk):
+            try:
+                self.handle_chunk(tab, chunk)
+            except Exception as e:
+                print(f"Error in chunk handler: {str(e)}")
+
+        return handle_chunk
+
+    def _create_streaming_finalizer(self, tab):
+        """Create a handler for streaming finalization that doesn't use lambdas"""
+
+        def finalize_streaming(content):
+            try:
+                self.finalize_streaming(tab, content)
+            except Exception as e:
+                print(f"Error in streaming finalizer: {str(e)}")
+
+        return finalize_streaming
+
+    def _create_response_id_handler(self, tab):
+        """Create a handler for response ID that doesn't use lambdas"""
+
+        def handle_response_id(response_id):
+            try:
+                tab._response_id = response_id
+            except Exception as e:
+                print(f"Error in response ID handler: {str(e)}")
+
+        return handle_response_id
+
+    def _create_message_handler(self, tab):
+        """Create a handler for messages that doesn't use lambdas"""
+
+        def handle_message(content):
+            try:
+                self.handle_assistant_response(tab, content)
+            except Exception as e:
+                print(f"Error in message handler: {str(e)}")
+
+        return handle_message
+
+    def _create_completion_id_handler(self, tab):
+        """Create a handler for completion IDs that doesn't use lambdas"""
+
+        def handle_completion_id(id):
+            try:
+                self.handle_assistant_response(tab, tab.chat_display.toPlainText(), id)
+            except Exception as e:
+                print(f"Error in completion ID handler: {str(e)}")
+
+        return handle_completion_id
+
+    def _create_thinking_step_handler(self, tab):
+        """Create a handler for thinking steps that doesn't use lambdas"""
+
+        def handle_thinking_step(step, content):
+            try:
+                tab.add_cot_step(step, content)
+            except Exception as e:
+                print(f"Error in thinking step handler: {str(e)}")
+
+        return handle_thinking_step
+
+    def _create_reasoning_steps_handler(self, tab):
+        """Create a handler for reasoning steps that doesn't use lambdas"""
+
+        def handle_reasoning_steps(steps):
+            try:
+                tab.set_reasoning_steps(steps)
+            except Exception as e:
+                print(f"Error in reasoning steps handler: {str(e)}")
+
+        return handle_reasoning_steps
+
+    def _create_usage_info_handler(self, tab):
+        """Create a handler for usage info that doesn't use lambdas"""
+
+        def handle_usage_info(info):
+            try:
+                self.handle_usage_info(tab, info)
+            except Exception as e:
+                print(f"Error in usage info handler: {str(e)}")
+
+        return handle_usage_info
+
+    def _create_system_info_handler(self, tab):
+        """Create a handler for system info that doesn't use lambdas"""
+
+        def handle_system_info(info):
+            try:
+                self.handle_system_info(tab, info)
+            except Exception as e:
+                print(f"Error in system info handler: {str(e)}")
+
+        return handle_system_info
+
+    def _create_worker_finished_handler(self, tab):
+        """Create a handler for worker finished that doesn't use lambdas"""
+
+        def handle_worker_finished():
+            try:
+                self._on_worker_finished(tab)
+            except Exception as e:
+                print(f"Error in worker finished handler: {str(e)}")
+
+        return handle_worker_finished

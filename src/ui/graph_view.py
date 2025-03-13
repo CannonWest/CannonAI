@@ -82,6 +82,7 @@ class ConversationGraphView(QGraphicsView):
         self._scene.mouseReleaseEvent = self._handle_scene_mouse_release
 
         self._update_in_progress = False
+        self._layout_in_progress = False
 
         # Build the initial graph if a conversation is set
         if self.conversation:
@@ -108,6 +109,10 @@ class ConversationGraphView(QGraphicsView):
         if hasattr(self, '_update_in_progress') and self._update_in_progress:
             return
 
+        # Skip if we're in the middle of a layout operation
+        if hasattr(self, '_layout_in_progress') and self._layout_in_progress:
+            return
+
         try:
             self._update_in_progress = True
 
@@ -117,100 +122,142 @@ class ConversationGraphView(QGraphicsView):
             if not conversation_tree:
                 return
 
-            # Get the current branch for highlighting
-            current_branch = conversation_tree.get_current_branch()
-            self.current_branch_ids = {node.id for node in current_branch}
+            # Safety check - avoid processing extremely large trees
+            try:
+                # Get the current branch for highlighting
+                current_branch = conversation_tree.get_current_branch()
+                if not current_branch:
+                    print("Warning: Empty branch returned from get_current_branch()")
+                    return
 
-            # Start layout from the root node
-            root_node = conversation_tree.root
-            self._layout_subtree(root_node, x=0, y=0, level=0)
+                self.current_branch_ids = {node.id for node in current_branch if node is not None}
 
-            # Fit the view to show all content
-            self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+                # Start layout from the root node
+                root_node = conversation_tree.root
+                if not root_node:
+                    print("Warning: No root node in conversation tree")
+                    return
 
-            # Set a reasonable scene rect with some padding
-            sceneRect = self._scene.itemsBoundingRect()
-            sceneRect.adjust(-100, -100, 100, 100)  # Add some padding
-            self._scene.setSceneRect(sceneRect)
+                # Set a layout in progress flag to prevent recursion
+                self._layout_in_progress = True
+                self._layout_subtree(root_node, x=0, y=0, level=0)
+                self._layout_in_progress = False
 
+                # Use try/except for view operations that might fail
+                try:
+                    # Fit the view to show all content
+                    self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+                    # Set a reasonable scene rect with some padding
+                    sceneRect = self._scene.itemsBoundingRect()
+                    sceneRect.adjust(-100, -100, 100, 100)  # Add some padding
+                    self._scene.setSceneRect(sceneRect)
+                except Exception as view_error:
+                    print(f"Error updating graph view layout: {str(view_error)}")
+            except Exception as branch_error:
+                print(f"Error getting conversation branch: {str(branch_error)}")
+
+        except Exception as e:
+            print(f"Critical error in graph view update: {str(e)}")
         finally:
             self._update_in_progress = False
+            self._layout_in_progress = False
 
-
-
-    def _layout_subtree(self, node, x, y, level):
+    def _layout_subtree(self, node, x, y, level, max_depth=5):
         """
         Recursively place this node and its children in the scene.
         'level' or 'depth' can help offset children further horizontally/vertically.
+        max_depth limits recursion to prevent stack overflow.
         """
-        # Dimensions and styling
-        node_width, node_height = 200, 80
+        # Safety check - prevent excessive recursion
+        if level > max_depth:
+            return QRectF(x, y, 200, 80)
 
-        # Create a node item
-        node_item = NodeItem(
-            node_id=node.id,
-            role=node.role,
-            content=node.content,
-            x=x, y=y,
-            width=node_width,
-            height=node_height
-        )
+        # Safety check - ensure node is valid
+        if not node:
+            return QRectF(x, y, 200, 80)
 
-        # Highlight if node is in current branch
-        if node.id in self.current_branch_ids:
-            node_item.setPen(QPen(QColor("gold"), 3))
+        try:
+            # Dimensions and styling
+            node_width, node_height = 200, 80
 
-        # Add the node to the scene
-        self._scene.addItem(node_item)
+            # Create a node item
+            node_item = NodeItem(
+                node_id=node.id,
+                role=node.role,
+                content=node.content,
+                x=x, y=y,
+                width=node_width,
+                height=node_height
+            )
 
-        # Store reference to the node item
-        self.node_items[node.id] = node_item
+            # Highlight if node is in current branch
+            if node.id in self.current_branch_ids:
+                node_item.setPen(QPen(QColor("gold"), 3))
 
-        # Add text label with partial content
-        preview = node.content
-        if len(preview) > 40:
-            preview = preview[:37] + "..."
+            # Add the node to the scene
+            self._scene.addItem(node_item)
 
-        label_text = f"{node.role}:\n{preview}"
-        text_item = QGraphicsTextItem(label_text)
-        text_item.setPos(x + 5, y + 5)
-        text_item.setTextWidth(node_width - 10)
-        self._scene.addItem(text_item)
+            # Store reference to the node item
+            self.node_items[node.id] = node_item
 
-        # Calculate child positions and draw connections
-        if node.children:
-            # Determine total height needed for children
-            child_spacing = 120  # vertical spacing between siblings
-            total_height = (len(node.children) - 1) * child_spacing
+            # Add text label with partial content
+            preview = node.content
+            if len(preview) > 40:
+                preview = preview[:37] + "..."
 
-            # Start position for first child
-            first_child_y = y - (total_height / 2)
+            label_text = f"{node.role}:\n{preview}"
+            text_item = QGraphicsTextItem(label_text)
+            text_item.setPos(x + 5, y + 5)
+            text_item.setTextWidth(node_width - 10)
+            self._scene.addItem(text_item)
 
-            for i, child in enumerate(node.children):
-                # Place child to the right and appropriately spaced vertically
-                child_x = x + 300  # horizontal spacing
-                child_y = first_child_y + (i * child_spacing)
+            # Calculate child positions and draw connections
+            children = getattr(node, 'children', [])
+            if children and len(children) > 0:
+                # Limit to maximum 10 children to prevent excessive branching
+                if len(children) > 10:
+                    children = children[:10]
 
-                # Recursively layout the child
-                self._layout_subtree(child, child_x, child_y, level + 1)
+                # Determine total height needed for children
+                child_spacing = 120  # vertical spacing between siblings
+                total_height = (len(children) - 1) * child_spacing
 
-                # Draw a connecting line from parent to child
-                parent_center = QPointF(x + node_width, y + node_height / 2)
-                child_center = QPointF(child_x, child_y + node_height / 2)
+                # Start position for first child
+                first_child_y = y - (total_height / 2)
 
-                # Use a different color for current branch connections
-                line_color = QColor("gold") if (node.id in self.current_branch_ids and
-                                                child.id in self.current_branch_ids) else QColor("gray")
+                for i, child in enumerate(children):
+                    # Skip None children
+                    if not child:
+                        continue
 
-                line = self._scene.addLine(
-                    parent_center.x(), parent_center.y(),
-                    child_center.x(), child_center.y(),
-                    QPen(line_color, 2)
-                )
-                line.setZValue(-1)  # Put lines behind nodes
+                    # Place child to the right and appropriately spaced vertically
+                    child_x = x + 300  # horizontal spacing
+                    child_y = first_child_y + (i * child_spacing)
 
-        # Return the rectangle area, in case parent needs it
-        return QRectF(x, y, node_width, node_height)
+                    # Recursively layout the child with incremented depth
+                    self._layout_subtree(child, child_x, child_y, level + 1, max_depth)
+
+                    # Draw a connecting line from parent to child
+                    parent_center = QPointF(x + node_width, y + node_height / 2)
+                    child_center = QPointF(child_x, child_y + node_height / 2)
+
+                    # Use a different color for current branch connections
+                    line_color = QColor("gold") if (node.id in self.current_branch_ids and
+                                                    child.id in self.current_branch_ids) else QColor("gray")
+
+                    line = self._scene.addLine(
+                        parent_center.x(), parent_center.y(),
+                        child_center.x(), child_center.y(),
+                        QPen(line_color, 2)
+                    )
+                    line.setZValue(-1)  # Put lines behind nodes
+
+            # Return the rectangle area, in case parent needs it
+            return QRectF(x, y, node_width, node_height)
+        except Exception as e:
+            print(f"Error in _layout_subtree: {str(e)}")
+            return QRectF(x, y, 200, 80)
 
     #
     # --------------------- ZOOM & NAVIGATION -----------------------
