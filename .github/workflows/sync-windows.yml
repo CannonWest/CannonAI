@@ -14,7 +14,19 @@ jobs:
     - name: Check out the repository
       uses: actions/checkout@v3
 
-    # (Optional) If you want to run a build script, lint, or do other tasks, add them here
-    #- name: Run build or tests (optional)
-    #  run: |
-    #    echo "Running optional build or test steps here..."
+    # Remove unwanted files/directories from the top level of the workspace
+    - name: Remove unwanted files and directories
+      shell: powershell
+      run: |
+        # Remove any files or directories starting with .git
+        Remove-Item .\.git* -Recurse -Force -ErrorAction SilentlyContinue
+
+        # Remove any files or directories starting with .github
+        Remove-Item .\.github* -Recurse -Force -ErrorAction SilentlyContinue
+
+        # Remove any files or directories starting with data
+        Remove-Item .\data* -Recurse -Force -ErrorAction SilentlyContinue
+
+        # Remove specific files LICENSE and README.md
+        Remove-Item .\LICENSE -Force -ErrorAction SilentlyContinue
+        Remove-Item .\README.md -Force -ErrorAction SilentlyContinue
