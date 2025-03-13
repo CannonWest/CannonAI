@@ -15,16 +15,6 @@ jobs:
       uses: actions/checkout@v3
 
     # (Optional) If you want to run a build script, lint, or do other tasks, add them here
-    - name: Run build or tests (optional)
-      run: |
-        echo "Running optional build or test steps here..."
-
-    # (Optional) If you want to place the checked-out code somewhere on the Windows file system
-    # beyond the runner's default workspace, you can do it here. For example:
-    - name: Copy repository to a different folder
-      run: |
-        # Create the target folder if it doesn't exist
-        if not exist "C:\Users\Cannon\Documents\GitHub\CannonAI - Local CI Deployment" mkdir "C:\Users\Cannon\Documents\GitHub\CannonAI - Local CI Deployment"
-
-        # Copy all files from the runner workspace to D:\ProductionRepo
-        xcopy . "C:\Users\Cannon\Documents\GitHub\CannonAI - Local CI Deployment" /E /H /Y
+    #- name: Run build or tests (optional)
+    #  run: |
+    #    echo "Running optional build or test steps here..."
