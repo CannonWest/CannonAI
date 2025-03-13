@@ -320,7 +320,7 @@ class OpenAIAPIWorker(QObject):
             self.logger.info(f"Worker {self._worker_id} finished processing")
 
     def _prepare_response_api_params(self, model):
-        """Prepare parameters for the Response API with cleaner parameter handling"""
+        """Prepare parameters for the Response API with consistent parameter handling"""
         self.logger.debug(f"Settings for prepare_response_api_params: {self.settings}")
 
         # Process messages for the Response API format
@@ -362,9 +362,13 @@ class OpenAIAPIWorker(QObject):
                 else:
                     params["instructions"] = "Please provide the response in JSON format."
 
-        # Handle token limit - for Responses API, we always use max_output_tokens
-        token_limit = self.settings.get("max_output_tokens", self.settings.get("max_tokens", 1024))
+        # Handle token limit - always use max_output_tokens for Response API
+        # Get token limit with fallbacks to ensure we get a value
+        token_limit = self.settings.get("max_output_tokens",
+                                        self.settings.get("max_completion_tokens",
+                                                          self.settings.get("max_tokens", 1024)))
         params["max_output_tokens"] = token_limit
+        self.logger.debug(f"Using max_output_tokens={token_limit} for Responses API")
 
         # Add reasoning parameters for supported models
         if model in self.settings.get("reasoning_models", []) and "reasoning" in self.settings:
@@ -383,15 +387,15 @@ class OpenAIAPIWorker(QObject):
             if param in self.settings and self.settings[param] is not None:
                 params[param] = self.settings[param]
 
-        self.logger.debug(f"Final Responses API parameters: {params}")
+        self.logger.debug(f"Final Responses API parameters: {list(params.keys())}")
         return params
 
     def _prepare_chat_completions_params(self, model):
-        """Prepare parameters for the Chat Completions API"""
+        """Prepare parameters for the Chat Completions API with improved model compatibility"""
         # Process messages for the Chat API format
         prepared_messages = self.prepare_input(self.messages, "chat_completions")
 
-        # Extract model parameters from settings for Chat API
+        # Base parameters (common across models)
         params = {
             "model": model,
             "messages": prepared_messages,
@@ -405,15 +409,37 @@ class OpenAIAPIWorker(QObject):
             format_type = self.settings.get("response_format", {}).get("type", "text")
             params["response_format"] = {"type": format_type}
 
-        # Add max_tokens parameter
-        if "max_completion_tokens" in self.settings:
-            params["max_tokens"] = self.settings.get("max_completion_tokens")
-        elif "max_tokens" in self.settings:
-            params["max_tokens"] = self.settings.get("max_tokens")
+        # Get token limit with appropriate fallbacks
+        token_limit = self.settings.get("max_completion_tokens",
+                                        self.settings.get("max_tokens",
+                                                          self.settings.get("max_output_tokens", 1024)))
+
+        # Check if this is an o-series or reasoning model that requires max_completion_tokens
+        from src.utils import REASONING_MODELS
+        is_o_series = (
+                model in REASONING_MODELS or
+                model.startswith("o1") or
+                model.startswith("o3") or
+                model.startswith("deepseek-")
+        )
+
+        if is_o_series:
+            # These models require max_completion_tokens instead of max_tokens
+            params["max_completion_tokens"] = token_limit
+            self.logger.debug(f"Using max_completion_tokens={token_limit} for model {model}")
+        else:
+            # Standard models use max_tokens
+            params["max_tokens"] = token_limit
+            self.logger.debug(f"Using max_tokens={token_limit} for model {model}")
 
         # Add seed if specified
         if self.settings.get("seed") is not None:
             params["seed"] = self.settings.get("seed")
+
+        # Add other common parameters if specified
+        for param in ["frequency_penalty", "presence_penalty", "logit_bias", "user"]:
+            if param in self.settings and self.settings[param] is not None:
+                params[param] = self.settings[param]
 
         return params
 
