@@ -164,15 +164,13 @@ class BranchNavBar(QWidget):
                 print(f"WARNING: Found None node at index {i} in branch")
                 continue
 
-            if node.role == "system":
-                continue  # Skip system message
 
             if node.role == "user":
                 icon = "👤"
             elif node.role == "assistant":
                 icon = "🤖"
             else:
-                icon = "📝"
+                icon = "🔧"
 
             # Import the helper function at the top of the file
             from src.utils.file_utils import extract_display_text

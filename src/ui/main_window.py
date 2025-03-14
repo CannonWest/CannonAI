@@ -624,7 +624,7 @@ class MainWindow(QMainWindow):
             tab._processing_message = False
             return False
 
-    def handle_assistant_response(self, tab, content, response_id=None):
+    def handle_assistant_response(self, tab, content, response_id=None, role="assistant"):
         """Handle the complete response from the assistant with improved state management"""
         self.logger.debug(f"Handling complete assistant response with content length: {len(content)}")
 
@@ -652,15 +652,18 @@ class MainWindow(QMainWindow):
             # Get the conversation
             conversation = tab.conversation_tree
 
-            # We need to save token usage and model info along with the response
-            # This will be updated later when we receive usage_info and system_info signals
-            self.logger.debug(f"Adding assistant response to conversation, ID: {conversation.id}")
-            conversation.add_assistant_response(
-                content,
-                model_info={},
-                token_usage={},
-                response_id=response_id  # Add Response ID if available
-            )
+            if role == "system":
+                # Add system response as child of current node
+                self.logger.debug("Skipping system response to conversation")
+            else:
+                # Add assistant response as child of current node
+                self.logger.debug("Adding assistant response to conversation")
+                conversation.add_assistant_response( #THIS ONE FIRST
+                    content,
+                    model_info={},
+                    token_usage={},
+                    response_id=response_id  # Add Response ID if available
+                )
 
             # Update the UI
             self.logger.debug("Updating UI after adding assistant response")
@@ -751,7 +754,7 @@ class MainWindow(QMainWindow):
 
             if is_first_chunk:
                 # First chunk - create a new assistant node with the buffer content
-                new_node = conversation.add_assistant_response(tab._chunk_buffer)
+                new_node = conversation.add_system_response(tab._chunk_buffer)
 
                 # Store an empty reasoning_steps list on the node
                 if not hasattr(new_node, 'reasoning_steps'):
@@ -1353,7 +1356,7 @@ class MainWindow(QMainWindow):
 
         def handle_message(content):
             try:
-                self.handle_assistant_response(tab, content)
+                self.handle_assistant_response(tab, content) # THIS ONE SECOND
             except Exception as e:
                 print(f"Error in message handler: {str(e)}")
 
@@ -1364,7 +1367,7 @@ class MainWindow(QMainWindow):
 
         def handle_completion_id(id):
             try:
-                self.handle_assistant_response(tab, tab.chat_display.toPlainText(), id)
+                self.handle_assistant_response(tab, tab.chat_display.toPlainText(), id, 'system') # THIS ONE FIRST
             except Exception as e:
                 print(f"Error in completion ID handler: {str(e)}")
 

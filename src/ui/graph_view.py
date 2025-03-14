@@ -177,6 +177,9 @@ class ConversationGraphView(QGraphicsView):
             # Safety check - ensure node is valid
             if not node:
                 return QRectF(x, y, 200, 80)
+        # Skip root system message node
+        if node.role == "system" and node.parent_id is not None:
+            return  # Just return, don't create NodeItem or recurse children
 
         try:
             # Dimensions and styling
@@ -202,7 +205,6 @@ class ConversationGraphView(QGraphicsView):
             # Store reference to the node item
             self.node_items[node.id] = node_item
 
-
             from src.utils.file_utils import extract_display_text
 
             # Add text label with our extracted display text
@@ -221,28 +223,28 @@ class ConversationGraphView(QGraphicsView):
                 if len(children) > 10:
                     children = children[:10]
 
-                # Determine total height needed for children
-                child_spacing = 120  # vertical spacing between siblings
-                total_height = (len(children) - 1) * child_spacing
+                # Determine total width needed for children
+                child_spacing = 220  # horizontal spacing between siblings
+                total_width = (len(children) - 1) * child_spacing
 
                 # Start position for first child
-                first_child_y = y - (total_height / 2)
+                first_child_x = x - (total_width / 2)
+                child_y = y + 150  # Place children below parent
 
                 for i, child in enumerate(children):
                     # Skip None children
                     if not child:
                         continue
 
-                    # Place child to the right and appropriately spaced vertically
-                    child_x = x + 300  # horizontal spacing
-                    child_y = first_child_y + (i * child_spacing)
+                    # Place child below and appropriately spaced horizontally
+                    child_x = first_child_x + (i * child_spacing)
 
                     # Recursively layout the child with incremented depth
                     self._layout_subtree(child, child_x, child_y, level + 1, max_depth)
 
                     # Draw a connecting line from parent to child
-                    parent_center = QPointF(x + node_width, y + node_height / 2)
-                    child_center = QPointF(child_x, child_y + node_height / 2)
+                    parent_center = QPointF(x + node_width / 2, y + node_height)
+                    child_center = QPointF(child_x + node_width / 2, child_y)
 
                     # Use a different color for current branch connections
                     line_color = QColor("gold") if (node.id in self.current_branch_ids and

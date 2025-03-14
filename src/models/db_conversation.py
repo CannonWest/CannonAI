@@ -518,6 +518,78 @@ class DBConversationTree:
         finally:
             conn.close()
 
+    def add_system_response(self, content, model_info=None, parameters=None, token_usage=None, response_id=None):
+        """Add an assistant response as child of current node, with Response API support"""
+        conn = self.db_manager.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            node_id = str(QUuid.createUuid())
+            now = datetime.now().isoformat()
+
+            # Insert message
+            cursor.execute(
+                '''
+                INSERT INTO messages (id, conversation_id, parent_id, role, content, timestamp, response_id)
+                VALUES (?, ?, ?, 'system', ?, ?, ?)
+                ''',
+                (node_id, self.id, self.current_node_id, content, now, response_id)
+            )
+
+            # Add metadata if provided
+            if model_info:
+                for key, value in model_info.items():
+                    cursor.execute(
+                        '''
+                        INSERT INTO message_metadata (message_id, metadata_type, metadata_value)
+                        VALUES (?, ?, ?)
+                        ''',
+                        (node_id, f"model_info.{key}", json.dumps(value))
+                    )
+
+            if parameters:
+                for key, value in parameters.items():
+                    cursor.execute(
+                        '''
+                        INSERT INTO message_metadata (message_id, metadata_type, metadata_value)
+                        VALUES (?, ?, ?)
+                        ''',
+                        (node_id, f"parameters.{key}", json.dumps(value))
+                    )
+
+            if token_usage:
+                for key, value in token_usage.items():
+                    cursor.execute(
+                        '''
+                        INSERT INTO message_metadata (message_id, metadata_type, metadata_value)
+                        VALUES (?, ?, ?)
+                        ''',
+                        (node_id, f"token_usage.{key}", json.dumps(value))
+                    )
+
+            # Update current node
+            self.current_node_id = node_id
+
+            # Update conversation modified time
+            self.modified_at = now
+            cursor.execute(
+                'UPDATE conversations SET current_node_id = ?, modified_at = ? WHERE id = ?',
+                (node_id, now, self.id)
+            )
+
+            conn.commit()
+
+            # Return the new node
+            return self.get_node(node_id)
+
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error adding system response")
+            log_exception(logger, e, "Failed to add system response")
+            raise
+        finally:
+            conn.close()
+
     def navigate_to_node(self, node_id):
         """Change the current active node"""
         conn = self.db_manager.get_connection()
