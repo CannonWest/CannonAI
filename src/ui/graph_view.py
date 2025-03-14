@@ -163,19 +163,20 @@ class ConversationGraphView(QGraphicsView):
             self._update_in_progress = False
             self._layout_in_progress = False
 
-    def _layout_subtree(self, node, x, y, level, max_depth=5):
+    def _layout_subtree(self, node, x, y, level, max_depth=0):
         """
         Recursively place this node and its children in the scene.
         'level' or 'depth' can help offset children further horizontally/vertically.
         max_depth limits recursion to prevent stack overflow.
         """
-        # Safety check - prevent excessive recursion
-        if level > max_depth:
-            return QRectF(x, y, 200, 80)
+        if max_depth != 0:
+            # Safety check - prevent excessive recursion
+            if level > max_depth:
+                return QRectF(x, y, 200, 80)
 
-        # Safety check - ensure node is valid
-        if not node:
-            return QRectF(x, y, 200, 80)
+            # Safety check - ensure node is valid
+            if not node:
+                return QRectF(x, y, 200, 80)
 
         try:
             # Dimensions and styling
@@ -201,12 +202,13 @@ class ConversationGraphView(QGraphicsView):
             # Store reference to the node item
             self.node_items[node.id] = node_item
 
-            # Add text label with partial content
-            preview = node.content
-            if len(preview) > 40:
-                preview = preview[:37] + "..."
 
-            label_text = f"{node.role}:\n{preview}"
+            from src.utils.file_utils import extract_display_text
+
+            # Add text label with our extracted display text
+            display_text = extract_display_text(node, max_length=40)
+            label_text = f"{node.role}:\n{display_text}"
+
             text_item = QGraphicsTextItem(label_text)
             text_item.setPos(x + 5, y + 5)
             text_item.setTextWidth(node_width - 10)

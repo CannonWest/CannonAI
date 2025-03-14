@@ -91,6 +91,46 @@ def get_file_info(file_path: str, model: str = "gpt-4o") -> Dict:
         raise ValueError(f"Unsupported file type: {mime_type}")
 
 
+def extract_display_text(node, max_length=40):
+    """
+    Extract the most relevant part of a message for display in navigation elements.
+
+    Args:
+        node: The message node to extract text from
+        max_length: Maximum length for the extracted text
+
+    Returns:
+        A short, relevant excerpt from the message
+    """
+    if not node or not hasattr(node, 'content') or not node.content:
+        return ""
+
+    content = node.content.strip()
+
+    # For system messages, return a standard placeholder
+    if node.role == "system":
+        return "System instructions"
+
+    # For user and assistant messages, find the actual message content
+    # First, try to find the most relevant part by removing any repeated context
+    lines = content.split('\n')
+    non_empty_lines = [line for line in lines if line.strip()]
+
+    # If we have multiple lines, use the first non-empty one that's not a role identifier
+    if len(non_empty_lines) > 1:
+        # Skip lines that just indicate roles
+        for line in non_empty_lines:
+            line = line.strip()
+            if not (line.startswith('User:') or line.startswith('Assistant:') or line.startswith('System:')):
+                content = line
+                break
+
+    # Truncate if needed
+    if len(content) > max_length:
+        content = content[:max_length - 3] + "..."
+
+    return content
+
 def format_size(size_bytes):
     """Format file size in a human-readable way."""
     for unit in ['B', 'KB', 'MB', 'GB']:

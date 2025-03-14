@@ -958,12 +958,6 @@ class ConversationBranchTab(QWidget):
             self.update_ui()
             self.retry_request.emit()
 
-    def toggle_cot(self):
-        """Toggle the visibility of the chain of thought content"""
-        visible = not self.cot_content.isVisible()
-        self.cot_content.setVisible(visible)
-        self.cot_toggle.setText("▲" if visible else "▼")
-
     def toggle_info(self):
         """Toggle the visibility of the response details content"""
         visible = not self.info_content.isVisible()

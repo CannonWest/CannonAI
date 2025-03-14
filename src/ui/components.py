@@ -174,14 +174,15 @@ class BranchNavBar(QWidget):
             else:
                 icon = "📝"
 
-            # Create preview text from content
-            content = node.content.strip()
-            if len(content) > 20:
-                content = content[:17] + "..."
+            # Import the helper function at the top of the file
+            from src.utils.file_utils import extract_display_text
 
-            # Create button
-            button = QPushButton(f"{icon} {content}")
-            button.setToolTip(node.content)
+            # Create preview text using our helper function
+            display_text = extract_display_text(node, max_length=20)
+
+            # Create button with the extracted text
+            button = QPushButton(f"{icon} {display_text}")
+            button.setToolTip(node.content)  # Keep full content in tooltip
 
             # Style the last (current) node differently
             if i == len(branch) - 1:
