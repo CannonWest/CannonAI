@@ -479,6 +479,26 @@ class OpenAIAPIWorker(QObject):
                         else:
                             self.logger.debug(f"Response created but couldn't extract ID: {event}")
 
+                    elif event_type == "response.output_item.added":
+                        if event.item.type == 'reasoning':
+                            self.logger.info("IF YOU SEE THIS YOU'RE GETTIG REASONING INFO")
+                            # self.logger.info(f"Processing thinking step event: {event_type}")
+                            # step_info = self._extract_thinking_step(event)
+                            # if step_info:
+                            #     step_name, step_content = step_info
+                            #     self.logger.debug(f"Extracted thinking step: {step_name}")
+                            #     self.collected_reasoning_steps.append({
+                            #         "name": step_name,
+                            #         "content": step_content
+                            #     })
+                            #     self.thinking_step.emit(step_name, step_content)
+                            # else:
+                            #     self.logger.warning(f"Failed to extract thinking step from event: {event}")
+
+                    elif event_type == "response.content_type.added":
+                        self._current_text_content = ""
+                        self.logger.debug("Initialized content output in content_type.added event")
+
                     elif event_type == "response.output_text.delta":
                         # Process text delta (the actual content chunk)
                         delta = getattr(event, 'delta', '')
@@ -491,26 +511,13 @@ class OpenAIAPIWorker(QObject):
 
 
                     elif event_type in ["response.thinking_step.added", "response.thinking.added", "response.thinking_step"]:
-                        # Comment out reasoning extraction for now as it's not supported
-                        # Keeping structure for future updates
-                        self.logger.info(f"Received thinking step event: {event_type} - skipping as reasoning extraction is disabled")
-                        """
                         # Extract reasoning step information with improved logging
-                        self.logger.info(f"Processing thinking step event: {event_type}")
-                        step_info = self._extract_thinking_step(event)
-                        if step_info:
-                            step_name, step_content = step_info
-                            self.logger.debug(f"Extracted thinking step: {step_name}")
-                            self.collected_reasoning_steps.append({
-                                "name": step_name,
-                                "content": step_content
-                            })
-                            self.thinking_step.emit(step_name, step_content)
-                        else:
-                            self.logger.warning(f"Failed to extract thinking step from event: {event}")
-                        """
+                        self.logger.info("IF YOU SEE THIS SOMETHIGNS WEIRD")
 
                     elif event_type == "response.completed":
+
+                        # tab.update_ui()
+
                         # Process completion event (final usage stats, etc.)
                         self.logger.info("Processing completion event")
                         if hasattr(event, 'response'):
