@@ -550,7 +550,7 @@ class ConversationBranchTab(QWidget):
         return "".join(html_parts)
 
     def update_chat_streaming(self, chunk):
-        """Update the chat display during streaming with improved reliability"""
+        """Update the chat display during streaming with improved reliability and ordering"""
         try:
             # Add debug logging
             print(f"DEBUG: Received streaming chunk in update_chat_streaming: '{chunk[:20]}...' (length: {len(chunk)})")
@@ -560,7 +560,7 @@ class ConversationBranchTab(QWidget):
             if len(chunk) > 10000:  # 10KB limit for a single chunk
                 chunk = chunk[:10000] + "... [CHUNK TRUNCATED - TOO LARGE]"
                 print("WARNING: Chunk size exceeded limits - truncated")
-                self.logger.debug(f"Processing chunk in update_chat_streaming: {chunk[:20]}...")
+                self.logger.warning(f"Chunk size exceeded limits - truncated to 10KB")
 
             # Set streaming mode flag
             self._is_streaming = True
@@ -570,6 +570,15 @@ class ConversationBranchTab(QWidget):
             if not hasattr(self, '_streaming_started') or not self._streaming_started:
                 self._streaming_started = True
                 print("DEBUG: First chunk detected - initializing streaming display")
+
+                # Clear any previous streaming content
+                if hasattr(self, '_total_streamed_content'):
+                    self._total_streamed_content = ""
+
+                # Make sure we're not in the middle of a conflicting operation
+                if hasattr(self, '_updating_display') and self._updating_display:
+                    print("WARNING: Display update in progress - potential conflict")
+                    self._updating_display = False
 
                 # Remove any loading indicator text if present
                 if hasattr(self, '_has_loading_text') and self._has_loading_text:
@@ -583,6 +592,29 @@ class ConversationBranchTab(QWidget):
                     except Exception as cursor_error:
                         print(f"Error removing loading text: {str(cursor_error)}")
                         # Just continue if cursor operations fail
+
+                    # Check for any remaining loading text that might not have been removed
+                    current_text = self.chat_display.toPlainText()
+                    if current_text.strip().endswith("Waiting for response.") or \
+                            current_text.strip().endswith("Waiting for response..") or \
+                            current_text.strip().endswith("Waiting for response..."):
+                        try:
+                            cursor = self.chat_display.textCursor()
+                            cursor.movePosition(QTextCursor.MoveOperation.End)
+                            # Select more text to ensure we get the whole loading indicator
+                            cursor.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor, 30)
+                            selected_text = cursor.selectedText()
+                            if "Waiting for response" in selected_text:
+                                # Only remove the part that contains the loading indicator
+                                indicator_pos = selected_text.find("Waiting for response")
+                                if indicator_pos >= 0:
+                                    cursor.movePosition(QTextCursor.MoveOperation.End)
+                                    cursor.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor,
+                                                        len(selected_text) - indicator_pos)
+                                    cursor.removeSelectedText()
+                                    print("DEBUG: Removed additional loading indicator text")
+                        except Exception as e:
+                            print(f"Error removing additional loading text: {str(e)}")
 
                 # Add assistant prefix for first message
                 try:
@@ -611,6 +643,15 @@ class ConversationBranchTab(QWidget):
                     print(f"Error adding assistant prefix: {str(prefix_error)}")
                     # Continue even if prefix insertion fails
 
+            # Initialize or update the accumulated streaming content
+            if not hasattr(self, '_total_streamed_content'):
+                self._total_streamed_content = chunk
+            else:
+                self._total_streamed_content += chunk
+
+            # Set a flag to indicate we're updating the display
+            self._updating_display = True
+
             # Insert the chunk text
             try:
                 # Get cursor position at the end
@@ -632,6 +673,9 @@ class ConversationBranchTab(QWidget):
                     print("DEBUG: Used append fallback method")
                 except Exception as append_error:
                     print(f"Error using append fallback: {str(append_error)}")
+            finally:
+                # Clear the updating flag
+                self._updating_display = False
         except Exception as e:
             print(f"Error in update_chat_streaming: {str(e)}")
             import traceback
@@ -639,11 +683,18 @@ class ConversationBranchTab(QWidget):
             return None
 
     def complete_streaming_update(self):
-        """Perform a full UI update after streaming is complete with improved cleanup"""
+        """Perform a full UI update after streaming is complete with improved cleanup and ordering fixes"""
         print("DEBUG: Completing streaming update")
 
         # Reset streaming flag first
         self._is_streaming = False
+
+        # Make sure we're not in the middle of an update
+        if hasattr(self, '_updating_display') and self._updating_display:
+            print("WARNING: Display update still in progress - waiting")
+            import time
+            time.sleep(0.1)  # Brief pause to allow any ongoing operations to complete
+            self._updating_display = False
 
         # Force stop loading indicator if it's still active
         if hasattr(self, '_loading_active') and self._loading_active:
@@ -669,46 +720,45 @@ class ConversationBranchTab(QWidget):
             except Exception as cursor_error:
                 print(f"Error removing loading text: {str(cursor_error)}")
 
-        # Ensure any remaining buffer is flushed completely
-        if hasattr(self, '_chunk_buffer') and self._chunk_buffer:
-            print(f"DEBUG: Flushing remaining buffer (size: {len(self._chunk_buffer)})")
-            try:
-                # Force flush any remaining buffer
-                if self.conversation_tree and self.conversation_tree.current_node:
-                    current_node = self.conversation_tree.current_node
-                    conn = None
-                    try:
-                        # Get database connection through db_manager
+        # Double check message integrity using the accumulated content
+        if hasattr(self, '_total_streamed_content') and self._total_streamed_content:
+            # Get the conversation tree and current node
+            if self.conversation_tree and self.conversation_tree.current_node:
+                current_node = self.conversation_tree.current_node
+
+                # Check if the content matches what we've accumulated
+                try:
+                    db_content = current_node.content
+                    streamed_content = self._total_streamed_content
+
+                    if db_content != streamed_content:
+                        print(f"WARNING: Content mismatch - DB: {len(db_content)} chars, Streamed: {len(streamed_content)} chars")
+
+                        # Update the database with the streamed content for consistency
                         from src.models.db_manager import DatabaseManager
-                        db_manager = DatabaseManager()
-                        conn = db_manager.get_connection()
-                        cursor = conn.cursor()
+                        conn = None
+                        try:
+                            db_manager = DatabaseManager()
+                            conn = db_manager.get_connection()
+                            cursor = conn.cursor()
 
-                        # Ensure the database content is complete
-                        cursor.execute(
-                            'SELECT content FROM messages WHERE id = ?',
-                            (current_node.id,)
-                        )
-                        result = cursor.fetchone()
-                        if result:
-                            full_content = result['content']
-                            # Update in-memory object
-                            current_node.content = full_content
-                            print(f"DEBUG: Updated node content from database (length: {len(full_content)})")
-                        conn.commit()
-                    except Exception as e:
-                        print(f"Error in buffer flush during completion: {str(e)}")
-                        if conn:
-                            conn.rollback()
-                    finally:
-                        if conn:
-                            conn.close()
-
-                        # Clear buffer state
-                        self._chunk_buffer = ""
-                        self._chunk_counter = 0
-            except Exception as e:
-                print(f"Error finalizing streaming: {str(e)}")
+                            cursor.execute(
+                                'UPDATE messages SET content = ? WHERE id = ?',
+                                (streamed_content, current_node.id)
+                            )
+                            # Also update in-memory content
+                            current_node.content = streamed_content
+                            conn.commit()
+                            print("DEBUG: Updated node content from streamed content")
+                        except Exception as db_error:
+                            print(f"Error updating content from streamed content: {str(db_error)}")
+                            if conn:
+                                conn.rollback()
+                        finally:
+                            if conn:
+                                conn.close()
+                except Exception as e:
+                    print(f"Error checking content integrity: {str(e)}")
 
         # Finalize and add extra newlines for clean separation between messages
         try:
@@ -731,14 +781,18 @@ class ConversationBranchTab(QWidget):
         if hasattr(self, '_streaming_started'):
             self._streaming_started = False
 
+        # Clear accumulated content
+        if hasattr(self, '_total_streamed_content'):
+            self._total_streamed_content = ""
+
         # Only update if we have pending updates
-        if self._ui_update_pending:
+        if hasattr(self, '_ui_update_pending') and self._ui_update_pending:
             print("DEBUG: Scheduling deferred complete update")
             # Ensure we wait a short moment to allow any in-progress
             # operations to complete first (important for stability)
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(300, self._do_complete_update)  # Increased delay for stability
-
+            
     def _do_complete_update(self):
         """Perform the actual delayed UI update"""
         try:

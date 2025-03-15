@@ -444,7 +444,7 @@ class OpenAIAPIWorker(QObject):
         return params
 
     def _handle_streaming_response(self, stream, api_type="responses"):
-        """Handle streaming response from either API with improved structure"""
+        """Handle streaming response from either API with improved structure and ordering"""
         full_text = ""
 
         try:
@@ -479,26 +479,6 @@ class OpenAIAPIWorker(QObject):
                         else:
                             self.logger.debug(f"Response created but couldn't extract ID: {event}")
 
-                    elif event_type == "response.output_item.added":
-                        if event.item.type == 'reasoning':
-                            self.logger.info("IF YOU SEE THIS YOU'RE GETTIG REASONING INFO")
-                            # self.logger.info(f"Processing thinking step event: {event_type}")
-                            # step_info = self._extract_thinking_step(event)
-                            # if step_info:
-                            #     step_name, step_content = step_info
-                            #     self.logger.debug(f"Extracted thinking step: {step_name}")
-                            #     self.collected_reasoning_steps.append({
-                            #         "name": step_name,
-                            #         "content": step_content
-                            #     })
-                            #     self.thinking_step.emit(step_name, step_content)
-                            # else:
-                            #     self.logger.warning(f"Failed to extract thinking step from event: {event}")
-
-                    elif event_type == "response.content_type.added":
-                        self._current_text_content = ""
-                        self.logger.debug("Initialized content output in content_type.added event")
-
                     elif event_type == "response.output_text.delta":
                         # Process text delta (the actual content chunk)
                         delta = getattr(event, 'delta', '')
@@ -509,15 +489,7 @@ class OpenAIAPIWorker(QObject):
                         else:
                             self.logger.debug("Empty delta in output_text.delta event")
 
-
-                    elif event_type in ["response.thinking_step.added", "response.thinking.added", "response.thinking_step"]:
-                        # Extract reasoning step information with improved logging
-                        self.logger.info("IF YOU SEE THIS SOMETHIGNS WEIRD")
-
                     elif event_type == "response.completed":
-
-                        # tab.update_ui()
-
                         # Process completion event (final usage stats, etc.)
                         self.logger.info("Processing completion event")
                         if hasattr(event, 'response'):
@@ -556,6 +528,16 @@ class OpenAIAPIWorker(QObject):
                                 self.system_info.emit(model_info)
                             except Exception as model_error:
                                 self.logger.error(f"Error extracting model info: {str(model_error)}")
+
+                        # CRITICAL: Do NOT emit full content here as it may cause duplication
+                        # Just signal that we're done with streaming
+                        self.logger.info("Streaming complete - emitting worker_finished")
+
+                # Always emit the final accumulated text, but only once and only at the end
+                if full_text:
+                    self.logger.debug(f"Emitting final accumulated text (length: {len(full_text)})")
+                    self.message_received.emit(full_text)
+
             else:
                 # This is the chat_completions API streaming
                 self.logger.info("Processing chat completions streaming")
@@ -1044,26 +1026,41 @@ class OpenAIAPIWorker(QObject):
         self.logger.info("Worker marked for cancellation")
 
     def _handle_completed_event(self, event):
-        """Handle completion event for Response API streaming"""
+        """Handle completion event for Response API streaming with proper content management"""
         # Emit usage information if available
         if hasattr(event, "response"):
             response_data = event.response
+            self.logger.info("Processing completion event with full response data")
 
-            # Handle dictionary-style or attribute-style response object
-            if isinstance(response_data, dict):
-                # Dictionary access
-                if "usage" in response_data:
-                    usage = response_data["usage"]
-                    usage_data = self._normalize_token_usage(usage, "responses")
-                    self.usage_info.emit(usage_data)
+            # Extract system info and response ID first (these should always be emitted)
+            try:
+                # Extract model info
+                model_name = "unknown"
+                if hasattr(response_data, "model"):
+                    model_name = response_data.model
+                elif isinstance(response_data, dict) and "model" in response_data:
+                    model_name = response_data["model"]
 
                 # Emit system information
-                model_info = {
-                    "model": response_data.get("model", "unknown")
-                }
+                model_info = {"model": model_name}
                 self.system_info.emit(model_info)
-            else:
-                # Attribute access (original approach)
+                self.logger.debug(f"Emitted model info: {model_name}")
+
+                # Extract response ID if available
+                response_id = None
+                if hasattr(response_data, "id"):
+                    response_id = response_data.id
+                    self.completion_id.emit(response_id)
+                    self.logger.debug(f"Emitted completion ID: {response_id}")
+                elif isinstance(response_data, dict) and "id" in response_data:
+                    response_id = response_data["id"]
+                    self.completion_id.emit(response_id)
+                    self.logger.debug(f"Emitted completion ID: {response_id}")
+            except Exception as e:
+                self.logger.error(f"Error extracting basic response data: {str(e)}")
+
+            # Process token usage data if available
+            try:
                 if hasattr(response_data, "usage"):
                     usage = response_data.usage
                     usage_data = self._normalize_token_usage(
@@ -1076,12 +1073,34 @@ class OpenAIAPIWorker(QObject):
                         "responses"
                     )
                     self.usage_info.emit(usage_data)
+                elif isinstance(response_data, dict) and "usage" in response_data:
+                    usage = response_data["usage"]
+                    usage_data = self._normalize_token_usage(usage, "responses")
+                    self.usage_info.emit(usage_data)
+                else:
+                    self.logger.warning("No usage data found in completion response")
+            except Exception as e:
+                self.logger.error(f"Error processing usage data: {str(e)}")
 
-                # Emit system information
-                model_info = {
-                    "model": getattr(response_data, "model", "unknown")
-                }
-                self.system_info.emit(model_info)
+            # CRITICAL CHANGE: We DO NOT emit message_received with content from the completion event
+            # This was causing duplicate/out-of-order content because:
+            # 1. Chunks were already streaming into the UI
+            # 2. The completion event was sending the full content again
+            # 3. This was getting appended to what was already shown
+
+            # Instead, we'll just log that we received the completion event
+            try:
+                if hasattr(response_data, "output_text"):
+                    self.logger.debug(f"Completion event has output_text of length: {len(response_data.output_text)}")
+                elif hasattr(response_data, "content"):
+                    self.logger.debug(f"Completion event has content of length: {len(response_data.content)}")
+                elif isinstance(response_data, dict) and "output_text" in response_data:
+                    self.logger.debug(f"Completion event has output_text of length: {len(response_data['output_text'])}")
+            except Exception as e:
+                self.logger.error(f"Error logging completion content info: {str(e)}")
+
+            # Signal that streaming is complete but WITHOUT sending the content again
+            self.worker_finished.emit()
 
     def _normalize_token_usage(self, usage, api_type="responses"):
         """Normalize token usage data to a consistent format regardless of API type"""
@@ -1251,9 +1270,9 @@ class OpenAIAPIWorker(QObject):
                         file_content = file_info["content"]
 
                         file_sections.append(f"""
-                        ### FILE: {file_name}
-                        {file_content}
-                        Copy""")
+                            ### FILE: {file_name}
+                            {file_content}
+                            Copy""")
 
                     all_content.append("\n".join(file_sections))
 

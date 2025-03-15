@@ -24,6 +24,7 @@ from src.utils.logging_utils import get_logger
 # Get a logger for this module
 logger = get_logger(__name__)
 
+
 class MainWindow(QMainWindow):
     """Main application window"""
 
@@ -658,7 +659,7 @@ class MainWindow(QMainWindow):
             else:
                 # Add assistant response as child of current node
                 self.logger.debug("Adding assistant response to conversation")
-                conversation.add_assistant_response( #THIS ONE FIRST
+                conversation.add_assistant_response(  # THIS ONE FIRST
                     content,
                     model_info={},
                     token_usage={},
@@ -746,45 +747,67 @@ class MainWindow(QMainWindow):
         return should_flush
 
     def _flush_buffer_to_database(self, tab, conversation, is_first_chunk):
-        """Write accumulated buffer to the database"""
+        """Write accumulated buffer to the database with improved reliability"""
+
         conn = None
         try:
+            # Add debug logging
+            self.logger.debug(f"Flushing buffer to database, size: {len(tab._chunk_buffer)}, first chunk: {is_first_chunk}")
             conn = self.db_manager.get_connection()
             cursor = conn.cursor()
 
             if is_first_chunk:
                 # First chunk - create a new assistant node with the buffer content
-                new_node = conversation.add_system_response(tab._chunk_buffer)
+                self.logger.debug("Creating new assistant node for first chunk")
+                new_node = conversation.add_assistant_response(tab._chunk_buffer)
 
                 # Store an empty reasoning_steps list on the node
                 if not hasattr(new_node, 'reasoning_steps'):
                     setattr(new_node, 'reasoning_steps', [])
+
+                # Store reference to new node ID for tracking
+                tab._current_assistant_node_id = new_node.id
+                self.logger.debug(f"Created new assistant node: {new_node.id}")
             else:
                 # Update existing node with accumulated buffer
+                if not hasattr(conversation.current_node, 'id'):
+                    self.logger.error("Current node has no ID - cannot update database")
+                    return
+
+                node_id = conversation.current_node.id
+                self.logger.debug(f"Updating existing node: {node_id}")
+
                 cursor.execute(
                     '''
                     UPDATE messages SET content = content || ? WHERE id = ?
                     ''',
-                    (tab._chunk_buffer, conversation.current_node.id)
+                    (tab._chunk_buffer, node_id)
                 )
 
                 # Also update the in-memory version
-                conversation.current_node.content += tab._chunk_buffer
+                if hasattr(conversation.current_node, 'content'):
+                    conversation.current_node.content += tab._chunk_buffer
+                else:
+                    self.logger.warning("Current node has no content attribute")
 
             # Commit the changes
             conn.commit()
+            self.logger.debug("Database updated successfully")
 
             # Reset buffer after successful commit
+            old_size = len(tab._chunk_buffer)
             tab._chunk_buffer = ""
             tab._chunk_counter = 0
+            self.logger.debug(f"Buffer reset (cleared {old_size} characters)")
 
         except Exception as e:
-            print(f"DEBUG: Database error in _flush_buffer_to_database: {str(e)}")
+            self.logger.error(f"Database error in _flush_buffer_to_database: {str(e)}")
             if conn:
                 conn.rollback()
         finally:
             if conn:
                 conn.close()
+
 
     def _update_ui_for_chunk(self, tab, conversation, chunk, is_first_chunk):
         """Update the UI based on the new chunk"""
@@ -798,6 +821,115 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"DEBUG: UI error in _update_ui_for_chunk: {str(e)}")
 
+    def _ensure_complete_content(self, tab, conversation, full_content, response_id=None):
+        """Ensure the node has the complete content from the streamed response"""
+        self.logger.info(f"Ensuring complete content (length: {len(full_content)})")
+
+        node_id = None
+
+        # Get the current node ID - might be different ways it's stored
+        if hasattr(conversation, 'current_node') and conversation.current_node:
+            if conversation.current_node.role == "assistant":
+                node_id = conversation.current_node.id
+
+        # Also check for stored assistant node ID from first chunk
+        if not node_id and hasattr(tab, '_current_assistant_node_id'):
+            node_id = tab._current_assistant_node_id
+
+        if not node_id:
+            self.logger.error("Could not determine assistant node ID for content update")
+            return
+
+        self.logger.debug(f"Updating content for node: {node_id}")
+
+        # Compare with existing content if available
+        existing_content = ""
+        if hasattr(conversation.current_node, 'content'):
+            existing_content = conversation.current_node.content
+
+        if existing_content == full_content:
+            self.logger.debug("Content already matches - no update needed")
+            return
+
+        # Content differs - update the database
+        conn = None
+        try:
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
+
+            # Update with complete content
+            if response_id:
+                cursor.execute(
+                    '''
+                    UPDATE messages SET content = ?, response_id = ? WHERE id = ?
+                    ''',
+                    (full_content, response_id, node_id)
+                )
+            else:
+                cursor.execute(
+                    '''
+                    UPDATE messages SET content = ? WHERE id = ?
+                    ''',
+                    (full_content, node_id)
+                )
+
+            conn.commit()
+            self.logger.info(f"Updated complete content for node {node_id}")
+
+            # Also update in-memory
+            if hasattr(conversation.current_node, 'content'):
+                conversation.current_node.content = full_content
+                if response_id and hasattr(conversation.current_node, 'response_id'):
+                    conversation.current_node.response_id = response_id
+
+        except Exception as e:
+            self.logger.error(f"Error ensuring complete content: {str(e)}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+                conn.close()
+
+    def _append_final_buffer(self, tab, conversation):
+        """Append any remaining buffer to the node content without overwriting"""
+        if not hasattr(tab, '_chunk_buffer') or not tab._chunk_buffer:
+            return
+
+        conn = None
+        try:
+            conn = self.db_manager.get_connection()
+            cursor = conn.cursor()
+
+            node_id = conversation.current_node.id
+
+            # Just append the remaining buffer
+            cursor.execute(
+                '''
+                UPDATE messages SET content = content || ? WHERE id = ?
+                ''',
+                (tab._chunk_buffer, node_id)
+            )
+
+            # Update in-memory as well
+            if hasattr(conversation.current_node, 'content'):
+                conversation.current_node.content += tab._chunk_buffer
+
+            conn.commit()
+            self.logger.debug(f"Appended final buffer (size: {len(tab._chunk_buffer)})")
+
+            # Clear the buffer
+            tab._chunk_buffer = ""
+            tab._chunk_counter = 0
+
+        except Exception as e:
+            self.logger.error(f"Error appending final buffer: {str(e)}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+                conn.close()
+
+
     def _maybe_save_conversation(self, tab, conversation, chunk):
         """Save the conversation if appropriate conditions are met"""
         try:
@@ -807,8 +939,9 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"DEBUG: Error saving conversation: {str(e)}")
 
-    # Make sure we clean up buffer on completion
-    # This would typically be called from message_received signal handle
+        # Make sure we clean up buffer on completion
+        # This would typically be called from message_received signal handle
+
     def finalize_streaming(self, tab, full_content):
         """Finalize the streaming process, ensuring all content is saved and UI is cleaned up"""
         try:
@@ -819,30 +952,22 @@ class MainWindow(QMainWindow):
             response_id = getattr(tab, '_response_id', None)
             self.logger.debug(f"Response ID: {response_id}")
 
+            # ALWAYS ensure content is updated with the full content
+            # This ensures we have the complete content even if some chunks were missed
+            self._ensure_complete_content(tab, conversation, full_content, response_id)
+
             # Ensure any remaining buffer is flushed completely
-            try:
-                if hasattr(tab, '_chunk_buffer') and tab._chunk_buffer:
-                    self.logger.debug(f"Flushing final content buffer (size: {len(tab._chunk_buffer)})")
-                    self._flush_final_content(tab, conversation, full_content, response_id)
-                else:
-                    # Even if no buffer, ensure the final content is consistent
-                    self.logger.debug("No buffer to flush, ensuring content consistency")
-                    self._ensure_content_consistency(tab, conversation, full_content, response_id)
-            except Exception as e:
-                self.logger.error(f"Error flushing content in finalize_streaming: {str(e)}")
-                # Try direct database update as last resort
-                try:
-                    self.logger.warning("Attempting emergency content update")
-                    self._emergency_content_update(tab, conversation, full_content, response_id)
-                except Exception as e2:
-                    self.logger.error(f"Emergency content update failed: {str(e2)}")
+            if hasattr(tab, '_chunk_buffer') and tab._chunk_buffer:
+                self.logger.debug(f"Flushing final buffer (size: {len(tab._chunk_buffer)})")
+                # Just append remaining buffer to ensure we don't lose anything
+                self._append_final_buffer(tab, conversation)
 
             # Stop loading indicator if still active
             if hasattr(tab, '_loading_active') and tab._loading_active:
                 self.logger.debug("Stopping loading indicator that's still active")
                 tab.stop_loading_indicator()
 
-            # Reset streaming state flags (call our helper directly)
+            # Reset streaming state flags
             self._reset_streaming_state(tab)
 
             # Mark streaming as complete and trigger deferred UI updates
@@ -929,6 +1054,7 @@ class MainWindow(QMainWindow):
             if conn:
                 conn.close()
 
+
     def _flush_final_content(self, tab, conversation, full_content, response_id=None):
         """Flush any remaining buffer and ensure content is complete"""
         conn = None
@@ -975,6 +1101,7 @@ class MainWindow(QMainWindow):
             tab._chunk_buffer = ""
             tab._chunk_counter = 0
 
+
     def _ensure_content_consistency(self, tab, conversation, full_content):
         """Ensure the node content matches the full content, even without a buffer"""
         # Only update if content doesn't match
@@ -1003,6 +1130,7 @@ class MainWindow(QMainWindow):
                 if conn:
                     conn.close()
 
+
     def _reset_streaming_state(self, tab):
         """Reset all streaming-related state variables"""
         # Clear buffer
@@ -1016,6 +1144,7 @@ class MainWindow(QMainWindow):
             tab._is_streaming = False
         if hasattr(tab, '_extracting_reasoning'):
             tab._extracting_reasoning = False
+
 
     def handle_usage_info(self, tab, info):
         """Handle token usage information"""
@@ -1063,6 +1192,7 @@ class MainWindow(QMainWindow):
             finally:
                 conn.close()
 
+
     def handle_system_info(self, tab, info):
         """Handle system information from the API"""
         # Get the conversation
@@ -1109,6 +1239,7 @@ class MainWindow(QMainWindow):
             finally:
                 conn.close()
 
+
     def handle_error(self, error_message):
         """Handle API errors with more context"""
         # Get the current tab to stop its loading indicator
@@ -1129,11 +1260,13 @@ class MainWindow(QMainWindow):
         if error_box.clickedButton() == retry_button:
             self.retry_message(tab)
 
+
     def on_branch_changed(self, tab):
         """Handle branch navigation events"""
         # Save the conversation when the branch changes
         conversation = tab.conversation_tree
         self.save_conversation(conversation.id)
+
 
     def open_settings(self):
         """Open the settings dialog"""
@@ -1159,14 +1292,17 @@ class MainWindow(QMainWindow):
                 if hasattr(tab, 'update_model_info'):
                     tab.update_model_info(current_model)
 
+
     def save_conversation(self, conversation_id):
         """Save a specific conversation"""
         self.conversation_manager.save_conversation(conversation_id)
+
 
     def save_conversations(self):
         """Save all conversations"""
         self.conversation_manager.save_all()
         QMessageBox.information(self, "Save Complete", "All conversations have been saved.")
+
 
     def load_conversations(self):
         """Load all saved conversations"""
@@ -1183,6 +1319,7 @@ class MainWindow(QMainWindow):
                 self.tabs.setTabText(index, conversation.name)
                 print(f"DEBUG: Set tab {index} title to '{conversation.name}'")
 
+
     def show_about(self):
         """Show the 'about' dialog"""
         QMessageBox.about(
@@ -1196,6 +1333,7 @@ class MainWindow(QMainWindow):
             "- Conversation saving and loading"
         )
 
+
     def _on_worker_finished(self, tab):
         """Handle worker thread completion"""
         if hasattr(tab, '_processing_message'):
@@ -1208,7 +1346,9 @@ class MainWindow(QMainWindow):
         if hasattr(tab, 'stop_loading_indicator') and tab._loading_active:
             tab.stop_loading_indicator()
 
-    # Add a method to handle tab closing with active threads
+        # Add a method to handle tab closing with active threads
+
+
     def close_tab(self, index):
         """Close a conversation tab with proper thread cleanup"""
         if self.tabs.count() > 1:
@@ -1232,6 +1372,7 @@ class MainWindow(QMainWindow):
                 "You must have at least one conversation open."
             )
 
+
     def closeEvent(self, event):
         """Handle application close event"""
         # Cancel all active API calls
@@ -1242,6 +1383,7 @@ class MainWindow(QMainWindow):
 
         # Accept the close event
         event.accept()
+
 
     def _disconnect_worker_signals(self, tab):
         """Disconnect all signals from the worker to prevent conflicts"""
@@ -1261,6 +1403,7 @@ class MainWindow(QMainWindow):
             except:
                 # Ignore exceptions as some signals might not be connected
                 pass
+
 
     def _create_chunk_handler(self, tab):
         """Create a handler for chunks that doesn't use lambdas"""
@@ -1288,6 +1431,7 @@ class MainWindow(QMainWindow):
                 traceback.print_exc()
 
         return handle_chunk
+
 
     def _handle_chunk_db_only(self, tab, chunk):
         """Handle database updates for a chunk without updating UI"""
@@ -1329,6 +1473,7 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
 
+
     def _create_streaming_finalizer(self, tab):
         """Create a handler for streaming finalization that doesn't use lambdas"""
 
@@ -1339,6 +1484,7 @@ class MainWindow(QMainWindow):
                 print(f"Error in streaming finalizer: {str(e)}")
 
         return finalize_streaming
+
 
     def _create_response_id_handler(self, tab):
         """Create a handler for response ID that doesn't use lambdas"""
@@ -1351,27 +1497,30 @@ class MainWindow(QMainWindow):
 
         return handle_response_id
 
+
     def _create_message_handler(self, tab):
         """Create a handler for messages that doesn't use lambdas"""
 
         def handle_message(content):
             try:
-                self.handle_assistant_response(tab, content) # THIS ONE SECOND
+                self.handle_assistant_response(tab, content)  # THIS ONE SECOND
             except Exception as e:
                 print(f"Error in message handler: {str(e)}")
 
         return handle_message
+
 
     def _create_completion_id_handler(self, tab):
         """Create a handler for completion IDs that doesn't use lambdas"""
 
         def handle_completion_id(id):
             try:
-                self.handle_assistant_response(tab, tab.chat_display.toPlainText(), id, 'system') # THIS ONE FIRST
+                self.handle_assistant_response(tab, tab.chat_display.toPlainText(), id, 'system')  # THIS ONE FIRST
             except Exception as e:
                 print(f"Error in completion ID handler: {str(e)}")
 
         return handle_completion_id
+
 
     def _create_thinking_step_handler(self, tab):
         """Create a handler for thinking steps that doesn't use lambdas"""
@@ -1384,6 +1533,7 @@ class MainWindow(QMainWindow):
 
         return handle_thinking_step
 
+
     def _create_reasoning_steps_handler(self, tab):
         """Create a handler for reasoning steps that doesn't use lambdas"""
 
@@ -1394,6 +1544,7 @@ class MainWindow(QMainWindow):
                 print(f"Error in reasoning steps handler: {str(e)}")
 
         return handle_reasoning_steps
+
 
     def _create_usage_info_handler(self, tab):
         """Create a handler for usage info that doesn't use lambdas"""
@@ -1406,6 +1557,7 @@ class MainWindow(QMainWindow):
 
         return handle_usage_info
 
+
     def _create_system_info_handler(self, tab):
         """Create a handler for system info that doesn't use lambdas"""
 
@@ -1416,6 +1568,7 @@ class MainWindow(QMainWindow):
                 print(f"Error in system info handler: {str(e)}")
 
         return handle_system_info
+
 
     def _create_worker_finished_handler(self, tab):
         """Create a handler for worker finished that doesn't use lambdas"""
