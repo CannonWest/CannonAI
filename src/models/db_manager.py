@@ -42,10 +42,11 @@ class DatabaseManager:
             self.logger.error("Attempted to get path to root with None node_id")
             return []
 
-        conn = self.get_connection()
-        cursor = conn.cursor()
-
+        conn = None
         try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
             path = []
             current_id = node_id
 
@@ -85,7 +86,14 @@ class DatabaseManager:
             return valid_path
 
         except Exception as e:
-            self.logger.error(f"Error creating node from row for ID {node_id}: {str(e)}")
+            self.logger.error(f"Error getting path to root for node {node_id}: {str(e)}")
+            return []  # Return empty list instead of None on error
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception as e:
+                    self.logger.error(f"Error closing connection: {str(e)}")
 
     def get_node_children(self, node_id):
         """Get children of a node"""

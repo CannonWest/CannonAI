@@ -133,6 +133,8 @@ class DBConversationManager:
             log_exception(self.logger, e, f"Failed to load conversation {conversation_id}")
             return None
 
+    # src/models/db_conversation_manager.py
+
     def load_all(self):
         """Load conversation list from database"""
         # We don't actually load all conversations into memory
@@ -156,9 +158,16 @@ class DBConversationManager:
 
         # Set first conversation as active if none is active
         if not self.active_conversation_id and conversation_list:
-            first_conversation_id = conversation_list[0]['id']
-            self.load_conversation(first_conversation_id)
-            self.logger.info(f"Set active conversation to: {first_conversation_id}")
+            try:
+                first_conversation_id = conversation_list[0]['id']
+                if first_conversation_id not in self.conversations:
+                    self.load_conversation(first_conversation_id)
+                self.active_conversation_id = first_conversation_id
+                self.logger.info(f"Set active conversation to: {first_conversation_id}")
+            except (IndexError, KeyError) as e:
+                self.logger.warning(f"Failed to set active conversation: {e}")
+                # Continue without throwing error
+                pass
 
     def delete_conversation(self, conversation_id):
         """Delete a conversation"""
