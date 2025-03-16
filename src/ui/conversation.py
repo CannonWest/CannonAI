@@ -1,7 +1,7 @@
 """
 Conversation UI components for the OpenAI Chat application.
 """
-
+import os
 from typing import Dict, List, Optional, Any, Callable
 from functools import partial
 
@@ -792,7 +792,7 @@ class ConversationBranchTab(QWidget):
             # operations to complete first (important for stability)
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(300, self._do_complete_update)  # Increased delay for stability
-            
+
     def _do_complete_update(self):
         """Perform the actual delayed UI update"""
         try:
@@ -1098,18 +1098,6 @@ class ConversationBranchTab(QWidget):
 
         event.acceptProposedAction()
 
-    def on_attach_file(self):
-        """Open file dialog to attach files"""
-        file_paths, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Attach Files",
-            "",
-            "Text Files (*.txt *.py *.js *.c *.cpp *.h *.json *.md);;All Files (*)"
-        )
-
-        for file_path in file_paths:
-            self.add_attachment(file_path)
-
     def add_attachment(self, file_path: str, relative_path: str = None):
         """Add a file attachment to the current message"""
         try:
@@ -1150,151 +1138,6 @@ class ConversationBranchTab(QWidget):
                 "Attachment Error",
                 f"Error attaching file: {str(e)}"
             )
-
-    def on_attach_directory(self):
-        """Open directory dialog to attach all files in a directory"""
-        from PyQt6.QtWidgets import QFileDialog, QMessageBox
-        import os
-
-        directory_path = QFileDialog.getExistingDirectory(
-            self,
-            "Select Directory to Attach",
-            "",
-            QFileDialog.Option.ShowDirsOnly
-        )
-
-        if not directory_path:
-            return
-
-        # Confirm with user if directory might contain many files
-        file_count = sum([len(files) for _, _, files in os.walk(directory_path)])
-
-        if file_count > 10:
-            reply = QMessageBox.question(
-                self,
-                "Confirm Directory Attachment",
-                f"The selected directory contains {file_count} files. Are you sure you want to attach all of them?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-
-        # Process the directory
-        attached_count = 0
-        error_count = 0
-
-        # Walk through the directory recursively
-        for root, dirs, files in os.walk(directory_path):
-            for file in files:
-                # Build the full file path
-                file_path = os.path.join(root, file)
-
-                # Get the relative path from the selected directory
-                relative_path = os.path.relpath(file_path, directory_path)
-
-                try:
-                    # Add the file with its relative path
-                    self.add_attachment(file_path, relative_path)
-                    attached_count += 1
-                except Exception as e:
-                    error_count += 1
-                    print(f"Error attaching file {relative_path}: {str(e)}")
-
-        # Show summary message
-        if attached_count > 0:
-            summary = f"Attached {attached_count} files from directory"
-            if error_count > 0:
-                summary += f" ({error_count} files skipped due to errors)"
-            QMessageBox.information(self, "Directory Attachment", summary)
-        elif error_count > 0:
-            QMessageBox.warning(self, "Attachment Error", f"Could not attach any files. {error_count} files had errors.")
-
-    def update_attachments_ui(self):
-        """Update the attachments UI with current files"""
-        # Clear current widgets
-        while self.attachments_layout.count():
-            item = self.attachments_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        if not self.current_attachments:
-            self.attachments_container.setVisible(False)
-            return
-
-        self.attachments_container.setVisible(True)
-
-        # Add label
-        label = QLabel("Attached Files:")
-        label.setStyleSheet(f"color: {DARK_MODE['foreground']};")
-        self.attachments_layout.addWidget(label)
-
-        # Add file buttons
-        for file_info in self.current_attachments:
-            file_button = QPushButton(f"{file_info['file_name']} ({file_info['token_count']} tokens)")
-            file_button.setStyleSheet(
-                f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
-            )
-            file_button.setToolTip(f"Click to preview: {file_info['file_name']}")
-
-            # Use lambda with default argument to capture the current file_info
-            file_button.clicked.connect(lambda checked=False, fi=file_info: self.preview_file(fi))
-
-            # Add delete button
-            delete_button = QPushButton("×")
-            delete_button.setFixedSize(20, 20)
-            delete_button.setToolTip(f"Remove {file_info['file_name']}")
-            delete_button.setStyleSheet(
-                f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
-            )
-
-            # Use lambda with default argument
-            delete_button.clicked.connect(lambda checked=False, fi=file_info: self.remove_attachment(fi))
-
-            self.attachments_layout.addWidget(file_button)
-            self.attachments_layout.addWidget(delete_button)
-
-        # Add stretch to push everything to the left
-        self.attachments_layout.addStretch()
-
-    def preview_file(self, file_info):
-        """Show a preview dialog for the file"""
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"File Preview: {file_info['file_name']}")
-        dialog.setMinimumSize(700, 500)
-
-        layout = QVBoxLayout(dialog)
-
-        # File info label
-        display_name = file_info['file_name']
-        original_name = file_info.get('original_file_name', display_name.split('/')[-1])
-        full_path = file_info['path']
-
-        info_label = QLabel(
-            f"File: {display_name}\n"
-            f"Original name: {original_name}\n"
-            f"Path: {full_path}\n"
-            f"Size: {format_size(file_info['size'])}\n"
-            f"Token count: {file_info['token_count']} tokens"
-        )
-        layout.addWidget(info_label)
-
-        # Content display
-        content_display = QTextEdit()
-        content_display.setReadOnly(True)
-        content_display.setPlainText(file_info["content"])
-        content_display.setStyleSheet(
-            f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
-        )
-        layout.addWidget(content_display)
-
-        # Buttons
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-
-        dialog.setStyleSheet(f"background-color: {DARK_MODE['background']}; color: {DARK_MODE['foreground']};")
-        dialog.exec()
 
     def remove_attachment(self, file_info):
         """Remove a file attachment"""
@@ -1693,3 +1536,635 @@ class ConversationBranchTab(QWidget):
             # Try to recover by stopping the timer
             self._loading_timer.stop()
             self._loading_active = False
+
+    """
+    Changes to ConversationBranchTab for optimized file attachment handling.
+    Only the relevant methods are shown - the rest of the file remains unchanged.
+    """
+
+    def on_attach_file(self):
+        """Open file dialog to attach files with enhanced handling for large files"""
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Attach Files",
+            "",
+            "Text Files (*.txt *.py *.js *.c *.cpp *.h *.json *.md);;All Files (*)"
+        )
+
+        if not file_paths:
+            return
+
+        # Show progress dialog for multiple files
+        if len(file_paths) > 1:
+            from PyQt6.QtWidgets import QProgressDialog
+            progress_dialog = QProgressDialog("Processing files...", "Cancel", 0, len(file_paths), self)
+            progress_dialog.setWindowTitle("Attaching Files")
+            progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            progress_dialog.show()
+        else:
+            progress_dialog = None
+
+        # Process each file asynchronously
+        self.pending_file_threads = []  # Keep reference to prevent garbage collection
+
+        for i, file_path in enumerate(file_paths):
+            # Update overall progress
+            if progress_dialog:
+                progress_dialog.setValue(i)
+                if progress_dialog.wasCanceled():
+                    break
+
+            # Create progress handler to show file-specific progress
+            def make_progress_handler(file_name):
+                def update_progress(percentage):
+                    if progress_dialog and not progress_dialog.wasCanceled():
+                        progress_dialog.setLabelText(f"Processing {file_name}: {percentage}%")
+
+                return update_progress
+
+            file_name = os.path.basename(file_path)
+            progress_handler = make_progress_handler(file_name)
+
+            # Start asynchronous processing
+            from src.utils.file_utils import get_file_info_async
+            from src.services.storage import SettingsManager
+
+            settings = SettingsManager().get_settings()
+            model = settings.get("model", "gpt-4o")
+
+            # Calculate combined size of existing attachments
+            current_size = sum(attachment.get('size', 0) for attachment in self.current_attachments)
+
+            # Cap individual file size (10MB minus current total)
+            remaining_mb = max(1, 10 - (current_size / (1024 * 1024)))
+
+            thread, worker = get_file_info_async(
+                file_path,
+                model,
+                on_complete=self.add_processed_file,
+                on_error=self.handle_file_error,
+                on_progress=progress_handler,
+                max_size_mb=remaining_mb
+            )
+
+            # Store reference to prevent garbage collection
+            self.pending_file_threads.append((thread, worker))
+
+        # Close progress dialog when done
+        if progress_dialog:
+            progress_dialog.setValue(len(file_paths))
+
+    def add_processed_file(self, file_info):
+        """Add a processed file to the attachments"""
+        # Check token budget (prevent attaching if total exceeds reasonable limit)
+        current_tokens = sum(attachment.get('token_count', 0) for attachment in self.current_attachments)
+        new_tokens = file_info.get('token_count', 0)
+
+        # Get current model context size
+        from src.utils import MODEL_CONTEXT_SIZES
+        from src.services.storage import SettingsManager
+        settings = SettingsManager().get_settings()
+        model = settings.get("model", "gpt-4o")
+        context_size = MODEL_CONTEXT_SIZES.get(model, 8192)
+
+        # Use 80% of context size as a reasonable limit for attachments
+        max_tokens = int(context_size * 0.8)
+
+        if current_tokens + new_tokens > max_tokens:
+            from PyQt6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self,
+                "Token Limit Warning",
+                f"This file would add {new_tokens:,} tokens, bringing the total to {current_tokens + new_tokens:,} tokens. "
+                f"This may exceed the model's capacity to process. Attach anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        # Check if file is already attached (by filename)
+        for attachment in self.current_attachments:
+            if attachment.get("file_name") == file_info.get("file_name"):
+                # Ask to replace
+                from PyQt6.QtWidgets import QMessageBox
+                reply = QMessageBox.question(
+                    self,
+                    "Replace File",
+                    f"A file named '{file_info.get('file_name')}' is already attached. Replace it?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+
+                # Remove existing attachment
+                self.current_attachments = [a for a in self.current_attachments if a.get("file_name") != file_info.get("file_name")]
+
+        # Add to current attachments
+        self.current_attachments.append(file_info)
+
+        # Update UI
+        self.update_attachments_ui()
+
+        # Emit signal
+        self.file_attached.emit(file_info.get('path', ''))
+
+    def handle_file_error(self, error_message):
+        """Handle file attachment errors"""
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            self,
+            "Attachment Error",
+            error_message
+        )
+
+    """
+    This fix replaces the QQueue reference with Python's collections.deque
+    for the directory file processing queue.
+    """
+
+    def on_attach_directory(self):
+        """Open directory dialog to attach all files in a directory with enhanced progress tracking"""
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
+        import os
+        from collections import deque  # Use Python's deque instead of QQueue
+
+        directory_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select Directory to Attach",
+            "",
+            QFileDialog.Option.ShowDirsOnly
+        )
+
+        if not directory_path:
+            return
+
+        # First, count files in the directory
+        file_count = 0
+        file_paths = []
+
+        for root, dirs, files in os.walk(directory_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+
+                # Skip very large files immediately
+                if os.path.getsize(file_path) > 20 * 1024 * 1024:  # 20MB
+                    continue
+
+                file_paths.append((file_path, os.path.relpath(file_path, directory_path)))
+                file_count += 1
+
+        # Confirm with user if directory contains many files
+        if file_count > 10:
+            reply = QMessageBox.question(
+                self,
+                "Confirm Directory Attachment",
+                f"The selected directory contains {file_count} files under 20MB. Are you sure you want to attach all of them?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        # If no files found or too large
+        if not file_paths:
+            QMessageBox.warning(
+                self,
+                "No Files Found",
+                "No suitable files were found in the directory (all files may be larger than 20MB)."
+            )
+            return
+
+        # Show progress dialog
+        progress_dialog = QProgressDialog("Processing files...", "Cancel", 0, file_count, self)
+        progress_dialog.setWindowTitle("Attaching Directory")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.show()
+
+        # Calculate token budget
+        current_tokens = sum(attachment.get('token_count', 0) for attachment in self.current_attachments)
+
+        # Get current model context size
+        from src.utils import MODEL_CONTEXT_SIZES
+        from src.services.storage import SettingsManager
+        settings = SettingsManager().get_settings()
+        model = settings.get("model", "gpt-4o")
+        context_size = MODEL_CONTEXT_SIZES.get(model, 8192)
+
+        # Use 80% of context size as a reasonable limit
+        max_tokens = int(context_size * 0.8)
+
+        # Create queue for processing - use deque instead of QQueue
+        processing_queue = deque(file_paths)
+
+        # Keep track of active threads
+        self.directory_file_threads = []
+        self.directory_files_processed = 0
+        self.directory_files_total = file_count
+        self.directory_progress_dialog = progress_dialog
+
+        # Process files in batches (process 3 at a time)
+        max_concurrent = 3
+
+        # Function to start next file
+        def process_next_file():
+            if not processing_queue or progress_dialog.wasCanceled():
+                # If we're done or canceled, check if we need to wait for threads
+                if not self.directory_file_threads:
+                    progress_dialog.setValue(self.directory_files_total)
+                return
+
+            # Get next file from queue - use popleft() for deque
+            file_path, relative_path = processing_queue.popleft()
+
+            # Start processing file
+            from src.utils.file_utils import get_file_info_async
+            thread, worker = get_file_info_async(
+                file_path,
+                model,
+                on_complete=lambda file_info: handle_file_completed(file_info, relative_path),
+                on_error=lambda error: handle_file_error(error, file_path),
+                max_size_mb=10,
+                relative_path=relative_path
+            )
+
+            # Store reference
+            self.directory_file_threads.append((thread, worker))
+
+            # Connect additional signals
+            thread.finished.connect(lambda: handle_thread_finished(thread, worker))
+
+        # Function to handle file completion
+        def handle_file_completed(file_info, relative_path):
+            nonlocal current_tokens
+
+            # Update attachment name to use relative path
+            file_info["file_name"] = relative_path
+
+            # Check token budget
+            new_tokens = file_info.get('token_count', 0)
+
+            # Skip if would exceed token budget
+            if current_tokens + new_tokens > max_tokens:
+                return
+
+            # Add file
+            self.current_attachments.append(file_info)
+            current_tokens += new_tokens
+
+            # Update UI periodically (not on every file to avoid locking UI)
+            self.directory_files_processed += 1
+            if self.directory_files_processed % 5 == 0:
+                self.update_attachments_ui()
+
+        # Function to handle file error
+        def handle_file_error(error, file_path):
+            # Just log the error, don't show message box for each file
+            print(f"Error processing {file_path}: {error}")
+
+        # Function to handle thread completion
+        def handle_thread_finished(thread, worker):
+            # Remove from active threads
+            if (thread, worker) in self.directory_file_threads:
+                self.directory_file_threads.remove((thread, worker))
+
+            # Update progress
+            progress_dialog.setValue(self.directory_files_total - len(processing_queue))
+
+            # Start next file
+            process_next_file()
+
+            # If all threads done and queue empty, finalize
+            if not self.directory_file_threads and not processing_queue:
+                # Final UI update
+                self.update_attachments_ui()
+
+                # Show summary
+                QMessageBox.information(
+                    self,
+                    "Directory Attachment Complete",
+                    f"Attached {self.directory_files_processed} files from directory with {current_tokens:,} total tokens."
+                )
+
+        # Start initial batch of files
+        for _ in range(min(max_concurrent, len(processing_queue))):
+            process_next_file()
+
+    def update_attachments_ui(self):
+        """Update the attachments UI with current files with improved token display"""
+        # Clear current widgets
+        while self.attachments_layout.count():
+            item = self.attachments_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not self.current_attachments:
+            self.attachments_container.setVisible(False)
+            return
+
+        self.attachments_container.setVisible(True)
+
+        # Calculate total token count
+        total_tokens = sum(attachment.get('token_count', 0) for attachment in self.current_attachments)
+
+        # From context limit
+        from src.utils import MODEL_CONTEXT_SIZES
+        from src.services.storage import SettingsManager
+        settings = SettingsManager().get_settings()
+        model = settings.get("model", "gpt-4o")
+        context_size = MODEL_CONTEXT_SIZES.get(model, 8192)
+
+        # Add token usage summary
+        token_percent = min(100, int((total_tokens / context_size) * 100))
+        token_color = "#50FA7B"  # Green
+
+        if token_percent > 80:
+            token_color = "#FF5555"  # Red
+        elif token_percent > 50:
+            token_color = "#FFB86C"  # Orange
+
+        label = QLabel(f"Attached Files: {len(self.current_attachments)} ({total_tokens:,} tokens, {token_percent}% of context)")
+        label.setStyleSheet(f"color: {token_color};")
+        self.attachments_layout.addWidget(label)
+
+        # Add clear all button
+        clear_btn = QPushButton("Clear All")
+        clear_btn.setStyleSheet(
+            f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
+        )
+        clear_btn.clicked.connect(self.clear_attachments)
+        self.attachments_layout.addWidget(clear_btn)
+
+        # Add spacer
+        from PyQt6.QtWidgets import QSpacerItem, QSizePolicy
+        spacer = QSpacerItem(20, 10, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.attachments_layout.addItem(spacer)
+
+        # Add file list label
+        files_label = QLabel("Files:")
+        files_label.setStyleSheet(f"color: {DARK_MODE['foreground']};")
+        self.attachments_layout.addWidget(files_label)
+
+        # Create scrolling area for files if many files
+        if len(self.current_attachments) > 5:
+            from PyQt6.QtWidgets import QScrollArea, QWidget, QVBoxLayout
+            scroll_area = QScrollArea()
+            scroll_area.setWidgetResizable(True)
+            scroll_area.setMaximumHeight(150)
+
+            scroll_content = QWidget()
+            scroll_layout = QVBoxLayout(scroll_content)
+
+            for file_info in self.current_attachments:
+                file_widget = QWidget()
+                file_layout = QHBoxLayout(file_widget)
+                file_layout.setContentsMargins(0, 0, 0, 0)
+
+                # Create file button with token count and size
+                size_str = format_size(file_info.get('size', 0))
+                token_str = f"{file_info.get('token_count', 0):,} tokens"
+                file_button = QPushButton(f"{file_info['file_name']} ({size_str}, {token_str})")
+                file_button.setStyleSheet(
+                    f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
+                )
+                file_button.setToolTip(f"Click to preview: {file_info['file_name']}")
+                file_button.clicked.connect(lambda checked=False, fi=file_info: self.preview_file(fi))
+
+                # Add delete button
+                delete_button = QPushButton("×")
+                delete_button.setFixedSize(20, 20)
+                delete_button.setToolTip(f"Remove {file_info['file_name']}")
+                delete_button.setStyleSheet(
+                    f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
+                )
+                delete_button.clicked.connect(lambda checked=False, fi=file_info: self.remove_attachment(fi))
+
+                file_layout.addWidget(file_button)
+                file_layout.addWidget(delete_button)
+
+                scroll_layout.addWidget(file_widget)
+
+            scroll_area.setWidget(scroll_content)
+            self.attachments_layout.addWidget(scroll_area)
+        else:
+            # For small number of files, add them directly
+            for file_info in self.current_attachments:
+                from PyQt6.QtWidgets import QWidget
+                file_widget = QWidget()
+                file_layout = QHBoxLayout(file_widget)
+                file_layout.setContentsMargins(0, 0, 0, 0)
+
+                # Create file button with token count
+                size_str = format_size(file_info.get('size', 0))
+                token_str = f"{file_info.get('token_count', 0):,} tokens"
+                file_button = QPushButton(f"{file_info['file_name']} ({size_str}, {token_str})")
+                file_button.setStyleSheet(
+                    f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
+                )
+                file_button.setToolTip(f"Click to preview: {file_info['file_name']}")
+                file_button.clicked.connect(lambda checked=False, fi=file_info: self.preview_file(fi))
+
+                # Add delete button
+                delete_button = QPushButton("×")
+                delete_button.setFixedSize(20, 20)
+                delete_button.setToolTip(f"Remove {file_info['file_name']}")
+                delete_button.setStyleSheet(
+                    f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
+                )
+                delete_button.clicked.connect(lambda checked=False, fi=file_info: self.remove_attachment(fi))
+
+                file_layout.addWidget(file_button)
+                file_layout.addWidget(delete_button)
+
+                self.attachments_layout.addWidget(file_widget)
+
+        # Add stretch to push everything to the top
+        self.attachments_layout.addStretch()
+
+    def preview_file(self, file_info):
+        """Show a preview dialog for the file with optimized display for large files"""
+        # Content display
+        from PyQt6.QtWidgets import QLabel, QTabWidget
+        content_tab = QTabWidget()
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"File Preview: {file_info['file_name']}")
+        dialog.setMinimumSize(700, 500)
+
+        layout = QVBoxLayout(dialog)
+
+        # File info label
+        display_name = file_info.get('file_name', '')
+        original_name = file_info.get('original_file_name', display_name.split('/')[-1])
+        full_path = file_info.get('path', '')
+
+        # Get token and character counts
+        token_count = file_info.get('token_count', 0)
+        char_count = len(file_info.get('content', ''))
+
+        info_label = QLabel(
+            f"File: {display_name}\n"
+            f"Original name: {original_name}\n"
+            f"Path: {full_path}\n"
+            f"Size: {format_size(file_info.get('size', 0))}\n"
+            f"Character count: {char_count:,}\n"
+            f"Token count: {token_count:,} tokens"
+        )
+        layout.addWidget(info_label)
+
+        # Get file extension for syntax highlighting
+        file_ext = os.path.splitext(display_name)[1].lower() if '.' in display_name else ''
+
+        # Create raw text view
+        raw_text = QTextEdit()
+        raw_text.setReadOnly(True)
+
+        # For very large files, show a warning and truncated content
+        content = file_info.get('content', '')
+        content_length = len(content)
+        max_display = 100_000  # Max chars to display
+
+        if content_length > max_display:
+            warning_label = QLabel(f"⚠️ This file is very large ({content_length:,} characters). Showing first {max_display:,} characters.")
+            warning_label.setStyleSheet("color: #FFB86C;")  # Orange warning color
+            layout.addWidget(warning_label)
+
+            # Truncate content for display
+            display_content = content[:max_display] + f"\n\n... [Truncated - {content_length - max_display:,} more characters] ..."
+            raw_text.setPlainText(display_content)
+        else:
+            raw_text.setPlainText(content)
+
+        # Style the text view
+        raw_text.setStyleSheet(
+            f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
+        )
+
+        # Add raw tab
+        content_tab.addTab(raw_text, "Raw Text")
+
+        # Add syntax highlighted tab for common code files
+        code_extensions = ('.py', '.js', '.html', '.css', '.cpp', '.c', '.h', '.java', '.json', '.xml')
+        if file_ext in code_extensions:
+            try:
+                from PyQt6.Qsci import QsciScintilla, QsciLexerPython, QsciLexerJavaScript, QsciLexerHTML, QsciLexerCSS, QsciLexerCPP, QsciLexerJava, QsciLexerJSON, QsciLexerXML
+
+                # Create syntax highlighting editor
+                editor = QsciScintilla()
+                editor.setReadOnly(True)
+
+                # Set up lexer based on file type
+                lexer = None
+                if file_ext == '.py':
+                    lexer = QsciLexerPython()
+                elif file_ext == '.js':
+                    lexer = QsciLexerJavaScript()
+                elif file_ext == '.html':
+                    lexer = QsciLexerHTML()
+                elif file_ext == '.css':
+                    lexer = QsciLexerCSS()
+                elif file_ext in ('.cpp', '.c', '.h'):
+                    lexer = QsciLexerCPP()
+                elif file_ext == '.java':
+                    lexer = QsciLexerJava()
+                elif file_ext == '.json':
+                    lexer = QsciLexerJSON()
+                elif file_ext == '.xml':
+                    lexer = QsciLexerXML()
+
+                if lexer:
+                    # Configure lexer for dark mode
+                    lexer.setDefaultPaper(QColor(DARK_MODE['background']))
+                    lexer.setDefaultColor(QColor(DARK_MODE['foreground']))
+                    editor.setLexer(lexer)
+
+                    # Set the text with possible truncation
+                    if content_length > max_display:
+                        display_content = content[:max_display] + f"\n\n... [Truncated - {content_length - max_display:,} more characters] ..."
+                        editor.setText(display_content)
+                    else:
+                        editor.setText(content)
+
+                    # Add to tabs
+                    content_tab.addTab(editor, "Highlighted")
+            except ImportError:
+                # QScintilla not available
+                pass
+
+        # Add token visualization tab
+        try:
+            token_view = QTextEdit()
+            token_view.setReadOnly(True)
+
+            # Get encoding for token counting
+            try:
+                from src.services.storage import SettingsManager
+                settings = SettingsManager().get_settings()
+                model = settings.get("model", "gpt-4o")
+
+                import tiktoken
+                try:
+                    encoding = tiktoken.encoding_for_model(model)
+                except KeyError:
+                    encoding = tiktoken.get_encoding("cl100k_base")
+
+                # Generate token visualization
+                token_html = "<style>span.token{background:#44475A;border-radius:3px;margin:2px;padding:2px;}</style>"
+
+                # Truncate content for token visualization
+                token_max = 2000  # Maximum number of tokens to visualize
+                if content_length > 10000:
+                    # For very large files, just show token counts
+                    tokens = encoding.encode(content[:50000])  # Sample first 50K chars
+                    token_html += f"<p>This file contains {token_count:,} tokens.</p>"
+                    token_html += f"<p>Sample token sizes:</p>"
+                    token_html += f"<p>First 1000 chars: {len(encoding.encode(content[:1000])):,} tokens</p>"
+                    token_html += f"<p>First 10000 chars: {len(encoding.encode(content[:10000])):,} tokens</p>"
+
+                    # Show first 100 tokens
+                    tokens = tokens[:100]
+                    token_html += "<p>First 100 tokens:</p><p>"
+                    for token in tokens:
+                        decoded = encoding.decode([token])
+                        # Replace special chars for HTML display
+                        decoded = decoded.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "↵").replace(" ", "·")
+                        token_html += f'<span class="token" title="Token ID: {token}">{decoded}</span>'
+                    token_html += "</p>"
+                else:
+                    # For smaller files, show token visualization
+                    tokens = encoding.encode(content)
+                    if len(tokens) > token_max:
+                        token_html += f"<p>Showing first {token_max:,} of {len(tokens):,} tokens:</p><p>"
+                        tokens = tokens[:token_max]
+                    else:
+                        token_html += f"<p>Total tokens: {len(tokens):,}</p><p>"
+
+                    for token in tokens:
+                        decoded = encoding.decode([token])
+                        # Replace special chars for HTML display
+                        decoded = decoded.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "↵").replace(" ", "·")
+                        token_html += f'<span class="token" title="Token ID: {token}">{decoded}</span>'
+                    token_html += "</p>"
+
+                token_view.setHtml(token_html)
+                token_view.setStyleSheet(
+                    f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
+                )
+                content_tab.addTab(token_view, "Token View")
+            except Exception as e:
+                print(f"Error creating token visualization: {e}")
+        except Exception as e:
+            print(f"Error creating token tab: {e}")
+
+        layout.addWidget(content_tab)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        dialog.setStyleSheet(f"background-color: {DARK_MODE['background']}; color: {DARK_MODE['foreground']};")
+        dialog.exec()

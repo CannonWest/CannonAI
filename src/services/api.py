@@ -231,6 +231,18 @@ class OpenAIAPIWorker(QObject):
                         # Stop the timeout timer
                         self._stream_timeout.stop()
 
+                    except openai.BadRequestError as bad_req_error:
+                        # Special handling for input length errors
+                        error_msg = str(bad_req_error)
+                        self.logger.error(f"Bad request error: {error_msg}")
+
+                        if "string too long" in error_msg or "maximum context length" in error_msg:
+                            # This is a token/character limit error
+                            self.error_occurred.emit(
+                                "Your message is too large for the API to process. Please reduce the size or number of file attachments."
+                            )
+                        else:
+                            self.error_occurred.emit(f"Bad request: {error_msg}")
                     except Exception as stream_error:
                         # Classify and handle different types of errors
                         error_type = type(stream_error).__name__
@@ -266,6 +278,18 @@ class OpenAIAPIWorker(QObject):
                             response = client.chat.completions.create(**params)
 
                         self._handle_full_response(response, api_type)
+                    except openai.BadRequestError as bad_req_error:
+                        # Special handling for input length errors
+                        error_msg = str(bad_req_error)
+                        self.logger.error(f"Bad request error: {error_msg}")
+
+                        if "string too long" in error_msg or "maximum context length" in error_msg:
+                            # This is a token/character limit error
+                            self.error_occurred.emit(
+                                "Your message is too large for the API to process. Please reduce the size or number of file attachments."
+                            )
+                        else:
+                            self.error_occurred.emit(f"Bad request: {error_msg}")
                     except Exception as resp_error:
                         # Classify and handle different types of errors
                         error_type = type(resp_error).__name__
@@ -311,11 +335,17 @@ class OpenAIAPIWorker(QObject):
             # Reset processing flag
             self._is_processing = False
 
-            # Signal completion
+            # Signal completion - use try/except to ensure we always emit the signal
             try:
                 self.worker_finished.emit()
             except Exception as signal_error:
                 self.logger.error(f"Error emitting worker finished signal: {str(signal_error)}")
+                # Last resort - force emit with a new thread (not ideal, but better than crashing)
+                try:
+                    import threading
+                    threading.Thread(target=lambda: self.worker_finished.emit()).start()
+                except:
+                    pass
 
             self.logger.info(f"Worker {self._worker_id} finished processing")
 
