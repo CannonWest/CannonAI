@@ -295,7 +295,6 @@ def get_file_info_async(file_path: str, model: str = "gpt-4o",
 
     return thread, worker
 
-
 def extract_display_text(node, max_length=40):
     """
     Extract the most relevant part of a message for display in navigation elements.
