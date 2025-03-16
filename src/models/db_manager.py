@@ -195,7 +195,7 @@ class DatabaseManager:
             # Get file attachments
             attached_files = self._get_node_attachments(row['id'])
 
-            # Create the node
+            # Create the node - now passing response_id from the database row
             node = DBMessageNode(
                 id=row['id'],
                 conversation_id=row['conversation_id'],
@@ -206,7 +206,8 @@ class DatabaseManager:
                 model_info=model_info,
                 parameters=parameters,
                 token_usage=token_usage,
-                attached_files=attached_files
+                attached_files=attached_files,
+                response_id=row['response_id']  # Add the response_id parameter
             )
 
             # Set database manager for lazy loading children

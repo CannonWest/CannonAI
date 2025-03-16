@@ -382,7 +382,7 @@ class DBConversationTree:
                     'token_count': row['token_count']
                 })
 
-            # Create the node
+            # Create the node - now passing response_id from the database
             node = DBMessageNode(
                 id=message['id'],
                 conversation_id=message['conversation_id'],
@@ -393,7 +393,8 @@ class DBConversationTree:
                 model_info=model_info,
                 parameters=parameters,
                 token_usage=token_usage,
-                attached_files=attached_files
+                attached_files=attached_files,
+                response_id=message['response_id']  # Add response_id parameter
             )
 
             # Set database manager for lazy loading children

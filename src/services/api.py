@@ -167,6 +167,8 @@ class OpenAIAPIWorker(QObject):
 
             # Create client in a try block
             try:
+                # Import OpenAI here so it can be properly mocked in tests
+                from openai import OpenAI
                 client = OpenAI(**client_kwargs)
             except Exception as client_error:
                 self.logger.error(f"Error creating OpenAI client: {str(client_error)}")
@@ -525,6 +527,12 @@ class OpenAIAPIWorker(QObject):
                         if hasattr(event, 'response'):
                             # Log the entire response object
                             self.logger.debug(f"Completion response: {event.response}")
+
+                            # Check for response ID in the completion event
+                            if hasattr(event.response, 'id'):
+                                response_id = event.response.id
+                                self.logger.info(f"Captured response ID from completion: {response_id}")
+                                self.completion_id.emit(response_id)
 
                             # Try to extract usage data with fallbacks
                             try:

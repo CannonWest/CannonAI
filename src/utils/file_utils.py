@@ -11,6 +11,14 @@ from typing import Dict, Optional, Callable, Tuple, List
 import tiktoken
 from PyQt6.QtCore import QObject, pyqtSignal, QThread
 
+# Define chunk_size constant for large file processing
+chunk_size = 1024 * 1024  # 1MB default chunk size for large file processing
+
+# Add custom MIME types
+mimetypes.add_type('text/markdown', '.md')
+mimetypes.add_type('text/x-python', '.py')
+mimetypes.add_type('application/json', '.json')
+
 
 class FileProcessingWorker(QObject):
     """Worker for processing files in a background thread"""
@@ -36,6 +44,9 @@ class FileProcessingWorker(QObject):
             file_size = os.path.getsize(self.file_path)
             max_size_bytes = self.max_size_mb * 1024 * 1024
 
+            # Make sure to emit initial progress
+            self.progress.emit(0)
+
             if file_size > max_size_bytes:
                 self.error.emit(f"File exceeds maximum size of {self.max_size_mb}MB")
                 self.finished.emit()
@@ -59,7 +70,9 @@ class FileProcessingWorker(QObject):
                 # For smaller files, use standard processing
                 content = read_text_file(self.file_path)
                 token_count = count_tokens(content, self.model)
-                self.progress.emit(100)
+                # Make sure to emit progress
+                self.progress.emit(50)  # Middle progress
+                self.progress.emit(100)  # Completed
 
             # Create file info dict
             file_info = {
@@ -145,8 +158,7 @@ def process_large_text_file(file_path: str, model: str, progress_callback: Calla
         encoding = tiktoken.get_encoding("cl100k_base")
 
     # Process file in chunks
-    chunk_size = 1024 * 1024  # 1MB chunks
-
+    # Use the global chunk_size variable defined at the top of the module
     with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
         while True:
             chunk = f.read(chunk_size)
@@ -304,8 +316,15 @@ def extract_display_text(node, max_length=40):
     if node.role == "system":
         return "System instructions"
 
-    # For user and assistant messages, find the actual message content
-    # First, try to find the most relevant part by removing any repeated context
+    # For assistant messages, try to extract the actual assistant's response
+    if node.role == "assistant":
+        # Look for the "Assistant:" prefix in the content
+        if "Assistant:" in content:
+            parts = content.split("Assistant:", 1)
+            if len(parts) > 1:
+                content = parts[1].strip()
+
+    # For all messages, try to find the most relevant part by removing any repeated context
     lines = content.split('\n')
     non_empty_lines = [line for line in lines if line.strip()]
 
@@ -320,7 +339,7 @@ def extract_display_text(node, max_length=40):
 
     # Truncate if needed
     if len(content) > max_length:
-        content = content[:max_length - 3] + "..."
+        content = content[:max_length - 3].rstrip() + "..."
 
     return content
 
