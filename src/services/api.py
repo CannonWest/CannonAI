@@ -167,8 +167,6 @@ class OpenAIAPIWorker(QObject):
 
             # Create client in a try block
             try:
-                # Import OpenAI here so it can be properly mocked in tests
-                from openai import OpenAI
                 client = OpenAI(**client_kwargs)
             except Exception as client_error:
                 self.logger.error(f"Error creating OpenAI client: {str(client_error)}")
@@ -321,13 +319,17 @@ class OpenAIAPIWorker(QObject):
 
             except Exception as api_error:
                 self.logger.error(f"API request failed: {str(api_error)}")
-                self.error_occurred.emit(f"API request failed: {str(api_error)}")
+                # Avoid duplicate error messages - only emit if this is an exception not already handled
+                if isinstance(api_error, ValueError) or not hasattr(api_error, "__context__") or api_error.__context__ is None:
+                    self.error_occurred.emit(f"API request failed: {str(api_error)}")
 
             # Force garbage collection after API calls
             gc.collect()
 
         except Exception as process_error:
             self.logger.error(f"Critical error in process method: {str(process_error)}")
+            # Avoid duplicate error messages with the specific terminology "Critical error"
+            # This will differentiate it from other error messages
             self.error_occurred.emit(f"Critical error: {str(process_error)}")
 
             # Log stack trace for debugging
@@ -351,12 +353,21 @@ class OpenAIAPIWorker(QObject):
 
             self.logger.info(f"Worker {self._worker_id} finished processing")
 
+    # This change fixes the parameter handling methods in the OpenAIAPIWorker class
+
     def _prepare_response_api_params(self, model):
         """Prepare parameters for the Response API with consistent parameter handling"""
         self.logger.debug(f"Settings for prepare_response_api_params: {self.settings}")
 
         # Process messages for the Response API format
         prepared_input = self.prepare_input(self.messages, "responses")
+
+        # Get the system message for instructions
+        system_message = None
+        for message in self.messages:
+            if message.get("role") == "system":
+                system_message = message.get("content", "")
+                break
 
         # Base parameters (common across all API types)
         params = {
@@ -366,6 +377,10 @@ class OpenAIAPIWorker(QObject):
             "top_p": self.settings.get("top_p", 1.0),
             "stream": self.settings.get("stream", True),
         }
+
+        # Add instructions from system message if available
+        if system_message:
+            params["instructions"] = system_message
 
         # Add Response API specific parameters
         if "store" in self.settings:
@@ -387,12 +402,7 @@ class OpenAIAPIWorker(QObject):
             if "instructions" in params:
                 params["instructions"] += " Please provide the response in JSON format."
             else:
-                # Try to extract system message
-                system_message = next((msg for msg in self.messages if msg.get("role") == "system"), None)
-                if system_message and isinstance(system_message, dict) and "content" in system_message:
-                    params["instructions"] = system_message["content"] + " Please provide the response in JSON format."
-                else:
-                    params["instructions"] = "Please provide the response in JSON format."
+                params["instructions"] = "Please provide the response in JSON format."
 
         # Handle token limit - always use max_output_tokens for Response API
         # Get token limit with fallbacks to ensure we get a value
@@ -403,8 +413,12 @@ class OpenAIAPIWorker(QObject):
         self.logger.debug(f"Using max_output_tokens={token_limit} for Responses API")
 
         # Add reasoning parameters for supported models
-        if model in self.settings.get("reasoning_models", []) and "reasoning" in self.settings:
+        model_is_reasoning = model in REASONING_MODELS or "o1" in model or "o3" in model
+        if model_is_reasoning and "reasoning" in self.settings:
             params["reasoning"] = self.settings["reasoning"]
+        # If model is a reasoning model, ensure we have reasoning parameter even if not in settings
+        elif model_is_reasoning:
+            params["reasoning"] = {"effort": self.settings.get("reasoning_effort", "medium")}
 
         # Add seed if specified
         if self.settings.get("seed") is not None:
@@ -420,6 +434,63 @@ class OpenAIAPIWorker(QObject):
                 params[param] = self.settings[param]
 
         self.logger.debug(f"Final Responses API parameters: {list(params.keys())}")
+        return params
+
+    def _prepare_chat_completions_params(self, model):
+        """Prepare parameters for the Chat Completions API with improved model compatibility"""
+        # Process messages for the Chat API format
+        prepared_messages = self.prepare_input(self.messages, "chat_completions")
+
+        # Base parameters (common across models)
+        params = {
+            "model": model,
+            "messages": prepared_messages,
+            "temperature": self.settings.get("temperature"),
+            "top_p": self.settings.get("top_p"),
+            "stream": self.settings.get("stream", True),
+        }
+
+        # Add response format if specified
+        if "response_format" in self.settings:
+            format_type = self.settings.get("response_format", {}).get("type", "text")
+            params["response_format"] = {"type": format_type}
+
+        # Get token limit with appropriate fallbacks
+        token_limit = self.settings.get("max_completion_tokens",
+                                        self.settings.get("max_tokens",
+                                                          self.settings.get("max_output_tokens", 1024)))
+
+        # Check if this is an o-series or reasoning model that requires max_completion_tokens
+        from src.utils import REASONING_MODELS
+        is_o_series = (
+                model in REASONING_MODELS or
+                model.startswith("o1") or
+                model.startswith("o3") or
+                model.startswith("deepseek-")
+        )
+
+        if is_o_series:
+            # These models require max_completion_tokens instead of max_tokens
+            params["max_completion_tokens"] = token_limit
+            self.logger.debug(f"Using max_completion_tokens={token_limit} for model {model}")
+        else:
+            # Standard models use max_tokens
+            params["max_tokens"] = token_limit
+            self.logger.debug(f"Using max_tokens={token_limit} for model {model}")
+
+        # Add seed if specified
+        if self.settings.get("seed") is not None:
+            params["seed"] = self.settings.get("seed")
+
+        # Add stop sequences if specified - ensure this is properly passed
+        if "stop" in self.settings and self.settings["stop"] is not None:
+            params["stop"] = self.settings["stop"]
+
+        # Add other common parameters if specified
+        for param in ["frequency_penalty", "presence_penalty", "logit_bias", "user"]:
+            if param in self.settings and self.settings[param] is not None:
+                params[param] = self.settings[param]
+
         return params
 
     def _prepare_chat_completions_params(self, model):
