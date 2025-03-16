@@ -258,27 +258,26 @@ class OpenAIAPIWorker(QObject):
         error_type = type(error).__name__
         error_msg = str(error)
 
-        # Get the openai module for error type checking
-        import openai
+        # Instead of using isinstance, check the error type name
+        # This works better with mock objects in tests
 
-        # Check for different OpenAI error types
-        if hasattr(openai, 'AuthenticationError') and isinstance(error, openai.AuthenticationError):
+        if error_type == "AuthenticationError":
             self.logger.error(f"Authentication error: {error_msg}")
             self.error_occurred.emit(f"Authentication failed: Please check your API key")
 
-        elif hasattr(openai, 'RateLimitError') and isinstance(error, openai.RateLimitError):
+        elif error_type == "RateLimitError":
             self.logger.error(f"Rate limit error: {error_msg}")
             self.error_occurred.emit(f"Rate limit exceeded: {error_msg}")
 
-        elif hasattr(openai, 'APITimeoutError') and isinstance(error, openai.APITimeoutError):
+        elif error_type == "APITimeoutError":
             self.logger.error(f"API timeout: {error_msg}")
             self.error_occurred.emit(f"Request timed out: {error_msg}")
 
-        elif hasattr(openai, 'APIConnectionError') and isinstance(error, openai.APIConnectionError):
+        elif error_type == "APIConnectionError":
             self.logger.error(f"API connection error: {error_msg}")
             self.error_occurred.emit(f"Connection error: {error_msg}")
 
-        elif hasattr(openai, 'BadRequestError') and isinstance(error, openai.BadRequestError):
+        elif error_type == "BadRequestError":
             self.logger.error(f"Bad request error: {error_msg}")
 
             if "string too long" in error_msg or "maximum context length" in error_msg:
@@ -289,7 +288,7 @@ class OpenAIAPIWorker(QObject):
             else:
                 self.error_occurred.emit(f"Bad request: {error_msg}")
 
-        elif hasattr(openai, 'InternalServerError') and isinstance(error, openai.InternalServerError):
+        elif error_type == "InternalServerError":
             self.logger.error(f"OpenAI server error: {error_msg}")
             self.error_occurred.emit(f"OpenAI server error: Please try again later")
 
