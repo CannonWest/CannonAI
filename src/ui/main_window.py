@@ -605,35 +605,39 @@ class MainWindow(QMainWindow):
 
     def _start_message_processing(self, tab, messages):
         """
-        Start processing a message request with robust error handling.
-
-        Args:
-            tab: The tab containing the conversation
-            messages: Messages to send to the API
+        Start processing a message request with robust error handling and connection safety.
         """
-        # Safety check
-        if not tab or not messages:
-            print("ERROR: Invalid tab or messages in _start_message_processing")
-            return
+        # Safety check with better error logging
+        if not tab:
+            self.logger.error("Invalid tab in _start_message_processing (tab is None)")
+            return False
+
+        if not messages:
+            self.logger.error("No messages provided in _start_message_processing")
+            if tab:
+                if hasattr(tab, 'stop_loading_indicator') and getattr(tab, '_loading_active', False):
+                    tab.stop_loading_indicator()
+                setattr(tab, '_processing_message', False)
+            return False
 
         # Check if tab is already processing a message
         if hasattr(tab, '_processing_message') and tab._processing_message:
-            print("WARNING: Tab is already processing a message, cancelling previous request")
+            self.logger.warning("Tab is already processing a message, cancelling previous request")
             try:
                 if hasattr(tab, '_active_thread_id'):
                     thread_id = tab._active_thread_id
-                    print(f"DEBUG: Cancelling previous worker thread: {thread_id}")
+                    self.logger.debug(f"Cancelling previous worker thread: {thread_id}")
                     self.thread_manager.cancel_worker(thread_id)
 
                     # Force cleanup loading indicators
-                    if hasattr(tab, 'stop_loading_indicator') and tab._loading_active:
-                        print("DEBUG: Cleaning up previous loading indicator")
+                    if hasattr(tab, 'stop_loading_indicator') and getattr(tab, '_loading_active', False):
+                        self.logger.debug("Cleaning up previous loading indicator")
                         tab.stop_loading_indicator()
 
                     # Reset processing state to allow new processing
                     tab._processing_message = False
             except Exception as e:
-                print(f"Error cancelling previous worker: {str(e)}")
+                self.logger.error(f"Error cancelling previous worker: {str(e)}")
 
         try:
             # Clear any existing chain of thought steps
@@ -647,14 +651,25 @@ class MainWindow(QMainWindow):
             # Mark the tab as processing a message
             tab._processing_message = True
 
-            # Make a copy of messages to prevent potential memory issues
-            messages_copy = list(messages)
+            # Make a deep copy of messages to prevent potential memory issues
+            import copy
+            messages_copy = copy.deepcopy(messages)
+
+            # Copy settings to avoid any shared state issues
+            settings_copy = None
+            if hasattr(self, 'settings') and self.settings:
+                settings_copy = self.settings.copy()
+            else:
+                # Fallback to default settings if not available
+                from src.utils.constants import DEFAULT_PARAMS
+                settings_copy = DEFAULT_PARAMS.copy()
+                self.logger.warning("Using default settings as settings not available")
 
             # Create worker and thread using the manager
             try:
                 thread_id, worker = self.thread_manager.create_worker(
                     messages_copy,
-                    self.settings.copy()  # Use a copy of settings to avoid shared state issues
+                    settings_copy
                 )
 
                 # Store thread_id with the tab for potential cancellation
@@ -665,13 +680,13 @@ class MainWindow(QMainWindow):
 
                 # Disconnect any existing connections to prevent signal conflicts
                 try:
-                    self._disconnect_worker_signals(tab)
+                    if hasattr(self, '_disconnect_worker_signals'):
+                        self._disconnect_worker_signals(tab)
                 except Exception as e:
-                    print(f"Error disconnecting signals: {str(e)}")
-                    # Continue anyway
+                    self.logger.warning(f"Error disconnecting signals: {str(e)}")
 
                 # Connect signals using direct methods instead of lambdas to reduce memory usage
-                streaming_mode = self.settings.get("stream", True)
+                streaming_mode = settings_copy.get("stream", True)
                 if streaming_mode:
                     worker.chunk_received.connect(self._create_chunk_handler(tab))
                     worker.message_received.connect(self._create_streaming_finalizer(tab))
@@ -691,23 +706,30 @@ class MainWindow(QMainWindow):
                 # Start the worker thread
                 self.thread_manager.start_worker(thread_id)
 
-                print(f"Started message processing with thread ID: {thread_id}")
+                self.logger.info(f"Started message processing with thread ID: {thread_id}")
                 return True
             except Exception as worker_error:
-                print(f"ERROR creating worker: {str(worker_error)}")
+                self.logger.error(f"ERROR creating worker: {str(worker_error)}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+
                 if hasattr(tab, 'stop_loading_indicator'):
                     tab.stop_loading_indicator()
+
                 tab._processing_message = False
                 return False
         except Exception as e:
-            print(f"CRITICAL ERROR in _start_message_processing: {str(e)}")
+            self.logger.error(f"CRITICAL ERROR in _start_message_processing: {str(e)}")
             import traceback
-            traceback.print_exc()
+            self.logger.error(traceback.format_exc())
 
             # Clean up
             if hasattr(tab, 'stop_loading_indicator'):
                 tab.stop_loading_indicator()
-            tab._processing_message = False
+
+            if hasattr(tab, '_processing_message'):
+                tab._processing_message = False
+
             return False
 
     def handle_assistant_response(self, tab, content, response_id=None, role="assistant"):
