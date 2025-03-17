@@ -162,6 +162,8 @@ class DBConversationTree:
             name: str = "New Conversation",
             system_message: str = "You are a helpful assistant."
     ):
+        # Store the longest branch we've seen for each branch ID (key is first node ID)
+        self._longest_branches = {}
         self.db_manager = db_manager
 
         # If ID is provided, load existing conversation
@@ -630,8 +632,43 @@ class DBConversationTree:
                 logger.warning(f"Node {node_id} not found in conversation {self.id}")
                 return False
 
-            # Update current node
+            # Store the old node ID
+            old_node_id = self.current_node_id
+
+            # Update current node - needed before getting branch
             self.current_node_id = node_id
+
+            # Get the current branch for this node
+            current_branch = self.get_current_branch()
+            if current_branch:
+                # Get the first node of this branch for tracking
+                # We use the first two nodes to identify a branch uniquely
+                # (The first node is usually system, but second node identifies the branch)
+                if len(current_branch) >= 2:
+                    branch_id = current_branch[1].id  # Use the second node
+                else:
+                    branch_id = current_branch[0].id  # Fallback to first node
+
+                # Get all node IDs in the current branch
+                current_node_ids = [node.id for node in current_branch if node is not None]
+
+                # Check if we've seen a longer version of this branch before
+                if branch_id in self._longest_branches:
+                    longest_node_ids = self._longest_branches[branch_id]
+
+                    # If the current branch is longer, update our record
+                    if len(current_node_ids) > len(longest_node_ids):
+                        logger.debug(f"Found longer version of branch {branch_id}, updating record from {len(longest_node_ids)} to {len(current_node_ids)} nodes")
+                        self._longest_branches[branch_id] = current_node_ids
+                else:
+                    # First time seeing this branch, record it
+                    logger.debug(f"First time seeing branch {branch_id}, recording {len(current_node_ids)} nodes")
+                    self._longest_branches[branch_id] = current_node_ids
+
+                # Debug log
+                logger.debug(f"Currently viewing branch {branch_id} which has {len(current_node_ids)} visible nodes")
+                if branch_id in self._longest_branches:
+                    logger.debug(f"Longest version of this branch has {len(self._longest_branches[branch_id])} nodes")
 
             # Update in database
             now = datetime.now().isoformat()
@@ -644,14 +681,70 @@ class DBConversationTree:
 
             conn.commit()
             return True
-
         except Exception as e:
-            conn.rollback()
-            logger.error(f"Error navigating to node {node_id}")
-            log_exception(logger, e, f"Failed to navigate to node {node_id}")
+            logger.error(f"Error in navigate_to_node: {str(e)}")
+            if conn:
+                conn.rollback()
             return False
         finally:
-            conn.close()
+            if conn:
+                conn.close()
+
+    def _update_active_branch(self, node_id, current_branch_node_ids):
+        """
+        Update the active branch based on node navigation
+
+        This identifies which branch we're on when navigating to a specific node,
+        looking for the most specific branch that contains this node.
+        """
+        try:
+            # Add detailed logging
+            logger.debug(f"Updating active branch for node {node_id}")
+            logger.debug(f"Current branch has {len(current_branch_node_ids)} nodes")
+            logger.debug(f"We have {len(self._branch_paths)} branches tracked")
+
+            # If this is a leaf node, set it as the active branch
+            if current_branch_node_ids and current_branch_node_ids[-1] == node_id:
+                self._active_branch_id = node_id
+                logger.debug(f"Node is a leaf node, setting as active branch")
+                return
+
+            # Find the most specific branch containing this node
+            best_branch_id = None
+            best_position = -1
+
+            for branch_id, branch_nodes in self._branch_paths.items():
+                if node_id in branch_nodes:
+                    # Calculate position from the *beginning* of the list (not the end)
+                    # This gives us node depth, which is more important
+                    position = branch_nodes.index(node_id)
+
+                    logger.debug(f"Node found in branch {branch_id} at position {position}")
+
+                    # If this branch has exactly the same path to the node (more specific),
+                    # or if the node is deeper in this branch, use it
+                    if best_branch_id is None or position > best_position:
+                        best_position = position
+                        best_branch_id = branch_id
+                        logger.debug(f"New best branch: {branch_id} with position {position}")
+
+            # Set the active branch
+            if best_branch_id:
+                self._active_branch_id = best_branch_id
+                logger.debug(f"Selected branch {best_branch_id} as active (node at position {best_position})")
+            else:
+                # No existing branch contains this node, create a new branch record
+                if current_branch_node_ids:
+                    leaf_id = current_branch_node_ids[-1]
+                    self._active_branch_id = leaf_id
+                    logger.debug(f"Created new active branch {leaf_id} for node {node_id}")
+                else:
+                    logger.warning(f"No branch nodes available for node {node_id}")
+                    self._active_branch_id = node_id  # Default to current node
+        except Exception as e:
+            logger.error(f"Error updating active branch: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
 
     def retry_current_response(self):
         """
@@ -668,6 +761,67 @@ class DBConversationTree:
     def get_current_branch(self):
         """Get the current active conversation branch"""
         return self.current_node.get_path_to_root()
+
+    def get_current_branch_future(self):
+        """
+        Get the current branch including future nodes from our stored longest version
+        """
+        # Get the current branch we're viewing
+        current_branch = self.get_current_branch()
+        if not current_branch:
+            logger.warning("No current branch available")
+            return current_branch
+
+        # Get the current node ID
+        current_id = self.current_node_id
+        logger.debug(f"get_current_branch_future called, current node: {current_id}")
+
+        # Identify the branch we're on using the second message
+        branch_id = None
+        if len(current_branch) >= 2:
+            branch_id = current_branch[1].id
+        else:
+            branch_id = current_branch[0].id
+
+        logger.debug(f"Current branch identified as {branch_id}")
+
+        # Check if we have a longer version of this branch stored
+        if branch_id not in self._longest_branches:
+            logger.debug(f"No longer version of this branch found")
+            return current_branch
+
+        # Get the longest version of this branch
+        longest_node_ids = self._longest_branches[branch_id]
+        logger.debug(f"Longest version of this branch has {len(longest_node_ids)} nodes")
+
+        # Check if current node is in the longest branch
+        if current_id not in longest_node_ids:
+            logger.debug(f"Current node not found in longest branch - this should not happen!")
+            return current_branch
+
+        # Get the position of current node in the longest branch
+        current_pos = longest_node_ids.index(current_id)
+        logger.debug(f"Current node at position {current_pos} in longest branch of length {len(longest_node_ids)}")
+
+        # If this is already the last node in the longest branch, no future to show
+        if current_pos == len(longest_node_ids) - 1:
+            logger.debug("Current node is last in longest branch, no future to show")
+            return current_branch
+
+        # Build the full branch with node objects (contains future nodes)
+        full_branch = []
+        for node_id in longest_node_ids:
+            node = self.get_node(node_id)
+            if node:
+                full_branch.append(node)
+            else:
+                logger.warning(f"Could not fetch node {node_id} for branch")
+
+        # Log how many future nodes we have
+        future_count = len(longest_node_ids) - current_pos - 1
+        logger.debug(f"Returning branch with {future_count} future nodes")
+
+        return full_branch
 
     def get_current_messages(self):
         """Get message list for API calls based on current branch"""

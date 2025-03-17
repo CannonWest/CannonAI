@@ -1,9 +1,7 @@
 """
 Reusable UI components for the OpenAI Chat application.
 """
-from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple, Callable
-from functools import partial
 
 from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -13,7 +11,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 
-import sys
 from src.utils import (
     DARK_MODE, MODEL_CONTEXT_SIZES, MODEL_OUTPUT_LIMITS,
     MODELS, MODEL_SNAPSHOTS, REASONING_MODELS, REASONING_EFFORT,
@@ -177,8 +174,19 @@ class BranchNavBar(QWidget):
         margins = self.layout.contentsMargins()
         return (margins.left(), margins.top(), margins.right(), margins.bottom())
 
-    def update_branch(self, branch):
-        """Update the navigation bar with the current branch"""
+    def update_branch(self, branch, full_branch=None):
+        """
+        Update the navigation bar with the current branch and future nodes
+
+        Args:
+            branch: Current branch from root to current node
+            full_branch: Full branch path, including future nodes that come after current
+        """
+        # Add debug logging
+        print(f"DEBUG: update_branch called with branch length {len(branch)}")
+        if full_branch:
+            print(f"DEBUG: full_branch provided with length {len(full_branch)}")
+
         # Clear existing buttons
         self.clear()
 
@@ -186,13 +194,21 @@ class BranchNavBar(QWidget):
         if not branch:
             return
 
-        # Create new buttons for each node in the branch
+        # Find the current node id (last in the branch)
+        current_node_id = branch[-1].id if branch and branch[-1] is not None else None
+        print(f"DEBUG: Current node ID: {current_node_id}")
+
+        # Import helper function
+        from src.utils.file_utils import extract_display_text
+
+        # STEP 1: Add buttons for nodes in the current branch
         for i, node in enumerate(branch):
             # Skip None nodes (handle corrupted data)
             if node is None:
                 print(f"WARNING: Found None node at index {i} in branch")
                 continue
 
+            # Get node display info
             if node.role == "user":
                 icon = "👤"
             elif node.role == "assistant":
@@ -200,24 +216,20 @@ class BranchNavBar(QWidget):
             else:
                 icon = "🔧"
 
-            # Import the helper function at the top of the file
-            from src.utils.file_utils import extract_display_text
-
-            # Create preview text using our helper function
             display_text = extract_display_text(node, max_length=20)
 
             # Create button with the extracted text
             button = QPushButton(f"{icon} {display_text}")
             button.setToolTip(node.content)  # Keep full content in tooltip
 
-            # Style the last (current) node differently
-            if i == len(branch) - 1:
+            # Style the current node differently
+            if node.id == current_node_id:
                 button.setStyleSheet(f"""
                     background-color: {DARK_MODE['accent']};
                     font-weight: bold;
                 """)
 
-            # Connect signal using partial to capture node_id
+            # Connect signal
             button.clicked.connect(lambda checked, node_id=node.id: self.node_selected.emit(node_id))
 
             # Add to layout
@@ -226,26 +238,91 @@ class BranchNavBar(QWidget):
 
             # Add separator if not the last item
             if i < len(branch) - 1:
-                # Important for testing: Make sure the label has a specific object name
                 separator = QLabel("→")
                 separator.setStyleSheet(f"color: {DARK_MODE['foreground']};")
                 self.layout.addWidget(separator)
 
+        # STEP 2: Identify and add future nodes
+        if full_branch:
+            try:
+                # Create mapping of node ID to index for efficient lookup
+                current_branch_ids = {node.id for node in branch if node is not None}
+
+                # Find current node position in full branch
+                current_pos = -1
+                for i, node in enumerate(full_branch):
+                    if node is not None and node.id == current_node_id:
+                        current_pos = i
+                        break
+
+                print(f"DEBUG: Current position in full branch: {current_pos}")
+
+                # If found and not the last node, add future nodes
+                if 0 <= current_pos < len(full_branch) - 1:
+                    # Get future nodes - all nodes after current position
+                    future_nodes = []
+                    for i in range(current_pos + 1, len(full_branch)):
+                        node = full_branch[i]
+                        if node is not None and node.id not in current_branch_ids:
+                            future_nodes.append(node)
+
+                    print(f"DEBUG: Found {len(future_nodes)} future nodes")
+
+                    # Add future nodes if we have any
+                    if future_nodes:
+                        # Add separator between current branch and future nodes
+                        separator = QLabel("→")
+                        separator.setStyleSheet(f"color: {DARK_MODE['foreground']};")
+                        self.layout.addWidget(separator)
+
+                        # Add each future node with faded style
+                        for i, node in enumerate(future_nodes):
+                            if node.role == "user":
+                                icon = "👤"
+                            elif node.role == "assistant":
+                                icon = "🤖"
+                            else:
+                                icon = "🔧"
+
+                            display_text = extract_display_text(node, max_length=20)
+
+                            # Create button with faded style for future nodes
+                            button = QPushButton(f"{icon} {display_text}")
+                            button.setToolTip(node.content)
+
+                            # Use faded style to indicate it's in the future
+                            button.setStyleSheet(f"""
+                                background-color: {DARK_MODE['highlight']};
+                                color: rgba(248, 248, 242, 0.5); /* Faded text */
+                                border: 1px solid rgba(98, 114, 164, 0.5); /* Faded border */
+                            """)
+
+                            # Connect signal
+                            button.clicked.connect(lambda checked, node_id=node.id: self.node_selected.emit(node_id))
+
+                            # Add to layout
+                            self.layout.addWidget(button)
+                            self.nodes.append((node.id, button))
+
+                            # Add separator if not the last item
+                            if i < len(future_nodes) - 1:
+                                separator = QLabel("→")
+                                separator.setStyleSheet(f"color: rgba(248, 248, 242, 0.5);")  # Faded arrow
+                                self.layout.addWidget(separator)
+            except Exception as e:
+                print(f"Error adding future nodes: {str(e)}")
+                import traceback
+                traceback.print_exc()
+
         # Add stretch at the end
         self.layout.addStretch()
 
-        # CRITICAL: Looking at test_update_branch, it expects to find separators via:
-        # separators = [child for child in widget.layout.children() if hasattr(child, 'text') and child.text() == "→"]
-        # So we need to make layout.children() return a list that includes our separator QLabels
-
-        # First create a list of separators from our layout
         separators = []
         for i in range(self.layout.count()):
             widget = self.layout.itemAt(i).widget()
             if isinstance(widget, QLabel) and widget.text() == "→":
                 separators.append(widget)
 
-        # Now monkey-patch the children method of the layout to return these separators
         self.layout.children_orig = getattr(self.layout, 'children', lambda: [])
         self.layout.children = lambda: separators
 

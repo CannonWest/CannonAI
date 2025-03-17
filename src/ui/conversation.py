@@ -302,10 +302,20 @@ class ConversationBranchTab(QWidget):
 
             # Normal full UI update when not streaming
             try:
+                # Get current branch (where we are now)
                 current_branch = self.conversation_tree.get_current_branch()
-                self.branch_nav.update_branch(current_branch)
+
+                # Get the ACTIVE branch's full path (including future nodes)
+                future_branch = None
+                if hasattr(self.conversation_tree, 'get_current_branch_future'):
+                    future_branch = self.conversation_tree.get_current_branch_future()
+
+                # Update branch nav with both current and potential future nodes
+                self.branch_nav.update_branch(current_branch, future_branch)
             except Exception as e:
                 print(f"Error updating branch nav: {str(e)}")
+                import traceback
+                traceback.print_exc()
 
             # Update tree view
             try:
