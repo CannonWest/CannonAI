@@ -41,26 +41,61 @@ class MainWindow(QMainWindow):
         # PyQt6 thread manager
         self.thread_manager = OpenAIThreadManager()
 
-        # Use the new database-backed conversation manager
-        self.conversation_manager = DBConversationManager()
-
-        # Initialize database manager for direct database operations
-        self.db_manager = DatabaseManager()
-
-        # Initialize UI components
+        # Initialize UI components first - this ensures the UI is responsive
+        # even if database operations take time
         self.setup_ui()
-
-        # Debug: Print all conversations in database
-        self.db_manager.debug_print_conversations()
 
         # Set up styling
         self.setup_style()
 
-        # Load saved conversations
-        self.load_conversations()
+        try:
+            # Use the new database-backed conversation manager
+            self.conversation_manager = DBConversationManager()
 
-        # Create a default conversation if none exists
-        if not self.conversation_manager.active_conversation:
+            # Initialize database manager for direct database operations
+            # This will use the singleton instance
+            self.db_manager = DatabaseManager()
+
+            # Debug: Print all conversations in database - with error handling
+            try:
+                self.db_manager.debug_print_conversations()
+            except Exception as db_error:
+                self.logger.error(f"Error printing conversations: {str(db_error)}")
+                # Continue anyway - this is just diagnostic
+
+            # Load saved conversations with error handling
+            try:
+                self.load_conversations()
+            except Exception as load_error:
+                self.logger.error(f"Error loading conversations: {str(load_error)}")
+                QMessageBox.warning(
+                    self,
+                    "Database Error",
+                    f"Error loading conversations: {str(load_error)}\n\nA new conversation will be created."
+                )
+
+            # Create a default conversation if none exists
+            if not self.conversation_manager.active_conversation:
+                self.create_new_conversation()
+
+        except Exception as e:
+            self.logger.error(f"Error initializing database components: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+
+            # Show error to user
+            QMessageBox.critical(
+                self,
+                "Database Error",
+                f"Error initializing the application database: {str(e)}\n\n"
+                "The application may not function correctly."
+            )
+
+            # Create a minimal conversation manager to prevent crashes
+            from src.models.db_conversation_manager import DBConversationManager
+            self.conversation_manager = DBConversationManager()
+
+            # Create a default conversation
             self.create_new_conversation()
 
     def setup_ui(self):
@@ -457,7 +492,7 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(index)
 
     def send_message(self, tab, message):
-        """Send a user message and get a response"""
+        """Send a user message and get a response with improved file handling"""
         try:
             # First, make sure we're not already processing a message
             if hasattr(tab, '_processing_message') and tab._processing_message:
@@ -477,15 +512,26 @@ class MainWindow(QMainWindow):
             print(f"DEBUG: Sending message: '{message[:30]}...' with {len(attached_files) if attached_files else 0} attachments")
 
             try:
+                # Show file count in UI
+                if attached_files and len(attached_files) > 0:
+                    tab.start_loading_indicator()
+                    tab.chat_display.insertHtml(f"<br><span style='color: #FFB86C;'>Processing {len(attached_files)} attachments...</span><br>")
+
                 # Add the user message
                 conversation.add_user_message(message, attached_files=attached_files)
 
                 # Update the UI to show the new user message
                 tab.update_ui()
 
-                # The loading indicator will be started in _start_message_processing
                 # Start message processing - this will handle the API call
                 self._start_message_processing(tab, conversation.get_current_messages())
+            except MemoryError:
+                # Handle out of memory errors specifically
+                self.logger.error("Memory error while processing attachments")
+                self.handle_error("Out of memory error: Too many files or files too large. Try reducing the number or size of attachments.")
+
+                # Make sure to reset processing flag on error
+                tab._processing_message = False
             except Exception as e:
                 self.logger.error(f"Error sending message: {str(e)}")
                 self.handle_error(f"Error sending message: {str(e)}")
@@ -1372,18 +1418,42 @@ class MainWindow(QMainWindow):
                 "You must have at least one conversation open."
             )
 
-
     def closeEvent(self, event):
-        """Handle application close event"""
+        """Handle application close event with proper cleanup"""
+        # Log start of close process
+        self.logger.info("Application close initiated")
+
         # Cancel all active API calls
         self.thread_manager.cancel_all()
+        self.logger.debug("Cancelled all active API threads")
 
         # Save all conversations
-        self.conversation_manager.save_all()
+        try:
+            self.conversation_manager.save_all()
+            self.logger.info("Saved all conversations")
+        except Exception as e:
+            self.logger.error(f"Error saving conversations during close: {e}")
+
+        # Ensure all file attachments are cleaned up
+        try:
+            for i in range(self.tabs.count()):
+                tab = self.tabs.widget(i)
+                if hasattr(tab, 'clear_attachments'):
+                    tab.clear_attachments()
+            self.logger.debug("Cleared all file attachments")
+        except Exception as e:
+            self.logger.error(f"Error clearing attachments during close: {e}")
+
+        # Final garbage collection to free memory before closing
+        try:
+            import gc
+            gc.collect()
+        except Exception as e:
+            self.logger.error(f"Error during final garbage collection: {e}")
 
         # Accept the close event
+        self.logger.info("Application close completed successfully")
         event.accept()
-
 
     def _disconnect_worker_signals(self, tab):
         """Disconnect all signals from the worker to prevent conflicts"""

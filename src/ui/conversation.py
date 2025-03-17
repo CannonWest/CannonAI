@@ -862,7 +862,7 @@ class ConversationBranchTab(QWidget):
             self.branch_changed.emit()
 
     def on_send(self):
-        """Handle sending a new message with improved error handling"""
+        """Handle sending a new message with improved file handling"""
         try:
             # First, check if we're already processing a message
             if hasattr(self, '_processing_message') and self._processing_message:
@@ -887,11 +887,6 @@ class ConversationBranchTab(QWidget):
                     thread_manager.cancel_worker(self._active_thread_id)
                     print(f"Cancelled thread: {self._active_thread_id}")
 
-                    # Make sure to stop the loading indicator
-                    if hasattr(self, '_loading_active') and self._loading_active:
-                        print("DEBUG: Stopping loading indicator after cancellation")
-                        self.stop_loading_indicator()
-
                     # Reset processing state
                     self._processing_message = False
 
@@ -900,14 +895,10 @@ class ConversationBranchTab(QWidget):
                 print("ERROR: No conversation tree available")
                 return
 
-            # Get message text with safety checks
-            try:
-                message = self.text_input.toPlainText().strip()
-            except Exception as text_error:
-                print(f"Error getting message text: {str(text_error)}")
-                message = ""
+            # Get message text
+            message = self.text_input.toPlainText().strip()
 
-            # Check if message is too long (prevent memory issues)
+            # Check if message is too long
             if len(message) > 100000:  # 100KB limit
                 from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.warning(
@@ -917,22 +908,32 @@ class ConversationBranchTab(QWidget):
                 )
                 return
 
-            # Prepare attachments if present
+            # Prepare attachments if present - WITH IMPROVED MEMORY HANDLING
             attachments_copy = None
             try:
                 if hasattr(self, 'current_attachments') and self.current_attachments:
-                    # Calculate total attachment size
-                    total_size = sum(len(attachment.get('content', '')) for attachment in self.current_attachments)
+                    # Calculate total token count instead of raw size
+                    total_tokens = sum(attachment.get('token_count', 0) for attachment in self.current_attachments)
 
-                    # Check if total size is too large
-                    if total_size > 10 * 1024 * 1024:  # 10MB limit
+                    # Get model context size
+                    from src.utils import MODEL_CONTEXT_SIZES
+                    from src.services.storage import SettingsManager
+                    settings = SettingsManager().get_settings()
+                    model = settings.get("model", "gpt-4o")
+                    context_size = MODEL_CONTEXT_SIZES.get(model, 8192)
+
+                    # Check if tokens exceed 80% of context size
+                    if total_tokens > context_size * 0.8:
                         from PyQt6.QtWidgets import QMessageBox
-                        QMessageBox.warning(
+                        reply = QMessageBox.warning(
                             self,
                             "Attachments Too Large",
-                            "Your attachments are too large. Please reduce their size or number."
+                            f"Your attachments contain {total_tokens:,} tokens, which may exceed the model's capacity. Reduce the number of attachments or continue anyway?",
+                            QMessageBox.StandardButton.Continue | QMessageBox.StandardButton.Cancel,
+                            QMessageBox.StandardButton.Cancel
                         )
-                        return
+                        if reply != QMessageBox.StandardButton.Continue:
+                            return
 
                     # Just note that there are attachments in the UI message
                     if message:
@@ -942,45 +943,57 @@ class ConversationBranchTab(QWidget):
                     else:
                         message = f"[Attached {len(self.current_attachments)} file{'s' if len(self.current_attachments) > 1 else ''}]"
 
-                    # Make a deep copy of attachments to prevent memory issues
+                    # Process files in batches to reduce memory pressure
+                    batch_size = 5  # Process 5 files at a time
                     attachments_copy = []
-                    for attachment in self.current_attachments:
-                        # Create a new dict with only the essential fields
-                        clean_attachment = {
-                            'file_name': attachment.get('file_name', 'unnamed_file'),
-                            'mime_type': attachment.get('mime_type', 'text/plain'),
-                            'content': attachment.get('content', ''),
-                            'token_count': attachment.get('token_count', 0)
-                        }
-                        attachments_copy.append(clean_attachment)
+
+                    # Process in batches
+                    for i in range(0, len(self.current_attachments), batch_size):
+                        batch = self.current_attachments[i:i + batch_size]
+
+                        for attachment in batch:
+                            # Create a new dict with only the essential fields
+                            clean_attachment = {
+                                'file_name': attachment.get('file_name', 'unnamed_file'),
+                                'mime_type': attachment.get('mime_type', 'text/plain'),
+                                'content': attachment.get('content', ''),
+                                'token_count': attachment.get('token_count', 0)
+                            }
+                            attachments_copy.append(clean_attachment)
+
+                        # Process UI events to keep application responsive
+                        from PyQt6.QtCore import QCoreApplication
+                        QCoreApplication.processEvents()
             except Exception as attach_error:
                 print(f"Error processing attachments: {str(attach_error)}")
-                attachments_copy = None
+                import traceback
+                traceback.print_exc()
+
+                # Show error to user
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.critical(
+                    self,
+                    "Attachment Error",
+                    f"Error processing attachments: {str(attach_error)}\n\nTry reducing the number of attachments."
+                )
+                return
 
             # Final check for empty message
             if not message:
                 return
 
             # Clear the input field
-            try:
-                self.text_input.clear()
-            except Exception as clear_error:
-                print(f"Error clearing input field: {str(clear_error)}")
-                # Continue anyway
+            self.text_input.clear()
 
             # Store attachments for use in the main window's send_message method
             self._pending_attachments = attachments_copy
 
-            # Emit signal to send message
+            # Emit signal to send message - with better error handling
             try:
                 print(f"DEBUG: Emitting send_message signal with: '{message[:30]}...'")
                 self.send_message.emit(message)
             except Exception as emit_error:
                 print(f"Error emitting send message signal: {str(emit_error)}")
-                # Try to recover from emission error
-                if hasattr(self, '_loading_active') and self._loading_active:
-                    self.stop_loading_indicator()
-
                 from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.critical(
                     self,
@@ -994,7 +1007,6 @@ class ConversationBranchTab(QWidget):
                 self.clear_attachments()
             except Exception as clear_attach_error:
                 print(f"Error clearing attachments: {str(clear_attach_error)}")
-                # Continue anyway
 
         except Exception as e:
             print(f"Critical error in on_send: {str(e)}")
@@ -1625,44 +1637,34 @@ class ConversationBranchTab(QWidget):
             progress_dialog.setValue(len(file_paths))
 
     def add_processed_file(self, file_info):
-        """Add a processed file to the attachments"""
-        # Check token budget (prevent attaching if total exceeds reasonable limit)
-        current_tokens = sum(attachment.get('token_count', 0) for attachment in self.current_attachments)
-        new_tokens = file_info.get('token_count', 0)
-
-        # Get current model context size
-        from src.utils import MODEL_CONTEXT_SIZES
-        from src.services.storage import SettingsManager
-        settings = SettingsManager().get_settings()
-        model = settings.get("model", "gpt-4o")
-        context_size = MODEL_CONTEXT_SIZES.get(model, 8192)
-
-        # Use 80% of context size as a reasonable limit for attachments
-        max_tokens = int(context_size * 0.8)
-
-        if current_tokens + new_tokens > max_tokens:
-            from PyQt6.QtWidgets import QMessageBox
-            reply = QMessageBox.question(
-                self,
-                "Token Limit Warning",
-                f"This file would add {new_tokens:,} tokens, bringing the total to {current_tokens + new_tokens:,} tokens. "
-                f"This may exceed the model's capacity to process. Attach anyway?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
-            )
-
-            if reply != QMessageBox.StandardButton.Yes:
+        """Add a processed file to the attachments with memory safeguards"""
+        try:
+            # Guard against invalid file_info
+            if not file_info or not isinstance(file_info, dict):
+                print(f"Invalid file_info received: {file_info}")
                 return
 
-        # Check if file is already attached (by filename)
-        for attachment in self.current_attachments:
-            if attachment.get("file_name") == file_info.get("file_name"):
-                # Ask to replace
+            # Check token budget (prevent attaching if total exceeds reasonable limit)
+            current_tokens = sum(attachment.get('token_count', 0) for attachment in self.current_attachments)
+            new_tokens = file_info.get('token_count', 0)
+
+            # Get current model context size
+            from src.utils import MODEL_CONTEXT_SIZES
+            from src.services.storage import SettingsManager
+            settings = SettingsManager().get_settings()
+            model = settings.get("model", "gpt-4o")
+            context_size = MODEL_CONTEXT_SIZES.get(model, 8192)
+
+            # Use 80% of context size as a reasonable limit for attachments
+            max_tokens = int(context_size * 0.8)
+
+            if current_tokens + new_tokens > max_tokens:
                 from PyQt6.QtWidgets import QMessageBox
                 reply = QMessageBox.question(
                     self,
-                    "Replace File",
-                    f"A file named '{file_info.get('file_name')}' is already attached. Replace it?",
+                    "Token Limit Warning",
+                    f"This file would add {new_tokens:,} tokens, bringing the total to {current_tokens + new_tokens:,} tokens. "
+                    f"This may exceed the model's capacity to process. Attach anyway?",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No
                 )
@@ -1670,17 +1672,78 @@ class ConversationBranchTab(QWidget):
                 if reply != QMessageBox.StandardButton.Yes:
                     return
 
-                # Remove existing attachment
-                self.current_attachments = [a for a in self.current_attachments if a.get("file_name") != file_info.get("file_name")]
+            # Check file size - limit to 5MB max content size
+            content_size = len(file_info.get("content", ""))
+            if content_size > 5 * 1024 * 1024:  # 5MB
+                from PyQt6.QtWidgets import QMessageBox
+                reply = QMessageBox.question(
+                    self,
+                    "Large File Warning",
+                    f"This file is {content_size / (1024 * 1024):.1f}MB which is very large. Attach anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
 
-        # Add to current attachments
-        self.current_attachments.append(file_info)
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
 
-        # Update UI
-        self.update_attachments_ui()
+            # Check if the content seems valid
+            content = file_info.get("content", "")
+            if not content and file_info.get("size", 0) > 0:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self,
+                    "Empty File Content",
+                    f"The file {file_info.get('file_name', 'unknown')} appears to have no content despite having a size. It may be a binary file that can't be processed."
+                )
+                return
 
-        # Emit signal
-        self.file_attached.emit(file_info.get('path', ''))
+            # Check if file is already attached (by filename)
+            for attachment in self.current_attachments:
+                if attachment.get("file_name") == file_info.get("file_name"):
+                    # Ask to replace
+                    from PyQt6.QtWidgets import QMessageBox
+                    reply = QMessageBox.question(
+                        self,
+                        "Replace File",
+                        f"A file named '{file_info.get('file_name')}' is already attached. Replace it?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No
+                    )
+
+                    if reply != QMessageBox.StandardButton.Yes:
+                        return
+
+                    # Remove existing attachment
+                    self.current_attachments = [a for a in self.current_attachments if a.get("file_name") != file_info.get("file_name")]
+
+            # Add to current attachments
+            self.current_attachments.append(file_info)
+
+            # Update UI
+            self.update_attachments_ui()
+
+            # Emit signal
+            self.file_attached.emit(file_info.get('path', ''))
+
+            # Force garbage collection to prevent memory issues
+            import gc
+            gc.collect()
+
+        except MemoryError:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                self,
+                "Memory Error",
+                "Out of memory while processing file. Try with a smaller file."
+            )
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "Attachment Error",
+                f"Error attaching file: {str(e)}"
+            )
 
     def handle_file_error(self, error_message):
         """Handle file attachment errors"""
@@ -1691,16 +1754,12 @@ class ConversationBranchTab(QWidget):
             error_message
         )
 
-    """
-    This fix replaces the QQueue reference with Python's collections.deque
-    for the directory file processing queue.
-    """
-
     def on_attach_directory(self):
-        """Open directory dialog to attach all files in a directory with enhanced progress tracking"""
+        """Open directory dialog to attach all files in a directory with enhanced memory management"""
         from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
         import os
         from collections import deque  # Use Python's deque instead of QQueue
+        import gc  # For garbage collection
 
         directory_path = QFileDialog.getExistingDirectory(
             self,
@@ -1714,17 +1773,36 @@ class ConversationBranchTab(QWidget):
 
         # First, count files in the directory
         file_count = 0
-        file_paths = []
+        valid_files = []
+        max_file_size = 5 * 1024 * 1024  # 5MB limit per file
+        total_size_limit = 20 * 1024 * 1024  # 20MB total limit
+        running_total = 0
 
         for root, dirs, files in os.walk(directory_path):
             for file in files:
                 file_path = os.path.join(root, file)
 
                 # Skip very large files immediately
-                if os.path.getsize(file_path) > 20 * 1024 * 1024:  # 20MB
+                file_size = os.path.getsize(file_path)
+                if file_size > max_file_size:
                     continue
 
-                file_paths.append((file_path, os.path.relpath(file_path, directory_path)))
+                # Skip if adding this would exceed our total size
+                if running_total + file_size > total_size_limit:
+                    continue
+
+                # Add to our running total
+                running_total += file_size
+
+                # Calculate relative path for display
+                relative_path = os.path.relpath(file_path, directory_path)
+
+                # Skip files with extensions we know won't work well
+                _, ext = os.path.splitext(file_path)
+                if ext.lower() in ['.exe', '.dll', '.so', '.dylib', '.bin', '.dat', '.iso', '.img']:
+                    continue
+
+                valid_files.append((file_path, relative_path, file_size))
                 file_count += 1
 
         # Confirm with user if directory contains many files
@@ -1732,7 +1810,8 @@ class ConversationBranchTab(QWidget):
             reply = QMessageBox.question(
                 self,
                 "Confirm Directory Attachment",
-                f"The selected directory contains {file_count} files under 20MB. Are you sure you want to attach all of them?",
+                f"The selected directory contains {file_count} valid files (under {max_file_size // 1024 // 1024}MB each). "
+                f"Total size: {running_total // 1024 // 1024}MB. Continue?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
 
@@ -1740,11 +1819,11 @@ class ConversationBranchTab(QWidget):
                 return
 
         # If no files found or too large
-        if not file_paths:
+        if not valid_files:
             QMessageBox.warning(
                 self,
                 "No Files Found",
-                "No suitable files were found in the directory (all files may be larger than 20MB)."
+                f"No suitable files were found in the directory (files must be under {max_file_size // 1024 // 1024}MB and total size under {total_size_limit // 1024 // 1024}MB)."
             )
             return
 
@@ -1754,41 +1833,50 @@ class ConversationBranchTab(QWidget):
         progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         progress_dialog.show()
 
-        # Calculate token budget
+        # Calculate token budget - using CACHED settings
         current_tokens = sum(attachment.get('token_count', 0) for attachment in self.current_attachments)
 
-        # Get current model context size
+        # Get current model context size - use cached settings for better performance
         from src.utils import MODEL_CONTEXT_SIZES
         from src.services.storage import SettingsManager
-        settings = SettingsManager().get_settings()
+
+        # Use the cached settings method to avoid creating a new instance
+        settings = SettingsManager.get_cached_settings()
         model = settings.get("model", "gpt-4o")
         context_size = MODEL_CONTEXT_SIZES.get(model, 8192)
 
         # Use 80% of context size as a reasonable limit
         max_tokens = int(context_size * 0.8)
 
+        # Sort files by size (process smallest first)
+        valid_files.sort(key=lambda x: x[2])
+
         # Create queue for processing - use deque instead of QQueue
-        processing_queue = deque(file_paths)
+        processing_queue = deque(valid_files)
 
         # Keep track of active threads
         self.directory_file_threads = []
         self.directory_files_processed = 0
         self.directory_files_total = file_count
         self.directory_progress_dialog = progress_dialog
+        self.file_processing_canceled = False
 
         # Process files in batches (process 3 at a time)
         max_concurrent = 3
 
         # Function to start next file
         def process_next_file():
-            if not processing_queue or progress_dialog.wasCanceled():
+            if not processing_queue or progress_dialog.wasCanceled() or self.file_processing_canceled:
                 # If we're done or canceled, check if we need to wait for threads
                 if not self.directory_file_threads:
                     progress_dialog.setValue(self.directory_files_total)
+
+                    # Force garbage collection to free memory
+                    gc.collect()
                 return
 
             # Get next file from queue - use popleft() for deque
-            file_path, relative_path = processing_queue.popleft()
+            file_path, relative_path, file_size = processing_queue.popleft()
 
             # Start processing file
             from src.utils.file_utils import get_file_info_async
@@ -1797,7 +1885,7 @@ class ConversationBranchTab(QWidget):
                 model,
                 on_complete=lambda file_info: handle_file_completed(file_info, relative_path),
                 on_error=lambda error: handle_file_error(error, file_path),
-                max_size_mb=10,
+                max_size_mb=5,  # Lower limit per file
                 relative_path=relative_path
             )
 
@@ -1811,6 +1899,10 @@ class ConversationBranchTab(QWidget):
         def handle_file_completed(file_info, relative_path):
             nonlocal current_tokens
 
+            # Check if processing was canceled
+            if progress_dialog.wasCanceled() or self.file_processing_canceled:
+                return
+
             # Update attachment name to use relative path
             file_info["file_name"] = relative_path
 
@@ -1819,6 +1911,9 @@ class ConversationBranchTab(QWidget):
 
             # Skip if would exceed token budget
             if current_tokens + new_tokens > max_tokens:
+                # Log warning
+                print(f"WARNING: Skipping file {relative_path} with {new_tokens} tokens - would exceed token budget")
+                # Don't add to attachments
                 return
 
             # Add file
@@ -1827,19 +1922,44 @@ class ConversationBranchTab(QWidget):
 
             # Update UI periodically (not on every file to avoid locking UI)
             self.directory_files_processed += 1
-            if self.directory_files_processed % 5 == 0:
-                self.update_attachments_ui()
+            if self.directory_files_processed % 5 == 0 or len(processing_queue) == 0:
+                try:
+                    self.update_attachments_ui()
+                    # Process events to keep UI responsive
+                    from PyQt6.QtCore import QCoreApplication
+                    QCoreApplication.processEvents()
+                except Exception as ui_error:
+                    print(f"Error updating UI: {str(ui_error)}")
 
         # Function to handle file error
         def handle_file_error(error, file_path):
             # Just log the error, don't show message box for each file
             print(f"Error processing {file_path}: {error}")
 
+            # Check if this is a memory error
+            if "memory" in str(error).lower():
+                # Cancel further processing
+                self.file_processing_canceled = True
+                progress_dialog.cancel()
+
+                # Show error to user
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.critical(
+                    self,
+                    "Memory Error",
+                    "Out of memory while processing files. Try attaching fewer files."
+                )
+
         # Function to handle thread completion
         def handle_thread_finished(thread, worker):
             # Remove from active threads
             if (thread, worker) in self.directory_file_threads:
                 self.directory_file_threads.remove((thread, worker))
+
+                # Clear the thread and worker to help with garbage collection
+                thread = None
+                worker = None
+                gc.collect()
 
             # Update progress
             progress_dialog.setValue(self.directory_files_total - len(processing_queue))
@@ -1848,20 +1968,28 @@ class ConversationBranchTab(QWidget):
             process_next_file()
 
             # If all threads done and queue empty, finalize
-            if not self.directory_file_threads and not processing_queue:
+            if not self.directory_file_threads and (not processing_queue or self.file_processing_canceled):
                 # Final UI update
                 self.update_attachments_ui()
 
-                # Show summary
-                QMessageBox.information(
-                    self,
-                    "Directory Attachment Complete",
-                    f"Attached {self.directory_files_processed} files from directory with {current_tokens:,} total tokens."
-                )
+                # Show summary only if not canceled
+                if not self.file_processing_canceled and not progress_dialog.wasCanceled():
+                    QMessageBox.information(
+                        self,
+                        "Directory Attachment Complete",
+                        f"Attached {self.directory_files_processed} files from directory with {current_tokens:,} total tokens."
+                    )
+
+                # Force garbage collection
+                gc.collect()
 
         # Start initial batch of files
         for _ in range(min(max_concurrent, len(processing_queue))):
             process_next_file()
+
+        # Explicitly process events to keep UI responsive during initial batch
+        from PyQt6.QtCore import QCoreApplication
+        QCoreApplication.processEvents()
 
     def update_attachments_ui(self):
         """Update the attachments UI with current files with improved token display"""

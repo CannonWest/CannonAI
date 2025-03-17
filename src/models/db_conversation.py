@@ -97,7 +97,6 @@ class DBMessageNode:
         # Always return an empty list as default instead of None
         return []
 
-
     @reasoning_steps.setter
     def reasoning_steps(self, steps):
         """Set reasoning steps and store in database"""
@@ -412,65 +411,128 @@ class DBConversationTree:
             conn.close()
 
     def add_user_message(self, content, attached_files=None):
-        """Add a user message as child of current node"""
-        conn = self.db_manager.get_connection()
-        cursor = conn.cursor()
+        """Add a user message as child of current node with optimized file handling and error recovery"""
+        max_retries = 3
+        retry_delay = 0.5
+        attempts = 0
 
-        try:
-            node_id = str(QUuid.createUuid())
-            now = datetime.now().isoformat()
+        while attempts < max_retries:
+            conn = None
+            try:
+                # Get a fresh connection each time
+                conn = self.db_manager.get_connection()
 
-            # Insert message
-            cursor.execute(
-                '''
-                INSERT INTO messages (id, conversation_id, parent_id, role, content, timestamp)
-                VALUES (?, ?, ?, 'user', ?, ?)
-                ''',
-                (node_id, self.id, self.current_node_id, content, now)
+                # Create the cursor and begin a transaction for the main message
+                cursor = conn.cursor()
+
+                # Generate ID and timestamp
+                node_id = str(QUuid.createUuid())
+                now = datetime.now().isoformat()
+
+                # Insert message
+                cursor.execute(
+                    '''
+                    INSERT INTO messages (id, conversation_id, parent_id, role, content, timestamp)
+                    VALUES (?, ?, ?, 'user', ?, ?)
+                    ''',
+                    (node_id, self.id, self.current_node_id, content, now)
+                )
+
+                # Update current node and modified time in the same transaction
+                self.current_node_id = node_id
+                self.modified_at = now
+                cursor.execute(
+                    'UPDATE conversations SET current_node_id = ?, modified_at = ? WHERE id = ?',
+                    (node_id, now, self.id)
+                )
+
+                # Commit the transaction for the main message
+                conn.commit()
+
+                # Add file attachments if present - now with proper error handling
+                if attached_files and len(attached_files) > 0:
+                    # Track file attachment progress
+                    success_count = 0
+                    total_files = len(attached_files)
+
+                    # Process files in batches to reduce memory pressure
+                    batch_size = 3
+
+                    for i in range(0, len(attached_files), batch_size):
+                        batch = attached_files[i:i + batch_size]
+
+                        for file_info in batch:
+                            try:
+                                # Determine storage type based on content size
+                                content_size = len(file_info.get('content', ''))
+                                storage_type = 'disk' if content_size > 1024 * 1024 else 'database'
+
+                                # Use the queued file processor to avoid database locks
+                                file_id = self.db_manager.add_file_attachment(
+                                    node_id,
+                                    file_info,
+                                    storage_type=storage_type
+                                )
+
+                                success_count += 1
+                            except Exception as file_error:
+                                # Log error and continue with next file
+                                logger.error(
+                                    f"Error attaching file {file_info.get('file_name', 'unknown')}: {str(file_error)}"
+                                )
+                                continue
+
+                        # Process UI events to keep application responsive
+                        try:
+                            from PyQt6.QtCore import QCoreApplication
+                            QCoreApplication.processEvents()
+                        except ImportError:
+                            pass  # Not in a Qt environment
+
+                    # Log summary of attachment results
+                    logger.info(f"Successfully attached {success_count}/{total_files} files to message {node_id}")
+
+                # Return the new node - use the get_node method which has its own connection handling
+                return self.get_node(node_id)
+
+            except sqlite3.OperationalError as e:
+                # Check if this is a database lock error
+                if "database is locked" in str(e):
+                    attempts += 1
+                    logger.warning(f"Database locked when adding user message - attempt {attempts}/{max_retries}")
+
+                    # Wait before retrying with exponential backoff
+                    import time
+                    import random
+                    retry_wait = retry_delay * (2 ** (attempts - 1)) * (0.5 + random.random())
+                    time.sleep(retry_wait)
+
+                    # Close the connection
+                    if conn:
+                        try:
+                            conn.close()
+                        except:
+                            pass
+                else:
+                    # Other SQLite error - log and re-raise
+                    logger.error(f"SQLite error adding user message: {e}")
+                    if conn:
+                        conn.rollback()
+                    raise
+            except Exception as e:
+                # Other general error
+                logger.error(f"Error adding user message: {e}")
+                if conn:
+                    conn.rollback()
+                raise
+
+        # If we've exhausted retries, raise a more informative error
+        if attempts >= max_retries:
+            logger.error("Exceeded maximum retries when adding user message")
+            raise sqlite3.OperationalError(
+                "Database is locked and could not be accessed after multiple attempts. "
+                "Try again or restart the application."
             )
-
-            # Add file attachments if present
-            if attached_files:
-                for file_info in attached_files:
-                    file_id = str(QUuid.createUuid())
-                    cursor.execute(
-                        '''
-                        INSERT INTO file_attachments 
-                        (id, message_id, file_name, mime_type, content, token_count)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        ''',
-                        (
-                            file_id,
-                            node_id,
-                            file_info['file_name'],
-                            file_info.get('mime_type', 'text/plain'),
-                            file_info['content'],
-                            file_info.get('token_count', 0)
-                        )
-                    )
-
-            # Update current node
-            self.current_node_id = node_id
-
-            # Update conversation modified time
-            self.modified_at = now
-            cursor.execute(
-                'UPDATE conversations SET current_node_id = ?, modified_at = ? WHERE id = ?',
-                (node_id, now, self.id)
-            )
-
-            conn.commit()
-
-            # Return the new node
-            return self.get_node(node_id)
-
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Error adding user message")
-            log_exception(logger, e, "Failed to add user message")
-            raise
-        finally:
-            conn.close()
 
     def add_assistant_response(self, content, model_info=None, parameters=None, token_usage=None, response_id=None):
         """Add an assistant response as child of current node, with Response API support"""

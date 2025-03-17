@@ -5,6 +5,7 @@ Database-backed conversation manager for improved scalability.
 
 import os
 import json
+import sqlite3
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
@@ -223,47 +224,82 @@ class DBConversationManager:
         return True
 
     def search_conversations(self, search_term, conversation_id=None, role_filter=None):
-        """Search for messages containing the search term"""
-        conn = self.db_manager.get_connection()
-        cursor = conn.cursor()
+        """Search for messages containing the search term with error handling"""
+        retry_count = 3
+        attempts = 0
 
-        try:
-            query = '''
-                SELECT m.id, m.conversation_id, m.role, m.content, m.timestamp,
-                       c.name as conversation_name
-                FROM messages m
-                JOIN conversations c ON m.conversation_id = c.id
-                WHERE m.content LIKE ?
-            '''
-            params = [f'%{search_term}%']
+        while attempts < retry_count:
+            conn = None
+            try:
+                conn = self.db_manager.get_connection()
+                cursor = conn.cursor()
 
-            # Add filters if provided
-            if conversation_id:
-                query += ' AND m.conversation_id = ?'
-                params.append(conversation_id)
+                query = '''
+                    SELECT m.id, m.conversation_id, m.role, m.content, m.timestamp,
+                           c.name as conversation_name
+                    FROM messages m
+                    JOIN conversations c ON m.conversation_id = c.id
+                    WHERE m.content LIKE ?
+                '''
+                params = [f'%{search_term}%']
 
-            if role_filter:
-                query += ' AND m.role = ?'
-                params.append(role_filter)
+                # Add filters if provided
+                if conversation_id:
+                    query += ' AND m.conversation_id = ?'
+                    params.append(conversation_id)
 
-            cursor.execute(query, params)
+                if role_filter:
+                    query += ' AND m.role = ?'
+                    params.append(role_filter)
 
-            results = []
-            for row in cursor.fetchall():
-                results.append({
-                    'id': row['id'],
-                    'conversation_id': row['conversation_id'],
-                    'conversation_name': row['conversation_name'],
-                    'role': row['role'],
-                    'content': row['content'],
-                    'timestamp': row['timestamp']
-                })
+                cursor.execute(query, params)
 
-            return results
-        except Exception as e:
-            self.logger.error(f"Error searching conversations")
-            log_exception(self.logger, e, "Failed to search conversations")
-            return []
-        finally:
-            conn.close()
+                results = []
+                for row in cursor.fetchall():
+                    results.append({
+                        'id': row['id'],
+                        'conversation_id': row['conversation_id'],
+                        'conversation_name': row['conversation_name'],
+                        'role': row['role'],
+                        'content': row['content'],
+                        'timestamp': row['timestamp']
+                    })
 
+                return results
+
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempts < retry_count - 1:
+                    # Log the error and retry
+                    attempts += 1
+                    self.logger.warning(f"Database locked during search, retrying ({attempts}/{retry_count})...")
+
+                    # Wait with exponential backoff
+                    import time, random
+                    retry_wait = 0.1 * (2 ** attempts) * (0.5 + random.random())
+                    time.sleep(retry_wait)
+
+                    # Close the connection to force a new one
+                    if conn:
+                        try:
+                            conn.close()
+                        except:
+                            pass
+                else:
+                    # Other SQLite error or out of retries
+                    self.logger.error(f"Error searching conversations: {str(e)}")
+                    return []
+            except Exception as e:
+                self.logger.error(f"Error searching conversations: {str(e)}")
+                log_exception(self.logger, e, "Failed to search conversations")
+                return []
+            finally:
+                if conn:
+                    try:
+                        # Don't close the connection, let the connection pool handle it
+                        pass
+                    except:
+                        pass
+
+        # If we've exhausted retries
+        self.logger.error("Exceeded maximum retries for search operation")
+        return []

@@ -4,7 +4,11 @@ Database management utilities for the OpenAI Chat application.
 """
 
 import os
+import queue
+import random
 import sqlite3
+import threading
+import time
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
@@ -18,23 +22,188 @@ logger = get_logger(__name__)
 
 
 class DatabaseManager:
-    """Handles SQLite database connections and operations"""
+    """Handles SQLite database connections and operations with improved concurrency support"""
+
+    # Class variable for the singleton instance
+    _instance = None
+    _instance_lock = threading.RLock()
+
+    def __new__(cls, db_path=None):
+        """Singleton pattern to ensure only one database manager exists"""
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = super(DatabaseManager, cls).__new__(cls)
+                # Don't initialize here - just mark as not initialized
+                cls._instance._initialized = False
+        return cls._instance
 
     def __init__(self, db_path=None):
-        self.db_path = db_path or DATABASE_FILE
-        self.logger = get_logger(f"{__name__}.DatabaseManager")
+        """Initialize the database manager if not already initialized"""
+        with self.__class__._instance_lock:
+            if getattr(self, '_initialized', False):
+                return
 
-        # Create database directory if it doesn't exist
-        os.makedirs(DATABASE_DIR, exist_ok=True)
+            self._initialized = True
+            self.db_path = db_path or DATABASE_FILE
+            self.logger = get_logger(f"{__name__}.DatabaseManager")
 
-        # Initialize database schema
-        self.initialize_database()
+            # Create database directory if it doesn't exist
+            os.makedirs(DATABASE_DIR, exist_ok=True)
+
+            # Thread-local storage for connections
+            self._local = threading.local()
+
+            # Lock for serializing critical database operations
+            self._db_lock = threading.RLock()
+
+            # Queue for file attachments to be processed in a serialized manner
+            self._file_queue = queue.Queue()
+            self._file_processor_running = False
+            self._file_processor_thread = None
+
+            # Initialize database schema
+            self.initialize_database()
+
+            # Start the file processor thread - but only after initialization is complete
+            self._start_file_processor()
 
     def get_connection(self):
-        """Get a database connection with row factory for dictionary access"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        """
+        Get a database connection with improved reliability.
+        Always ensures a valid, open connection.
+        """
+        try:
+            # First check if we have a connection and if it's valid
+            if hasattr(self._local, 'connection') and self._local.connection is not None:
+                # Test if the connection is still valid
+                try:
+                    self._local.connection.execute("SELECT 1").fetchone()
+                    return self._local.connection
+                except sqlite3.Error:
+                    # Connection is no longer valid, close it if possible
+                    try:
+                        self._local.connection.close()
+                    except:
+                        pass
+                    self._local.connection = None
+
+            # Create a new connection if we don't have a valid one
+            self._local.connection = sqlite3.connect(self.db_path)
+            self._local.connection.row_factory = sqlite3.Row
+
+            # Set pragmas for better performance and safety
+            cursor = self._local.connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging for better concurrency
+            cursor.execute("PRAGMA synchronous=NORMAL")  # Balance safety and performance
+            cursor.execute("PRAGMA busy_timeout=5000")  # Wait up to 5 seconds on locks
+            self._local.connection.commit()
+
+            return self._local.connection
+        except Exception as e:
+            self.logger.error(f"Error getting database connection: {e}")
+            # Last resort: try a completely fresh connection
+            try:
+                conn = sqlite3.connect(self.db_path)
+                conn.row_factory = sqlite3.Row
+                return conn
+            except Exception as e2:
+                self.logger.critical(f"Critical error connecting to database: {e2}")
+                raise
+
+    def debug_print_conversations(self):
+        """Print all conversations in the database for debugging"""
+        # Always get a fresh connection here
+        conn = None
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+
+            cursor.execute('SELECT * FROM conversations')
+            conversations = cursor.fetchall()
+
+            print(f"===== DEBUG: Found {len(conversations)} conversations in database =====")
+            for conv in conversations:
+                print(f"ID: {conv['id']}, Name: {conv['name']}, Modified: {conv['modified_at']}")
+
+                # Count messages in this conversation
+                cursor.execute('SELECT COUNT(*) FROM messages WHERE conversation_id = ?', (conv['id'],))
+                message_count = cursor.fetchone()[0]
+                print(f"  Messages: {message_count}")
+
+            print("=====================================================")
+
+        except Exception as e:
+            print(f"DEBUG: Error querying conversations: {str(e)}")
+            self.logger.error(f"Error in debug_print_conversations: {str(e)}")
+        finally:
+            # Don't close the connection here - it might be reused
+            pass
+
+    def _start_file_processor(self):
+        """Start the background thread for processing file attachments"""
+        if self._file_processor_running:
+            return
+
+        self._file_processor_running = True
+
+        def process_file_queue():
+            self.logger.info("File attachment processor thread started")
+            while self._file_processor_running:
+                try:
+                    # Get the next file task with a timeout
+                    try:
+                        task = self._file_queue.get(timeout=5.0)
+                    except queue.Empty:
+                        # No tasks, just continue the loop
+                        continue
+
+                    # Process the file attachment
+                    try:
+                        message_id, file_info, storage_type, result_queue = task
+
+                        # Use a dedicated connection for file processing
+                        # Create a new connection each time to avoid conflicts
+                        conn = sqlite3.connect(self.db_path)
+                        conn.row_factory = sqlite3.Row
+
+                        # Set timeout for this connection
+                        cursor = conn.cursor()
+                        cursor.execute("PRAGMA busy_timeout=10000")  # 10-second timeout
+
+                        try:
+                            # Process the file attachment with a dedicated connection
+                            file_id = self._process_file_attachment(conn, message_id, file_info, storage_type)
+
+                            # Put the result in the result queue if provided
+                            if result_queue:
+                                result_queue.put((True, file_id))
+                        except Exception as e:
+                            self.logger.error(f"Error processing file attachment: {str(e)}")
+                            # Put the error in the result queue if provided
+                            if result_queue:
+                                result_queue.put((False, str(e)))
+                        finally:
+                            # Always close the dedicated connection
+                            conn.close()
+
+                    finally:
+                        # Mark the task as done
+                        self._file_queue.task_done()
+
+                except Exception as e:
+                    self.logger.error(f"Error in file processor thread: {str(e)}")
+                    import traceback
+                    self.logger.error(traceback.format_exc())
+                    # Sleep briefly to avoid tight loop on errors
+                    time.sleep(0.1)
+
+        # Start the processor thread
+        self._file_processor_thread = threading.Thread(
+            target=process_file_queue,
+            name="FileAttachmentProcessor",
+            daemon=True
+        )
+        self._file_processor_thread.start()
 
     def get_path_to_root(self, node_id):
         """Get the path from a node to the root"""
@@ -146,33 +315,6 @@ class DatabaseManager:
             self.logger.error(f"Error getting message {message_id}")
             log_exception(self.logger, e, f"Failed to get message")
             return None
-        finally:
-            conn.close()
-
-    def debug_print_conversations(self):
-        """Print all conversations in the database for debugging"""
-        # if not DEBUG_MODE:
-        #     return
-        conn = self.get_connection()
-        cursor = conn.cursor()
-
-        try:
-            cursor.execute('SELECT * FROM conversations')
-            conversations = cursor.fetchall()
-
-            print(f"===== DEBUG: Found {len(conversations)} conversations in database =====")
-            for conv in conversations:
-                print(f"ID: {conv['id']}, Name: {conv['name']}, Modified: {conv['modified_at']}")
-
-                # Count messages in this conversation
-                cursor.execute('SELECT COUNT(*) FROM messages WHERE conversation_id = ?', (conv['id'],))
-                message_count = cursor.fetchone()[0]
-                print(f"  Messages: {message_count}")
-
-            print("=====================================================")
-
-        except Exception as e:
-            print(f"DEBUG: Error querying conversations: {str(e)}")
         finally:
             conn.close()
 
@@ -501,129 +643,6 @@ class DatabaseManager:
             log_exception(self.logger, e, "Database initialization failed")
             raise
 
-    def add_file_attachment(self, message_id, file_info, storage_type='auto'):
-        """
-        Add a file attachment with optimized storage strategy
-
-        Args:
-            message_id: ID of the message to attach the file to
-            file_info: Dictionary with file information
-            storage_type: 'database', 'disk', 'hybrid', or 'auto'
-
-        Returns:
-            ID of the created attachment
-        """
-        conn = self.get_connection()
-        cursor = conn.cursor()
-
-        try:
-            from PyQt6.QtCore import QUuid
-
-            file_id = str(QUuid.createUuid())
-            file_name = file_info['file_name']
-            display_name = file_info.get('display_name', file_name)
-            mime_type = file_info.get('mime_type', 'text/plain')
-            token_count = file_info.get('token_count', 0)
-            file_size = file_info.get('size', 0)
-            file_hash = file_info.get('file_hash', '')
-            content = file_info.get('content', '')
-
-            # If no file hash provided, calculate one
-            if not file_hash and content:
-                import hashlib
-                file_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
-
-            # Determine storage strategy if auto
-            if storage_type == 'auto':
-                if file_size > 1024 * 1024:  # > 1MB
-                    storage_type = 'disk'
-                else:
-                    storage_type = 'database'
-
-            # Generate a preview (first 4KB)
-            content_preview = content[:4096] if content else ''
-
-            storage_path = None
-
-            # If disk storage, save to disk
-            if storage_type in ('disk', 'hybrid'):
-                # Import here to avoid circular imports
-                from src.utils.file_utils import FileCacheManager
-
-                # Get cache manager
-                cache_manager = FileCacheManager()
-
-                # Cache the file
-                storage_path = cache_manager.cache_file(content, file_hash)
-
-                # For hybrid, we keep content in the database
-                # For disk, we just store the path and free the memory
-                if storage_type == 'disk':
-                    content = None  # Free memory
-
-            # Check which version of the table we're working with
-            cursor.execute("PRAGMA table_info(file_attachments)")
-            columns = [row['name'] for row in cursor.fetchall()]
-
-            # Determine if we should use the old or new schema
-            using_new_schema = all(col in columns for col in ['file_hash', 'storage_type', 'content_preview'])
-
-            if using_new_schema:
-                # Use new optimized schema
-                cursor.execute(
-                    '''
-                    INSERT INTO file_attachments
-                    (id, message_id, file_name, display_name, mime_type, token_count,
-                    file_size, file_hash, storage_type, content_preview, storage_path)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''',
-                    (file_id, message_id, file_name, display_name, mime_type, token_count,
-                     file_size, file_hash, storage_type, content_preview, storage_path)
-                )
-
-                # If database or hybrid storage, save content to separate table
-                if storage_type in ('database', 'hybrid') and content:
-                    # Check if file_contents table exists
-                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='file_contents'")
-                    if cursor.fetchone():
-                        # Use the separate content table
-                        cursor.execute(
-                            '''
-                            INSERT INTO file_contents (file_id, content)
-                            VALUES (?, ?)
-                            ''',
-                            (file_id, content)
-                        )
-                    else:
-                        # Fall back to storing in main table
-                        cursor.execute(
-                            '''
-                            UPDATE file_attachments SET content = ?
-                            WHERE id = ?
-                            ''',
-                            (content, file_id)
-                        )
-            else:
-                # Fall back to original schema
-                cursor.execute(
-                    '''
-                    INSERT INTO file_attachments (id, message_id, file_name, mime_type, content, token_count)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ''',
-                    (file_id, message_id, file_name, mime_type, content, token_count)
-                )
-
-            conn.commit()
-            return file_id
-
-        except Exception as e:
-            conn.rollback()
-            self.logger.error(f"Error adding file attachment: {e}")
-            raise
-
-        finally:
-            conn.close()
-
     def get_file_attachment(self, file_id):
         """
         Get a file attachment by ID with efficient content loading
@@ -802,3 +821,310 @@ class DatabaseManager:
     def load_attachment_content(self, attachment_id):
         """Load full attachment content on demand"""
         return self.get_file_attachment(attachment_id)['content']
+
+    def _get_connection(self):
+        """Get a connection from the thread-local storage"""
+        if not hasattr(self._local, 'connection') or self._local.connection is None:
+            self._local.connection = sqlite3.connect(self.db_path)
+            self._local.connection.row_factory = sqlite3.Row
+
+            # Set pragmas for better performance and safety
+            cursor = self._local.connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging for better concurrency
+            cursor.execute("PRAGMA synchronous=NORMAL")  # Balance safety and performance
+            cursor.execute("PRAGMA busy_timeout=5000")  # Wait up to 5 seconds on locks
+            self._local.connection.commit()
+
+        return self._local.connection
+
+    def get_connection(self):
+        """
+        Get a database connection with improved concurrency handling.
+        This is a wrapper around _get_connection that adds retries.
+        """
+        # For most operations, we want to allow multiple readers
+        # This is just the basic connection fetching
+        return self._get_connection()
+
+    def _execute_with_retry(self, operation_name, callback, retries=5, initial_delay=0.1):
+        """
+        Execute a database operation with retries on lock errors
+
+        Args:
+            operation_name: Name of operation for logging
+            callback: Function that performs the actual operation
+            retries: Maximum number of retries
+            initial_delay: Initial delay before first retry in seconds
+
+        Returns:
+            Result of the callback function
+        """
+        conn = None
+        attempt = 0
+        delay = initial_delay
+
+        while attempt <= retries:
+            try:
+                conn = self._get_connection()
+                return callback(conn)
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < retries:
+                    # Log the lock and retry
+                    attempt += 1
+                    self.logger.warning(f"{operation_name}: Database locked, retry {attempt}/{retries} in {delay:.2f}s")
+                    time.sleep(delay)
+                    # Exponential backoff with jitter
+                    delay = min(delay * 2, 5.0) * (0.5 + random.random())
+
+                    # Close and clear the connection to force a new one
+                    if conn:
+                        try:
+                            conn.close()
+                        except:
+                            pass
+                    self._local.connection = None
+                else:
+                    # Other error or out of retries, propagate
+                    self.logger.error(f"Error in {operation_name}: {str(e)}")
+                    raise
+            except Exception as e:
+                self.logger.error(f"Error in {operation_name}: {str(e)}")
+                if conn and conn.in_transaction:
+                    conn.rollback()
+                raise
+
+    def execute_query(self, query, params=(), fetch_mode='all', retry_count=3):
+        """
+        Execute a database query with retry logic for database locks.
+
+        Args:
+            query: SQL query to execute
+            params: Parameters for the query
+            fetch_mode: 'all', 'one', or 'none' to determine what to return
+            retry_count: Number of retries on database lock
+
+        Returns:
+            Query results based on fetch_mode
+        """
+        attempts = 0
+        delay = 0.1
+        last_error = None
+
+        while attempts < retry_count:
+            conn = None
+            try:
+                conn = self.get_connection()
+                cursor = conn.cursor()
+                cursor.execute(query, params)
+
+                if fetch_mode == 'all':
+                    return cursor.fetchall()
+                elif fetch_mode == 'one':
+                    return cursor.fetchone()
+                else:  # 'none'
+                    conn.commit()
+                    return True
+
+            except sqlite3.OperationalError as e:
+                last_error = e
+                if "database is locked" in str(e) and attempts < retry_count - 1:
+                    # Retry with exponential backoff
+                    attempts += 1
+                    import time, random
+                    retry_wait = delay * (2 ** attempts) * (0.5 + random.random())
+                    time.sleep(retry_wait)
+                    self.logger.warning(f"Database locked during query, retrying ({attempts}/{retry_count})...")
+
+                    # Close connection to force a new one next time
+                    if conn:
+                        try:
+                            conn.close()
+                        except:
+                            pass
+                else:
+                    # Other SQLite error or out of retries
+                    if conn:
+                        conn.rollback()
+                    raise
+            except Exception as e:
+                # Other errors
+                last_error = e
+                if conn:
+                    conn.rollback()
+                raise
+
+        # If we get here, we've exhausted retries
+        raise last_error or sqlite3.OperationalError("Database operation failed after multiple retries")
+
+    def add_file_attachment(self, message_id, file_info, storage_type='auto'):
+        """
+        Add a file attachment with queued processing to prevent database locks.
+
+        Args:
+            message_id: ID of the message to attach the file to
+            file_info: Dictionary with file information
+            storage_type: 'database', 'disk', 'hybrid', or 'auto'
+
+        Returns:
+            ID of the created attachment
+        """
+        # Create a result queue for this specific file
+        result_queue = queue.Queue()
+
+        # Create a placeholder file ID that will be replaced with the actual ID
+        file_id = str(QUuid.createUuid())
+
+        # Add the task to the queue - this will be processed by the background thread
+        self._file_queue.put((message_id, file_info, storage_type, result_queue))
+
+        try:
+            # Wait for the result with a timeout
+            success, result = result_queue.get(timeout=30.0)
+
+            if success:
+                # Return the actual file ID
+                return result
+            else:
+                # Re-raise the error
+                raise Exception(f"Failed to add file attachment: {result}")
+        except queue.Empty:
+            # Timeout waiting for the result
+            raise Exception("Timeout waiting for file attachment to be processed")
+
+    def _process_file_attachment(self, conn, message_id, file_info, storage_type='auto'):
+        """
+        Process a file attachment with a dedicated connection.
+        This is called by the file processor thread.
+        """
+        cursor = conn.cursor()
+
+        try:
+            import hashlib
+            from PyQt6.QtCore import QUuid
+
+            file_id = str(QUuid.createUuid())
+            file_name = file_info['file_name']
+            display_name = file_info.get('display_name', file_name)
+            mime_type = file_info.get('mime_type', 'text/plain')
+            token_count = file_info.get('token_count', 0)
+            file_size = file_info.get('size', 0)
+            file_hash = file_info.get('file_hash', '')
+            content = file_info.get('content', '')
+
+            # If no file hash provided, calculate one
+            if not file_hash and content:
+                file_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+
+            # Determine storage strategy based on content size
+            content_too_large = len(content) > 2 * 1024 * 1024  # 2MB threshold
+
+            # Determine storage strategy if auto
+            if storage_type == 'auto':
+                if content_too_large or file_size > 1024 * 1024:  # > 1MB
+                    storage_type = 'disk'
+                else:
+                    storage_type = 'database'
+
+            # Generate a preview (first 4KB)
+            content_preview = content[:4096] if content else ''
+
+            storage_path = None
+
+            # If disk storage, save to disk
+            if storage_type in ('disk', 'hybrid'):
+                # Import here to avoid circular imports
+                from src.utils.file_utils import FileCacheManager
+
+                # Get cache manager
+                cache_manager = FileCacheManager()
+
+                # Cache the file
+                storage_path = cache_manager.cache_file(content, file_hash)
+
+                # For hybrid, we keep content in the database
+                # For disk, we just store the path and free the memory
+                if storage_type == 'disk':
+                    content = None  # Free memory
+
+            # Check which version of the table we're working with
+            cursor.execute("PRAGMA table_info(file_attachments)")
+            columns = [row['name'] for row in cursor.fetchall()]
+
+            # Determine if we should use the old or new schema
+            using_new_schema = all(col in columns for col in ['file_hash', 'storage_type', 'content_preview'])
+
+            if using_new_schema:
+                # Use new optimized schema
+                cursor.execute(
+                    '''
+                    INSERT INTO file_attachments
+                    (id, message_id, file_name, display_name, mime_type, token_count,
+                    file_size, file_hash, storage_type, content_preview, storage_path)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (file_id, message_id, file_name, display_name, mime_type, token_count,
+                     file_size, file_hash, storage_type, content_preview, storage_path)
+                )
+
+                # If database or hybrid storage, save content to separate table
+                if storage_type in ('database', 'hybrid') and content:
+                    # Check if file_contents table exists
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='file_contents'")
+                    if cursor.fetchone():
+                        # Use the separate content table
+                        cursor.execute(
+                            '''
+                            INSERT INTO file_contents (file_id, content)
+                            VALUES (?, ?)
+                            ''',
+                            (file_id, content)
+                        )
+                    else:
+                        # Fall back to storing in main table
+                        cursor.execute(
+                            '''
+                            UPDATE file_attachments SET content = ?
+                            WHERE id = ?
+                            ''',
+                            (content, file_id)
+                        )
+            else:
+                # Fall back to original schema
+                cursor.execute(
+                    '''
+                    INSERT INTO file_attachments (id, message_id, file_name, mime_type, content, token_count)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ''',
+                    (file_id, message_id, file_name, mime_type, content, token_count)
+                )
+
+            conn.commit()
+            return file_id
+
+        except Exception as e:
+            conn.rollback()
+            self.logger.error(f"Error adding file attachment: {e}")
+            raise
+
+    def _close_connections(self):
+        """Close all connections - called during shutdown"""
+        if hasattr(self._local, 'connection') and self._local.connection:
+            try:
+                self._local.connection.close()
+                self._local.connection = None
+            except:
+                pass
+
+    def shutdown(self):
+        """Shutdown the database manager - stop background threads and close connections"""
+        # Stop the file processor
+        self._file_processor_running = False
+
+        # Wait for the file processor to finish current tasks
+        if self._file_processor_thread and self._file_processor_thread.is_alive():
+            self.logger.info("Waiting for file processor to finish...")
+            self._file_processor_thread.join(timeout=5.0)
+
+        # Close connections
+        self._close_connections()
+
