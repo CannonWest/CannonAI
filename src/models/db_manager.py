@@ -76,7 +76,7 @@ class DatabaseManager:
             self.logger.info(f"Database manager initialized with database at {self.db_path}")
 
     def _ensure_database_schema(self):
-        """Initialize database schema with better error handling"""
+        """Initialize database schema with better error handling and support for Gemini"""
         try:
             # Use a dedicated connection for schema initialization
             conn = sqlite3.connect(self.db_path, timeout=60.0)
@@ -85,100 +85,129 @@ class DatabaseManager:
             # Enable foreign keys
             cursor.execute("PRAGMA foreign_keys = ON")
 
-            # Create tables with schema version tracking
-            cursor.executescript('''
-                -- Schema version tracking
+            # Check current schema version
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS schema_version (
                     version INTEGER PRIMARY KEY,
                     applied_at TEXT NOT NULL
-                );
-
-                -- Conversations table to store conversation metadata
-                CREATE TABLE IF NOT EXISTS conversations (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    modified_at TEXT NOT NULL,
-                    current_node_id TEXT NOT NULL,
-                    system_message TEXT NOT NULL
-                );
-
-                -- Messages table to store individual messages
-                CREATE TABLE IF NOT EXISTS messages (
-                    id TEXT PRIMARY KEY,
-                    conversation_id TEXT NOT NULL,
-                    parent_id TEXT,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    response_id TEXT,
-                    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
-                    FOREIGN KEY (parent_id) REFERENCES messages(id) ON DELETE CASCADE
-                );
-
-                -- Message metadata table for model info, parameters, etc.
-                CREATE TABLE IF NOT EXISTS message_metadata (
-                    message_id TEXT NOT NULL,
-                    metadata_type TEXT NOT NULL,
-                    metadata_value TEXT NOT NULL,
-                    PRIMARY KEY (message_id, metadata_type),
-                    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
-                );
-
-                -- Reasoning steps table for Response API reasoning
-                CREATE TABLE IF NOT EXISTS reasoning_steps (
-                    id TEXT PRIMARY KEY,
-                    message_id TEXT NOT NULL,
-                    step_name TEXT NOT NULL,
-                    step_content TEXT NOT NULL,
-                    step_order INTEGER NOT NULL,
-                    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
-                );
-
-                -- File attachments table with optimized storage
-                CREATE TABLE IF NOT EXISTS file_attachments (
-                    id TEXT PRIMARY KEY,
-                    message_id TEXT NOT NULL,
-                    file_name TEXT NOT NULL, 
-                    display_name TEXT,
-                    mime_type TEXT NOT NULL,
-                    token_count INTEGER NOT NULL,
-                    file_size INTEGER NOT NULL DEFAULT 0,
-                    file_hash TEXT NOT NULL DEFAULT "",
-                    storage_type TEXT NOT NULL DEFAULT 'database',
-                    content_preview TEXT,
-                    storage_path TEXT,
-                    content TEXT,
-                    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
-                );
-
-                -- File contents table for large files
-                CREATE TABLE IF NOT EXISTS file_contents (
-                    file_id TEXT PRIMARY KEY,
-                    content TEXT NOT NULL,
-                    FOREIGN KEY (file_id) REFERENCES file_attachments(id) ON DELETE CASCADE
-                );
-
-                -- Indices for faster lookups
-                CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
-                CREATE INDEX IF NOT EXISTS idx_messages_parent_id ON messages(parent_id);
-                CREATE INDEX IF NOT EXISTS idx_message_metadata_message_id ON message_metadata(message_id);
-                CREATE INDEX IF NOT EXISTS idx_file_attachments_message_id ON file_attachments(message_id);
-                CREATE INDEX IF NOT EXISTS idx_file_attachments_file_hash ON file_attachments(file_hash);
-                CREATE INDEX IF NOT EXISTS idx_reasoning_steps_message_id ON reasoning_steps(message_id);
-                CREATE INDEX IF NOT EXISTS idx_file_contents_file_id ON file_contents(file_id);
+                )
             ''')
 
-            # Insert schema version if not exists
-            cursor.execute(
-                "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (1, ?)",
-                (datetime.now().isoformat(),)
-            )
+            cursor.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1")
+            result = cursor.fetchone()
+            current_version = result[0] if result else 0
 
+            # If we're at version 0, create the initial schema
+            if current_version < 1:
+                cursor.executescript('''
+                    -- Conversations table to store conversation metadata
+                    CREATE TABLE IF NOT EXISTS conversations (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        modified_at TEXT NOT NULL,
+                        current_node_id TEXT NOT NULL,
+                        system_message TEXT NOT NULL
+                    );
+
+                    -- Messages table to store individual messages
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id TEXT PRIMARY KEY,
+                        conversation_id TEXT NOT NULL,
+                        parent_id TEXT,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        timestamp TEXT NOT NULL,
+                        response_id TEXT,
+                        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+                        FOREIGN KEY (parent_id) REFERENCES messages(id) ON DELETE CASCADE
+                    );
+
+                    -- Message metadata table for model info, parameters, etc.
+                    CREATE TABLE IF NOT EXISTS message_metadata (
+                        message_id TEXT NOT NULL,
+                        metadata_type TEXT NOT NULL,
+                        metadata_value TEXT NOT NULL,
+                        PRIMARY KEY (message_id, metadata_type),
+                        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+                    );
+
+                    -- Reasoning steps table for Response API reasoning
+                    CREATE TABLE IF NOT EXISTS reasoning_steps (
+                        id TEXT PRIMARY KEY,
+                        message_id TEXT NOT NULL,
+                        step_name TEXT NOT NULL,
+                        step_content TEXT NOT NULL,
+                        step_order INTEGER NOT NULL,
+                        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+                    );
+
+                    -- File attachments table with optimized storage
+                    CREATE TABLE IF NOT EXISTS file_attachments (
+                        id TEXT PRIMARY KEY,
+                        message_id TEXT NOT NULL,
+                        file_name TEXT NOT NULL, 
+                        display_name TEXT,
+                        mime_type TEXT NOT NULL,
+                        token_count INTEGER NOT NULL,
+                        file_size INTEGER NOT NULL DEFAULT 0,
+                        file_hash TEXT NOT NULL DEFAULT "",
+                        storage_type TEXT NOT NULL DEFAULT 'database',
+                        content_preview TEXT,
+                        storage_path TEXT,
+                        content TEXT,
+                        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+                    );
+
+                    -- File contents table for large files
+                    CREATE TABLE IF NOT EXISTS file_contents (
+                        file_id TEXT PRIMARY KEY,
+                        content TEXT NOT NULL,
+                        FOREIGN KEY (file_id) REFERENCES file_attachments(id) ON DELETE CASCADE
+                    );
+
+                    -- Indices for faster lookups
+                    CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+                    CREATE INDEX IF NOT EXISTS idx_messages_parent_id ON messages(parent_id);
+                    CREATE INDEX IF NOT EXISTS idx_message_metadata_message_id ON message_metadata(message_id);
+                    CREATE INDEX IF NOT EXISTS idx_file_attachments_message_id ON file_attachments(message_id);
+                    CREATE INDEX IF NOT EXISTS idx_file_attachments_file_hash ON file_attachments(file_hash);
+                    CREATE INDEX IF NOT EXISTS idx_reasoning_steps_message_id ON reasoning_steps(message_id);
+                    CREATE INDEX IF NOT EXISTS idx_file_contents_file_id ON file_contents(file_id);
+                ''')
+
+                # Update schema version to 1
+                cursor.execute(
+                    "INSERT INTO schema_version (version, applied_at) VALUES (1, ?)",
+                    (datetime.now().isoformat(),)
+                )
+                current_version = 1
+                self.logger.info("Database schema initialized to version 1")
+
+            # If we're at version 1, add provider column to the model_info metadata
+            if current_version < 2:
+                # We can't directly add columns to metadata since it's a key-value store
+                # Instead, we'll store provider info in the metadata table with a new type
+
+                # Add an index to make searching for provider metadata faster
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_message_metadata_type 
+                    ON message_metadata(metadata_type);
+                ''')
+
+                # Update schema version to 2
+                cursor.execute(
+                    "INSERT INTO schema_version (version, applied_at) VALUES (2, ?)",
+                    (datetime.now().isoformat(),)
+                )
+                self.logger.info("Database schema updated to version 2 with provider support")
+
+            # Commit all changes
             conn.commit()
             conn.close()
 
-            self.logger.info("Database schema initialized successfully")
+            self.logger.info(f"Database schema is at version {current_version}")
+
         except Exception as e:
             self.logger.error(f"Error initializing database schema: {str(e)}")
             # Log but don't propagate the error to allow for recovery later
