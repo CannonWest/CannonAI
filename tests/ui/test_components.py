@@ -156,14 +156,18 @@ class TestConversationTreeWidget:
 
 class TestBranchNavBar:
     """Tests for the BranchNavBar component."""
-    
+
     def test_init(self, qapp):
-        """Test widget initialization."""
+        """Test widget initialization with patched comparison."""
         # Create widget
         widget = BranchNavBar()
-        
-        # Check it has initialized correctly
-        assert widget.layout.contentsMargins() == (5, 2, 5, 2)
+
+        # Instead of directly comparing, extract the values from QMargins
+        margins = widget.layout.contentsMargins()
+        margin_tuple = (margins.left(), margins.top(), margins.right(), margins.bottom())
+
+        # Now compare the extracted tuple
+        assert margin_tuple == (5, 2, 5, 2)
         assert widget.layout.spacing() == 5
         assert widget.nodes == []
     
@@ -506,18 +510,6 @@ class TestSearchDialog:
         
         # Check status was updated
         assert "Found 1 result" in dialog.status_label.text()
-
-    def on_result_selected(self, item, column):
-        """Handle double-click on a search result"""
-        # Get the node ID and conversation ID
-        node_id = item.data(0, Qt.ItemDataRole.UserRole)
-        conversation_id = item.data(1, Qt.ItemDataRole.UserRole)
-
-        if node_id and conversation_id:
-            # Emit signal with combined ID format
-            self.message_selected.emit(f"{conversation_id}:{node_id}")
-            # Use accept() to close dialog with Accepted result
-            self.accept()
 
     def test_on_result_selected(self, qapp):
         """Test handling result selection."""
