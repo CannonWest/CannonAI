@@ -6,6 +6,7 @@ and robust transaction support.
 
 import os
 import queue
+import random
 import sqlite3
 import threading
 import time
@@ -184,56 +185,96 @@ class DatabaseManager:
 
     def get_connection(self):
         """
-        Get a database connection with simplified management.
+        Get a database connection with improved reliability and error handling.
         Always returns a valid connection or raises an exception.
         """
         with self._db_lock:
             # Check if we have a valid connection
             if self._connection and self._is_connection_valid(self._connection):
                 self._connection_count += 1
+                self._last_connection_time = time.time()  # Update last access time
                 return self._connection
 
-            # Close existing connection if it exists but is invalid
+            # If we get here, we need a new connection
+            # First close any existing invalid connection
             if self._connection:
                 try:
                     self._connection.close()
-                except:
-                    pass
-                self._connection = None
+                except Exception as e:
+                    self.logger.warning(f"Error closing invalid connection: {str(e)}")
+                finally:
+                    self._connection = None
+                    self._connection_count = 0
 
-            # Create a new connection
-            try:
-                conn = sqlite3.connect(self.db_path, timeout=60.0)
-                conn.row_factory = sqlite3.Row
+            # Create a new connection with several retries
+            max_retries = 3
+            attempts = 0
+            last_error = None
 
-                # Enable WAL mode and foreign keys
-                cursor = conn.cursor()
-                cursor.execute("PRAGMA journal_mode=WAL")
-                cursor.execute("PRAGMA synchronous=NORMAL")
-                cursor.execute("PRAGMA foreign_keys=ON")
-                cursor.execute("PRAGMA busy_timeout=30000")  # 30-second timeout
+            while attempts < max_retries:
+                try:
+                    # Create new connection with increased timeout
+                    conn = sqlite3.connect(self.db_path, timeout=60.0)
+                    conn.row_factory = sqlite3.Row
 
-                # Verify the connection works
-                cursor.execute("SELECT 1").fetchone()
+                    # Enable WAL mode and foreign keys
+                    cursor = conn.cursor()
+                    cursor.execute("PRAGMA journal_mode=WAL")
+                    cursor.execute("PRAGMA synchronous=NORMAL")
+                    cursor.execute("PRAGMA foreign_keys=ON")
+                    cursor.execute("PRAGMA busy_timeout=30000")  # 30-second timeout
+                    cursor.execute("PRAGMA temp_store=MEMORY")  # Store temp tables in memory
 
-                # Store the connection
-                self._connection = conn
-                self._connection_count = 1
-                self._last_connection_time = time.time()
+                    # Verify the connection works by doing a simple query
+                    result = cursor.execute("SELECT 1").fetchone()
+                    if not result or result[0] != 1:
+                        raise Exception("Connection test failed")
 
-                return conn
-            except Exception as e:
-                self.logger.error(f"Error creating database connection: {str(e)}")
-                raise
+                    # Connection is good - store it
+                    self._connection = conn
+                    self._connection_count = 1
+                    self._last_connection_time = time.time()
+
+                    self.logger.debug("Created new database connection")
+                    return conn
+
+                except sqlite3.OperationalError as e:
+                    # Handle database lock errors with retry
+                    if "database is locked" in str(e):
+                        attempts += 1
+                        last_error = e
+                        self.logger.warning(f"Database locked, retry {attempts}/{max_retries}")
+
+                        # Wait with exponential backoff
+                        retry_delay = 0.1 * (2 ** attempts) * (0.5 + random.random())
+                        time.sleep(retry_delay)
+                    else:
+                        # Other SQLite errors - log and raise
+                        self.logger.error(f"SQLite error creating connection: {str(e)}")
+                        raise
+
+                except Exception as e:
+                    # Handle general errors
+                    self.logger.error(f"Error creating database connection: {str(e)}")
+                    raise
+
+            # If we've exhausted retries
+            self.logger.error(f"Failed to create database connection after {max_retries} attempts")
+            if last_error:
+                raise last_error
+            else:
+                raise Exception("Failed to create database connection")
 
     def _is_connection_valid(self, conn):
-        """Test if a connection is valid"""
+        """Test if a connection is valid with improved error handling"""
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT 1")
-            return cursor.fetchone() is not None
-        except:
+            result = cursor.execute("SELECT 1").fetchone()
+            return result is not None and result[0] == 1
+        except Exception as e:
+            self.logger.warning(f"Connection validity check failed: {str(e)}")
             return False
+
 
     def release_connection(self, conn):
         """
