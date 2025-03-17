@@ -2,6 +2,7 @@
 Main window UI for the OpenAI Chat application.
 """
 import json
+import sqlite3
 import time
 from typing import Optional, Dict, Any
 from functools import partial
@@ -49,12 +50,24 @@ class MainWindow(QMainWindow):
         self.setup_style()
 
         try:
-            # Use the new database-backed conversation manager
-            self.conversation_manager = DBConversationManager()
-
             # Initialize database manager for direct database operations
             # This will use the singleton instance
             self.db_manager = DatabaseManager()
+
+            # Perform database health check
+            self.logger.info("Performing database health check during startup")
+            db_healthy = self.db_manager.verify_database_health()
+
+            if not db_healthy:
+                self.logger.warning("Database health check found issues - proceeding with caution")
+                QMessageBox.warning(
+                    self,
+                    "Database Warning",
+                    "Database health check found potential issues. The application will try to recover, but you may want to back up your data."
+                )
+            from src.models.db_conversation_manager import DBConversationManager
+            # Initialize the conversation manager
+            self.conversation_manager = DBConversationManager()
 
             # Debug: Print all conversations in database - with error handling
             try:
@@ -63,9 +76,35 @@ class MainWindow(QMainWindow):
                 self.logger.error(f"Error printing conversations: {str(db_error)}")
                 # Continue anyway - this is just diagnostic
 
-            # Load saved conversations with error handling
+            # Load saved conversations with robust error handling
             try:
                 self.load_conversations()
+                self.logger.info("Successfully loaded conversations")
+            except sqlite3.OperationalError as sql_error:
+                # Handle SQLite operational errors specifically
+                error_msg = str(sql_error)
+                self.logger.error(f"SQLite error loading conversations: {error_msg}")
+
+                if "database is locked" in error_msg:
+                    QMessageBox.warning(
+                        self,
+                        "Database Locked",
+                        "The database appears to be locked by another process. Please close any other instances of the application and try again."
+                    )
+                elif "no such table" in error_msg:
+                    QMessageBox.warning(
+                        self,
+                        "Database Schema Error",
+                        "The database schema appears to be incomplete or corrupted. The application will create a new database."
+                    )
+                    # Try to initialize the database again
+                    self.db_manager.initialize_database()
+                else:
+                    QMessageBox.warning(
+                        self,
+                        "Database Error",
+                        f"Error loading conversations: {error_msg}\n\nA new conversation will be created."
+                    )
             except Exception as load_error:
                 self.logger.error(f"Error loading conversations: {str(load_error)}")
                 QMessageBox.warning(

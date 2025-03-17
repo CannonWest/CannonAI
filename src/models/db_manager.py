@@ -48,12 +48,22 @@ class DatabaseManager:
             self.logger = get_logger(f"{__name__}.DatabaseManager")
 
             # Create database directory if it doesn't exist
-            os.makedirs(DATABASE_DIR, exist_ok=True)
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
 
-            # Thread-local storage for connections
+            # Thread-local storage for connections - ensure it exists
             self._local = threading.local()
 
-            # Lock for serializing critical database operations
+            # Initialize the connection to None for this thread
+            self._local.connection = None
+
+            # Track open connections globally for shutdown
+            self._all_connections = set()
+            self._connections_lock = threading.RLock()
+
+            # Dictionary to store connection metadata instead of adding attributes to connection objects
+            self._connection_metadata = {}
+
+            # Main lock for serializing critical database operations
             self._db_lock = threading.RLock()
 
             # Queue for file attachments to be processed in a serialized manner
@@ -61,55 +71,513 @@ class DatabaseManager:
             self._file_processor_running = False
             self._file_processor_thread = None
 
-            # Initialize database schema
-            self.initialize_database()
+            # Initialize database schema with direct SQLite connection to avoid potential issues
+            try:
+                # Use a direct connection to initialize the database schema
+                conn = sqlite3.connect(self.db_path, timeout=60.0)
+                cursor = conn.cursor()
+
+                # Create tables
+                cursor.executescript('''
+                    -- Conversations table to store conversation metadata
+                    CREATE TABLE IF NOT EXISTS conversations (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        modified_at TEXT NOT NULL,
+                        current_node_id TEXT NOT NULL,
+                        system_message TEXT NOT NULL
+                    );
+
+                    -- Messages table to store individual messages
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id TEXT PRIMARY KEY,
+                        conversation_id TEXT NOT NULL,
+                        parent_id TEXT,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        timestamp TEXT NOT NULL,
+                        response_id TEXT,
+                        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+                        FOREIGN KEY (parent_id) REFERENCES messages(id) ON DELETE CASCADE
+                    );
+
+                    -- Message metadata table for model info, parameters, etc.
+                    CREATE TABLE IF NOT EXISTS message_metadata (
+                        message_id TEXT NOT NULL,
+                        metadata_type TEXT NOT NULL,
+                        metadata_value TEXT NOT NULL,
+                        PRIMARY KEY (message_id, metadata_type),
+                        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+                    );
+
+                    -- Reasoning steps table for Response API reasoning
+                    CREATE TABLE IF NOT EXISTS reasoning_steps (
+                        id TEXT PRIMARY KEY,
+                        message_id TEXT NOT NULL,
+                        step_name TEXT NOT NULL,
+                        step_content TEXT NOT NULL,
+                        step_order INTEGER NOT NULL,
+                        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+                    );
+
+                    -- File attachments table with optimized storage
+                    CREATE TABLE IF NOT EXISTS file_attachments (
+                        id TEXT PRIMARY KEY,
+                        message_id TEXT NOT NULL,
+                        file_name TEXT NOT NULL, 
+                        display_name TEXT,
+                        mime_type TEXT NOT NULL,
+                        token_count INTEGER NOT NULL,
+                        file_size INTEGER NOT NULL DEFAULT 0,
+                        file_hash TEXT NOT NULL DEFAULT "",
+                        storage_type TEXT NOT NULL DEFAULT 'database',
+                        content_preview TEXT,
+                        storage_path TEXT,
+                        content TEXT,
+                        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+                    );
+
+                    -- Indices for faster lookups
+                    CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+                    CREATE INDEX IF NOT EXISTS idx_messages_parent_id ON messages(parent_id);
+                    CREATE INDEX IF NOT EXISTS idx_message_metadata_message_id ON message_metadata(message_id);
+                    CREATE INDEX IF NOT EXISTS idx_file_attachments_message_id ON file_attachments(message_id);
+                    CREATE INDEX IF NOT EXISTS idx_file_attachments_file_hash ON file_attachments(file_hash);
+                    CREATE INDEX IF NOT EXISTS idx_reasoning_steps_message_id ON reasoning_steps(message_id);
+                ''')
+
+                conn.commit()
+                conn.close()
+
+                self.logger.info("Database schema initialized successfully")
+            except Exception as e:
+                self.logger.error(f"Error initializing database schema: {str(e)}")
+                # Log but don't propagate the error to allow for recovery later
 
             # Start the file processor thread - but only after initialization is complete
             self._start_file_processor()
 
+            self.logger.info(f"Database manager initialized with database at {self.db_path}")
+
     def get_connection(self):
         """
-        Get a database connection with improved reliability.
-        Always ensures a valid, open connection.
+        Get a database connection with advanced reliability, connection tracking,
+        and proper error handling.
+
+        This implementation uses a connection pooling approach with thread-local storage
+        and ensures all connections are properly validated before use.
         """
-        try:
-            # First check if we have a connection and if it's valid
-            if hasattr(self._local, 'connection') and self._local.connection is not None:
-                # Test if the connection is still valid
-                try:
-                    self._local.connection.execute("SELECT 1").fetchone()
-                    return self._local.connection
-                except sqlite3.Error:
-                    # Connection is no longer valid, close it if possible
-                    try:
-                        self._local.connection.close()
-                    except:
-                        pass
-                    self._local.connection = None
+        import time
 
-            # Create a new connection if we don't have a valid one
-            self._local.connection = sqlite3.connect(self.db_path)
-            self._local.connection.row_factory = sqlite3.Row
+        # Initialize connection metadata tracking if not already present
+        if not hasattr(self, '_connection_metadata'):
+            self._connection_metadata = {}
 
-            # Set pragmas for better performance and safety
-            cursor = self._local.connection.cursor()
-            cursor.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging for better concurrency
-            cursor.execute("PRAGMA synchronous=NORMAL")  # Balance safety and performance
-            cursor.execute("PRAGMA busy_timeout=5000")  # Wait up to 5 seconds on locks
-            self._local.connection.commit()
+        # Track timing for performance logging
+        start_time = time.time()
 
-            return self._local.connection
-        except Exception as e:
-            self.logger.error(f"Error getting database connection: {e}")
-            # Last resort: try a completely fresh connection
+        # First try to get an existing connection from thread-local storage
+        if hasattr(self._local, 'connection') and self._local.connection is not None:
             try:
-                conn = sqlite3.connect(self.db_path)
-                conn.row_factory = sqlite3.Row
-                return conn
-            except Exception as e2:
-                self.logger.critical(f"Critical error connecting to database: {e2}")
-                raise
+                # Test if the existing connection is valid with a simple query
+                result = self._local.connection.execute("SELECT 1").fetchone()
 
+                if result and result[0] == 1:
+                    # Connection is valid
+                    return self._local.connection
+
+            except sqlite3.Error as e:
+                # Connection is invalid - log and remove it
+                conn_id = id(self._local.connection)
+                self.logger.warning(f"Connection {conn_id} failed validation: {str(e)}")
+
+                # Clean up the invalid connection
+                try:
+                    with self._connections_lock:
+                        if self._local.connection in self._all_connections:
+                            self._all_connections.remove(self._local.connection)
+
+                        # Remove metadata if it exists
+                        if conn_id in self._connection_metadata:
+                            del self._connection_metadata[conn_id]
+
+                    self._local.connection.close()
+                except Exception as close_error:
+                    self.logger.warning(f"Error closing invalid connection: {str(close_error)}")
+
+                # Clear the thread-local reference
+                self._local.connection = None
+
+        # At this point we need a new connection
+        # Use a lock to prevent multiple threads from creating connections simultaneously
+        with self._db_lock:
+            try:
+                # Use the specialized method to create a stable connection
+                conn = self._create_stable_connection()
+
+                # Store in thread-local storage
+                self._local.connection = conn
+
+                # Log connection creation time for performance diagnostics
+                creation_time = time.time() - start_time
+                if creation_time > 0.1:  # Only log slow connection creations
+                    conn_id = id(conn)
+                    self.logger.info(f"Connection {conn_id} created in {creation_time:.3f}s")
+
+                return conn
+
+            except Exception as e:
+                # Connection creation failed - critical error
+                self.logger.error(f"Failed to create database connection: {str(e)}")
+
+                # Try one last emergency fallback with minimal settings
+                try:
+                    # Basic connection with minimal settings - last resort
+                    conn = sqlite3.connect(self.db_path, timeout=60.0)
+                    conn.row_factory = sqlite3.Row
+
+                    # Test that it works
+                    if not conn.execute("SELECT 1").fetchone():
+                        raise sqlite3.OperationalError("Emergency connection test failed")
+
+                    self.logger.warning("Created emergency fallback database connection")
+
+                    # Store in thread-local and tracking
+                    self._local.connection = conn
+
+                    # Track connection metadata
+                    conn_id = id(conn)
+                    self._connection_metadata[conn_id] = {
+                        'created_at': time.time(),
+                        'id': conn_id,
+                        'emergency': True
+                    }
+
+                    with self._connections_lock:
+                        self._all_connections.add(conn)
+
+                    return conn
+
+                except Exception as e2:
+                    # All connection attempts have failed - critical error
+                    self.logger.critical(f"All connection attempts failed: {str(e2)}")
+                    raise sqlite3.OperationalError(f"Cannot create database connection: {str(e2)}")
+
+    def _create_stable_connection(self):
+        """
+        Create a new stable database connection with special configuration.
+
+        This function ensures connections are created with the most stable settings,
+        handles connection validation, and provides detailed logging.
+        """
+        import time
+        import random
+
+        # Track attempts for diagnostics
+        attempt = 0
+        max_attempts = 3
+        last_error = None
+
+        # Initialize connection metadata tracking if not already present
+        if not hasattr(self, '_connection_metadata'):
+            self._connection_metadata = {}
+
+        while attempt < max_attempts:
+            try:
+                # Add some randomized backoff between attempts
+                if attempt > 0:
+                    backoff = 0.1 * (2 ** attempt) * (0.5 + random.random())
+                    time.sleep(backoff)
+                    self.logger.debug(f"Retrying connection creation (attempt {attempt + 1}/{max_attempts})")
+
+                # Create the connection with very conservative settings
+                self.logger.debug(f"Creating fresh database connection to {self.db_path}")
+
+                # Create a shared directory if needed
+                import os
+                os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+
+                # Use a more explicit connect with conservative timeouts
+                conn = sqlite3.connect(
+                    database=self.db_path,
+                    timeout=60.0,  # Very generous timeout
+                    isolation_level="DEFERRED",  # Standard isolation level
+                    check_same_thread=False  # Allow cross-thread usage (we'll manage this ourselves)
+                )
+
+                # Set row factory
+                conn.row_factory = sqlite3.Row
+
+                # Configure connection with special retry logic
+                cursor = conn.cursor()
+
+                # First checkpoint the WAL to make it more stable
+                try:
+                    cursor.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                except sqlite3.OperationalError:
+                    # This might fail if WAL mode is not enabled yet, which is fine
+                    pass
+
+                # Use WAL mode for improved concurrency
+                cursor.execute("PRAGMA journal_mode=WAL")
+
+                # Use normal synchronous mode for better performance while still being safe
+                cursor.execute("PRAGMA synchronous=NORMAL")
+
+                # Set a long busy timeout (30 seconds)
+                cursor.execute("PRAGMA busy_timeout=30000")
+
+                # Force these settings to take effect with a small transaction
+                conn.commit()
+
+                # Verify the connection works
+                result = cursor.execute("SELECT 1").fetchone()
+                if not result or result[0] != 1:
+                    raise sqlite3.OperationalError("Connection verification query failed")
+
+                # Generate a unique ID for this connection
+                connection_id = id(conn)
+
+                # Store metadata in our dictionary instead of on the connection object
+                self._connection_metadata[connection_id] = {
+                    'created_at': time.time(),
+                    'id': connection_id
+                }
+
+                self.logger.debug(f"Connection {connection_id} created successfully")
+
+                # Add this connection to the tracked set
+                with self._connections_lock:
+                    self._all_connections.add(conn)
+
+                # Return the fully configured connection
+                return conn
+
+            except Exception as e:
+                attempt += 1
+                last_error = e
+                self.logger.warning(f"Error creating database connection (attempt {attempt}/{max_attempts}): {str(e)}")
+
+        # If we get here, all attempts failed
+        self.logger.error(f"Failed to create stable connection after {max_attempts} attempts. Last error: {str(last_error)}")
+        raise last_error or sqlite3.OperationalError("Failed to create database connection")
+
+    def verify_database_health(self):
+        """
+        Perform a comprehensive health check on the database.
+
+        This method validates the database file, schema integrity, and connection
+        pool health. It attempts to fix any issues it finds.
+
+        Returns:
+            bool: True if database is healthy, False if there are critical issues
+        """
+        self.logger.info("Performing database health check")
+        issues_found = 0
+
+        try:
+            # Step 1: Check if the database file exists
+            import os
+            if not os.path.exists(self.db_path):
+                self.logger.error(f"Database file not found at {self.db_path}")
+                os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+                issues_found += 1
+
+            # Step 2: Try to get a fresh connection (don't use our connection pool methods)
+            connection_ok = False
+            test_conn = None
+            try:
+                # Create a standalone connection just for testing
+                test_conn = sqlite3.connect(self.db_path, timeout=30.0)
+                test_conn.row_factory = sqlite3.Row
+
+                # Test a simple query
+                cursor = test_conn.cursor()
+                cursor.execute("SELECT 1")
+                result = cursor.fetchone()
+
+                if result and result[0] == 1:
+                    connection_ok = True
+                    self.logger.info("Database connection test passed")
+                else:
+                    self.logger.warning("Database connection test returned unexpected result")
+                    issues_found += 1
+
+                # Check schema integrity
+                try:
+                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                    tables = [row['name'] for row in cursor.fetchall()]
+
+                    expected_tables = [
+                        'conversations', 'messages', 'message_metadata',
+                        'reasoning_steps', 'file_attachments'
+                    ]
+
+                    missing_tables = [t for t in expected_tables if t not in tables]
+                    if missing_tables:
+                        self.logger.warning(f"Missing tables in database: {', '.join(missing_tables)}")
+                        issues_found += 1
+                    else:
+                        self.logger.info("Database schema integrity check passed")
+                except Exception as schema_error:
+                    self.logger.error(f"Schema integrity check failed: {str(schema_error)}")
+                    issues_found += 1
+
+            except Exception as conn_error:
+                self.logger.error(f"Failed to establish test connection: {str(conn_error)}")
+                connection_ok = False
+                issues_found += 1
+            finally:
+                # Close the test connection
+                if test_conn:
+                    try:
+                        test_conn.close()
+                    except Exception as close_error:
+                        self.logger.warning(f"Error closing test connection: {str(close_error)}")
+
+            # Step 3: If connection failed, try to diagnose and fix the issue
+            if not connection_ok:
+                self.logger.warning("Attempting to diagnose connection issues...")
+
+                # Check if database is locked by another process
+                import subprocess
+                import sys
+                import platform
+
+                if platform.system() == "Windows":
+                    try:
+                        # On Windows, try to check for locks using handle
+                        db_dir = os.path.dirname(self.db_path)
+                        self.logger.info(f"Testing database directory access permissions for {db_dir}")
+
+                        # Test write permissions
+                        test_file = os.path.join(db_dir, "_db_test_access.tmp")
+                        try:
+                            with open(test_file, 'w') as f:
+                                f.write("test")
+                            os.remove(test_file)
+                            self.logger.info("Directory is writable")
+                        except Exception as perm_error:
+                            self.logger.error(f"Directory permission error: {str(perm_error)}")
+                            issues_found += 1
+
+                    except Exception as diag_error:
+                        self.logger.error(f"Diagnostics error: {str(diag_error)}")
+
+                # Try to reset connections
+                self.logger.info("Resetting all database connections")
+                self._close_connections()
+
+            # Step 4: Check thread-local connection if it exists
+            if hasattr(self._local, 'connection') and self._local.connection is not None:
+                try:
+                    # Test if thread-local connection is valid
+                    self._local.connection.execute("SELECT 1").fetchone()
+                    self.logger.info("Thread-local connection is valid")
+                except Exception as local_error:
+                    self.logger.warning(f"Thread-local connection is invalid: {str(local_error)}")
+                    self._local.connection = None
+                    issues_found += 1
+
+            # Step 5: If needed, manually initialize database schema
+            if issues_found > 0:
+                self.logger.warning(f"Found {issues_found} database issues, attempting to fix by reinitializing schema")
+                try:
+                    # Create a direct connection without using our connection pooling
+                    repair_conn = sqlite3.connect(self.db_path, timeout=60.0)
+
+                    # Create the tables directly without using initialize_database
+                    repair_conn.executescript('''
+                        -- Conversations table to store conversation metadata
+                        CREATE TABLE IF NOT EXISTS conversations (
+                            id TEXT PRIMARY KEY,
+                            name TEXT NOT NULL,
+                            created_at TEXT NOT NULL,
+                            modified_at TEXT NOT NULL,
+                            current_node_id TEXT NOT NULL,
+                            system_message TEXT NOT NULL
+                        );
+
+                        -- Messages table to store individual messages
+                        CREATE TABLE IF NOT EXISTS messages (
+                            id TEXT PRIMARY KEY,
+                            conversation_id TEXT NOT NULL,
+                            parent_id TEXT,
+                            role TEXT NOT NULL,
+                            content TEXT NOT NULL,
+                            timestamp TEXT NOT NULL,
+                            response_id TEXT,
+                            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+                            FOREIGN KEY (parent_id) REFERENCES messages(id) ON DELETE CASCADE
+                        );
+
+                        -- Message metadata table for model info, parameters, etc.
+                        CREATE TABLE IF NOT EXISTS message_metadata (
+                            message_id TEXT NOT NULL,
+                            metadata_type TEXT NOT NULL,
+                            metadata_value TEXT NOT NULL,
+                            PRIMARY KEY (message_id, metadata_type),
+                            FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+                        );
+
+                        -- Reasoning steps table for Response API reasoning
+                        CREATE TABLE IF NOT EXISTS reasoning_steps (
+                            id TEXT PRIMARY KEY,
+                            message_id TEXT NOT NULL,
+                            step_name TEXT NOT NULL,
+                            step_content TEXT NOT NULL,
+                            step_order INTEGER NOT NULL,
+                            FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+                        );
+
+                        -- File attachments table with optimized storage
+                        CREATE TABLE IF NOT EXISTS file_attachments (
+                            id TEXT PRIMARY KEY,
+                            message_id TEXT NOT NULL,
+                            file_name TEXT NOT NULL,
+                            display_name TEXT,
+                            mime_type TEXT NOT NULL,
+                            token_count INTEGER NOT NULL,
+                            file_size INTEGER NOT NULL DEFAULT 0,
+                            file_hash TEXT NOT NULL DEFAULT "",
+                            storage_type TEXT NOT NULL DEFAULT 'database',
+                            content_preview TEXT,
+                            storage_path TEXT,
+                            content TEXT,
+                            FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+                        );
+
+                        -- Indices for faster lookups
+                        CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+                        CREATE INDEX IF NOT EXISTS idx_messages_parent_id ON messages(parent_id);
+                        CREATE INDEX IF NOT EXISTS idx_message_metadata_message_id ON message_metadata(message_id);
+                        CREATE INDEX IF NOT EXISTS idx_file_attachments_message_id ON file_attachments(message_id);
+                        CREATE INDEX IF NOT EXISTS idx_file_attachments_file_hash ON file_attachments(file_hash);
+                        CREATE INDEX IF NOT EXISTS idx_reasoning_steps_message_id ON reasoning_steps(message_id);
+                    ''')
+
+                    repair_conn.commit()
+                    repair_conn.close()
+
+                    self.logger.info("Database schema repaired manually")
+                    issues_found -= 1  # Reduce issue count if successful
+                except Exception as init_error:
+                    self.logger.error(f"Failed to manually repair database schema: {str(init_error)}")
+
+            # Report health check results
+            if issues_found <= 0:
+                self.logger.info("Database health check completed successfully - no issues found")
+                return True
+            else:
+                self.logger.warning(f"Database health check completed with {issues_found} unresolved issues")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Database health check failed with error: {str(e)}")
+            return False
+
+    #########END BLOCK ALTER###########
     def debug_print_conversations(self):
         """Print all conversations in the database for debugging"""
         # Always get a fresh connection here
@@ -135,9 +603,9 @@ class DatabaseManager:
         except Exception as e:
             print(f"DEBUG: Error querying conversations: {str(e)}")
             self.logger.error(f"Error in debug_print_conversations: {str(e)}")
-        finally:
-            # Don't close the connection here - it might be reused
-            pass
+        # Don't close the connection in the finally block
+        # This method should not be closing connections as it may be reused by thread-local storage
+
 
     def _start_file_processor(self):
         """Start the background thread for processing file attachments"""
@@ -206,88 +674,159 @@ class DatabaseManager:
         self._file_processor_thread.start()
 
     def get_path_to_root(self, node_id):
-        """Get the path from a node to the root"""
+        """Get the path from a node to the root with retry logic and robust connection handling"""
         if not node_id:
             self.logger.error("Attempted to get path to root with None node_id")
             return []
 
-        conn = None
-        try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
+        max_retries = 3
+        retry_count = 0
+        backoff_time = 0.1  # Start with 100ms
 
-            path = []
-            current_id = node_id
+        while retry_count < max_retries:
+            # Get a fresh connection each time - don't reuse or close the thread-local connection
+            conn = None
+            try:
+                # Use the thread-safe connection getter that maintains connections properly
+                conn = self.get_connection()
 
-            while current_id:
-                # Get the current node
-                cursor.execute(
-                    'SELECT * FROM messages WHERE id = ?',
-                    (current_id,)
-                )
-                message = cursor.fetchone()
+                # Set a longer timeout for this operation
+                conn.execute("PRAGMA busy_timeout = 10000")  # 10 seconds
 
-                if not message:
-                    self.logger.warning(f"No message found for ID {current_id}")
-                    break
+                cursor = conn.cursor()
+                path = []
+                current_id = node_id
 
-                # Create node object
-                try:
-                    node = self._create_node_from_db_row(message)
-                    if node:
-                        # Add to path (at beginning to maintain root-to-node order)
-                        path.insert(0, node)
-                    else:
-                        self.logger.error(f"Failed to create node from row for ID {current_id}")
+                while current_id:
+                    # Get the current node
+                    cursor.execute(
+                        'SELECT * FROM messages WHERE id = ?',
+                        (current_id,)
+                    )
+                    message = cursor.fetchone()
+
+                    if not message:
+                        self.logger.warning(f"No message found for ID {current_id}")
                         break
-                except Exception as e:
-                    self.logger.error(f"Error creating node from row for ID {current_id}: {str(e)}")
-                    break
 
-                # Move to parent
-                current_id = message['parent_id']
+                    # Create node object
+                    try:
+                        node = self._create_node_from_db_row(message)
+                        if node:
+                            # Add to path (at beginning to maintain root-to-node order)
+                            path.insert(0, node)
+                        else:
+                            self.logger.error(f"Failed to create node from row for ID {current_id}")
+                            break
+                    except Exception as e:
+                        self.logger.error(f"Error creating node from row for ID {current_id}: {str(e)}")
+                        break
 
-            # Extra validation before returning
-            valid_path = [node for node in path if node is not None]
-            if len(valid_path) != len(path):
-                self.logger.warning(f"Filtered {len(path) - len(valid_path)} None nodes from path")
+                    # Move to parent
+                    current_id = message['parent_id']
 
-            return valid_path
+                # Extra validation before returning
+                valid_path = [node for node in path if node is not None]
+                if len(valid_path) != len(path):
+                    self.logger.warning(f"Filtered {len(path) - len(valid_path)} None nodes from path")
 
-        except Exception as e:
-            self.logger.error(f"Error getting path to root for node {node_id}: {str(e)}")
-            return []  # Return empty list instead of None on error
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception as e:
-                    self.logger.error(f"Error closing connection: {str(e)}")
+                return valid_path
+
+            except sqlite3.OperationalError as e:
+                # Handle database lock or busy errors with retries
+                if "database is locked" in str(e) or "database is busy" in str(e) or "closed database" in str(e):
+                    retry_count += 1
+                    self.logger.warning(f"Database error in get_path_to_root, retry {retry_count}/{max_retries}: {str(e)}")
+
+                    # Use exponential backoff with a bit of randomness
+                    import time
+                    import random
+                    sleep_time = backoff_time * (1.0 + random.random() * 0.5)
+                    time.sleep(sleep_time)
+                    backoff_time *= 2  # Double the backoff time for next retry
+
+                    # Clear the thread-local connection to force creating a new one
+                    if hasattr(self._local, 'connection'):
+                        self._local.connection = None
+                else:
+                    # Other operational errors should be logged and reported
+                    self.logger.error(f"SQLite error in get_path_to_root: {str(e)}")
+                    return []
+            except Exception as e:
+                self.logger.error(f"Error getting path to root for node {node_id}: {str(e)}")
+                return []  # Return empty list instead of None on error
+
+            # Don't close the connection - connection pooling is handled by get_connection
+
+        # If we get here, we've exhausted retries
+        self.logger.error(f"Failed to get path to root for node {node_id} after {max_retries} retries")
+        return []
 
     def get_node_children(self, node_id):
-        """Get children of a node"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
+        """Get children of a node with retry logic for database errors"""
+        max_retries = 3
+        retry_count = 0
+        backoff_time = 0.1  # Start with 100ms
 
-        try:
-            cursor.execute(
-                'SELECT * FROM messages WHERE parent_id = ?',
-                (node_id,)
-            )
+        while retry_count < max_retries:
+            try:
+                # Get a connection using the thread-safe method
+                conn = self.get_connection()
+                cursor = conn.cursor()
 
-            children = []
-            for row in cursor.fetchall():
-                child = self._create_node_from_db_row(row)
-                children.append(child)
+                cursor.execute(
+                    'SELECT * FROM messages WHERE parent_id = ?',
+                    (node_id,)
+                )
 
-            return children
+                children = []
+                rows = cursor.fetchall()
 
-        except Exception as e:
-            self.logger.error(f"Error getting children for node {node_id}")
-            log_exception(self.logger, e, f"Failed to get node children")
-            return []
-        finally:
-            conn.close()
+                # Log count for debugging
+                self.logger.debug(f"Found {len(rows)} children for node {node_id}")
+
+                # Process each row
+                for row in rows:
+                    try:
+                        child = self._create_node_from_db_row(row)
+                        if child:
+                            children.append(child)
+                        else:
+                            self.logger.warning(f"Failed to create child node for row {row['id']}")
+                    except Exception as row_error:
+                        self.logger.warning(f"Error creating child node: {str(row_error)}")
+                        # Continue with next row instead of failing completely
+
+                return children
+
+            except sqlite3.OperationalError as e:
+                # Handle database lock or busy errors with retries
+                if "database is locked" in str(e) or "database is busy" in str(e) or "closed database" in str(e):
+                    retry_count += 1
+                    self.logger.warning(f"Database error in get_node_children, retry {retry_count}/{max_retries}: {str(e)}")
+
+                    # Use exponential backoff with a bit of randomness
+                    import time
+                    import random
+                    sleep_time = backoff_time * (1.0 + random.random() * 0.5)
+                    time.sleep(sleep_time)
+                    backoff_time *= 2  # Double the backoff time for next retry
+
+                    # Clear the thread-local connection to force creating a new one
+                    if hasattr(self._local, 'connection'):
+                        self._local.connection = None
+                else:
+                    # Other operational errors should be logged and reported
+                    self.logger.error(f"SQLite error in get_node_children: {str(e)}")
+                    return []
+            except Exception as e:
+                self.logger.error(f"Error getting children for node {node_id}")
+                log_exception(self.logger, e, f"Failed to get node children")
+                return []
+
+        # If we get here, we've exhausted retries
+        self.logger.error(f"Failed to get children for node {node_id} after {max_retries} retries")
+        return []
 
     def get_node_metadata(self, node_id):
         """Public method to get metadata for a node - forwards to _get_node_metadata"""
@@ -822,30 +1361,6 @@ class DatabaseManager:
         """Load full attachment content on demand"""
         return self.get_file_attachment(attachment_id)['content']
 
-    def _get_connection(self):
-        """Get a connection from the thread-local storage"""
-        if not hasattr(self._local, 'connection') or self._local.connection is None:
-            self._local.connection = sqlite3.connect(self.db_path)
-            self._local.connection.row_factory = sqlite3.Row
-
-            # Set pragmas for better performance and safety
-            cursor = self._local.connection.cursor()
-            cursor.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging for better concurrency
-            cursor.execute("PRAGMA synchronous=NORMAL")  # Balance safety and performance
-            cursor.execute("PRAGMA busy_timeout=5000")  # Wait up to 5 seconds on locks
-            self._local.connection.commit()
-
-        return self._local.connection
-
-    def get_connection(self):
-        """
-        Get a database connection with improved concurrency handling.
-        This is a wrapper around _get_connection that adds retries.
-        """
-        # For most operations, we want to allow multiple readers
-        # This is just the basic connection fetching
-        return self._get_connection()
-
     def _execute_with_retry(self, operation_name, callback, retries=5, initial_delay=0.1):
         """
         Execute a database operation with retries on lock errors
@@ -1117,6 +1632,8 @@ class DatabaseManager:
 
     def shutdown(self):
         """Shutdown the database manager - stop background threads and close connections"""
+        self.logger.info("Starting database manager shutdown")
+
         # Stop the file processor
         self._file_processor_running = False
 
@@ -1125,6 +1642,38 @@ class DatabaseManager:
             self.logger.info("Waiting for file processor to finish...")
             self._file_processor_thread.join(timeout=5.0)
 
-        # Close connections
-        self._close_connections()
+            if self._file_processor_thread.is_alive():
+                self.logger.warning("File processor thread did not exit gracefully after timeout")
+
+        # Close all tracked connections
+        try:
+            with self._connections_lock:
+                connection_count = len(self._all_connections)
+                self.logger.info(f"Closing {connection_count} tracked database connections")
+
+                for conn in list(self._all_connections):
+                    try:
+                        conn.close()
+                        self._all_connections.remove(conn)
+                    except Exception as e:
+                        self.logger.warning(f"Error closing connection during shutdown: {str(e)}")
+
+                # Clear the set
+                self._all_connections.clear()
+        except Exception as e:
+            self.logger.error(f"Error closing tracked connections: {str(e)}")
+
+        # Close the thread-local connection as well
+        try:
+            if hasattr(self._local, 'connection') and self._local.connection is not None:
+                try:
+                    self._local.connection.close()
+                except Exception as e:
+                    self.logger.warning(f"Error closing thread-local connection: {str(e)}")
+                self._local.connection = None
+        except Exception as e:
+            self.logger.error(f"Error clearing thread-local connection: {str(e)}")
+
+        self.logger.info("Database manager shutdown complete")
+
 
