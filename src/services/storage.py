@@ -100,6 +100,22 @@ class SettingsManager:
         """Get the current settings"""
         return self.settings.copy()
 
+    @staticmethod
+    def get_cached_settings() -> Dict[str, Any]:
+        """
+        Static method to get cached settings without creating a new instance.
+        This is much more efficient for frequent access.
+        """
+        global _GLOBAL_SETTINGS_INSTANCE, _GLOBAL_SETTINGS_LOCK
+
+        with _GLOBAL_SETTINGS_LOCK:
+            if _GLOBAL_SETTINGS_INSTANCE is not None:
+                return _GLOBAL_SETTINGS_INSTANCE.settings.copy()
+
+        # No cached instance, create one (which will load settings)
+        instance = SettingsManager()
+        return instance.settings.copy()
+
     def update_settings(self, new_settings: Dict[str, Any]) -> None:
         """Update settings with new values"""
         self.logger.debug("Updating settings")
