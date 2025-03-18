@@ -1,11 +1,16 @@
 # src/models/db_manager.py
 """
-Database management utilities for the OpenAI Chat application.
+Improved database management utilities with simplified connection handling
+and robust transaction support.
 """
 
 import os
+import queue
+import random
 import sqlite3
-from typing import Dict, List, Any, Optional
+import threading
+import time
+from typing import Optional, Callable, Any, Dict, List, Tuple
 from datetime import datetime
 
 from PyQt6.QtCore import QUuid
@@ -18,184 +23,457 @@ logger = get_logger(__name__)
 
 
 class DatabaseManager:
-    """Handles SQLite database connections and operations"""
+    """
+    Handles SQLite database connections and operations with robust transaction support.
+    Uses a simplified connection approach with proper cleanup and error handling.
+    """
+
+    # Class variable for the singleton instance
+    _instance = None
+    _instance_lock = threading.RLock()
+
+    def __new__(cls, db_path=None):
+        """Singleton pattern to ensure only one database manager exists"""
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = super(DatabaseManager, cls).__new__(cls)
+                # Don't initialize here - just mark as not initialized
+                cls._instance._initialized = False
+        return cls._instance
 
     def __init__(self, db_path=None):
-        self.db_path = db_path or DATABASE_FILE
-        self.logger = get_logger(f"{__name__}.DatabaseManager")
+        """Initialize the database manager if not already initialized"""
+        with self.__class__._instance_lock:
+            if getattr(self, '_initialized', False):
+                return
 
-        # Create database directory if it doesn't exist
-        os.makedirs(DATABASE_DIR, exist_ok=True)
+            self._initialized = True
+            self.db_path = db_path or DATABASE_FILE
+            self.logger = get_logger(f"{__name__}.DatabaseManager")
 
-        # Initialize database schema
-        self.initialize_database()
+            # Create database directory if it doesn't exist
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+
+            # Main lock for database operations
+            self._db_lock = threading.RLock()
+
+            # Connection management with simpler approach
+            self._connection = None
+            self._connection_count = 0
+            self._last_connection_time = 0
+
+            # File processor for attachments
+            self._file_queue = queue.Queue()
+            self._file_processor_running = False
+            self._file_processor_thread = None
+
+            # Initialize database schema
+            self._ensure_database_schema()
+
+            # Start the file processor thread
+            self._start_file_processor()
+
+            self.logger.info(f"Database manager initialized with database at {self.db_path}")
+
+    def _ensure_database_schema(self):
+        """Initialize database schema with better error handling and support for Gemini"""
+        try:
+            # Use a dedicated connection for schema initialization
+            conn = sqlite3.connect(self.db_path, timeout=60.0)
+            cursor = conn.cursor()
+
+            # Enable foreign keys
+            cursor.execute("PRAGMA foreign_keys = ON")
+
+            # Check current schema version
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                )
+            ''')
+
+            cursor.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1")
+            result = cursor.fetchone()
+            current_version = result[0] if result else 0
+
+            # If we're at version 0, create the initial schema
+            if current_version < 1:
+                cursor.executescript('''
+                    -- Conversations table to store conversation metadata
+                    CREATE TABLE IF NOT EXISTS conversations (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        modified_at TEXT NOT NULL,
+                        current_node_id TEXT NOT NULL,
+                        system_message TEXT NOT NULL
+                    );
+
+                    -- Messages table to store individual messages
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id TEXT PRIMARY KEY,
+                        conversation_id TEXT NOT NULL,
+                        parent_id TEXT,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        timestamp TEXT NOT NULL,
+                        response_id TEXT,
+                        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+                        FOREIGN KEY (parent_id) REFERENCES messages(id) ON DELETE CASCADE
+                    );
+
+                    -- Message metadata table for model info, parameters, etc.
+                    CREATE TABLE IF NOT EXISTS message_metadata (
+                        message_id TEXT NOT NULL,
+                        metadata_type TEXT NOT NULL,
+                        metadata_value TEXT NOT NULL,
+                        PRIMARY KEY (message_id, metadata_type),
+                        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+                    );
+
+                    -- Reasoning steps table for Response API reasoning
+                    CREATE TABLE IF NOT EXISTS reasoning_steps (
+                        id TEXT PRIMARY KEY,
+                        message_id TEXT NOT NULL,
+                        step_name TEXT NOT NULL,
+                        step_content TEXT NOT NULL,
+                        step_order INTEGER NOT NULL,
+                        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+                    );
+
+                    -- File attachments table with optimized storage
+                    CREATE TABLE IF NOT EXISTS file_attachments (
+                        id TEXT PRIMARY KEY,
+                        message_id TEXT NOT NULL,
+                        file_name TEXT NOT NULL, 
+                        display_name TEXT,
+                        mime_type TEXT NOT NULL,
+                        token_count INTEGER NOT NULL,
+                        file_size INTEGER NOT NULL DEFAULT 0,
+                        file_hash TEXT NOT NULL DEFAULT "",
+                        storage_type TEXT NOT NULL DEFAULT 'database',
+                        content_preview TEXT,
+                        storage_path TEXT,
+                        content TEXT,
+                        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+                    );
+
+                    -- File contents table for large files
+                    CREATE TABLE IF NOT EXISTS file_contents (
+                        file_id TEXT PRIMARY KEY,
+                        content TEXT NOT NULL,
+                        FOREIGN KEY (file_id) REFERENCES file_attachments(id) ON DELETE CASCADE
+                    );
+
+                    -- Indices for faster lookups
+                    CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+                    CREATE INDEX IF NOT EXISTS idx_messages_parent_id ON messages(parent_id);
+                    CREATE INDEX IF NOT EXISTS idx_message_metadata_message_id ON message_metadata(message_id);
+                    CREATE INDEX IF NOT EXISTS idx_file_attachments_message_id ON file_attachments(message_id);
+                    CREATE INDEX IF NOT EXISTS idx_file_attachments_file_hash ON file_attachments(file_hash);
+                    CREATE INDEX IF NOT EXISTS idx_reasoning_steps_message_id ON reasoning_steps(message_id);
+                    CREATE INDEX IF NOT EXISTS idx_file_contents_file_id ON file_contents(file_id);
+                ''')
+
+                # Update schema version to 1
+                cursor.execute(
+                    "INSERT INTO schema_version (version, applied_at) VALUES (1, ?)",
+                    (datetime.now().isoformat(),)
+                )
+                current_version = 1
+                self.logger.info("Database schema initialized to version 1")
+
+            # If we're at version 1, add provider column to the model_info metadata
+            if current_version < 2:
+                # We can't directly add columns to metadata since it's a key-value store
+                # Instead, we'll store provider info in the metadata table with a new type
+
+                # Add an index to make searching for provider metadata faster
+                cursor.execute('''
+                    CREATE INDEX IF NOT EXISTS idx_message_metadata_type 
+                    ON message_metadata(metadata_type);
+                ''')
+
+                # Update schema version to 2
+                cursor.execute(
+                    "INSERT INTO schema_version (version, applied_at) VALUES (2, ?)",
+                    (datetime.now().isoformat(),)
+                )
+                self.logger.info("Database schema updated to version 2 with provider support")
+
+            # Commit all changes
+            conn.commit()
+            conn.close()
+
+            self.logger.info(f"Database schema is at version {current_version}")
+
+        except Exception as e:
+            self.logger.error(f"Error initializing database schema: {str(e)}")
+            # Log but don't propagate the error to allow for recovery later
 
     def get_connection(self):
-        """Get a database connection with row factory for dictionary access"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        """
+        Get a database connection with improved reliability and error handling.
+        Always returns a valid connection or raises an exception.
+        """
+        with self._db_lock:
+            # Check if we have a valid connection
+            if self._connection and self._is_connection_valid(self._connection):
+                self._connection_count += 1
+                self._last_connection_time = time.time()  # Update last access time
+                return self._connection
+
+            # If we get here, we need a new connection
+            # First close any existing invalid connection
+            if self._connection:
+                try:
+                    self._connection.close()
+                except Exception as e:
+                    self.logger.warning(f"Error closing invalid connection: {str(e)}")
+                finally:
+                    self._connection = None
+                    self._connection_count = 0
+
+            # Create a new connection with several retries
+            max_retries = 3
+            attempts = 0
+            last_error = None
+
+            while attempts < max_retries:
+                try:
+                    # Create new connection with increased timeout
+                    conn = sqlite3.connect(self.db_path, timeout=60.0)
+                    conn.row_factory = sqlite3.Row
+
+                    # Enable WAL mode and foreign keys
+                    cursor = conn.cursor()
+                    cursor.execute("PRAGMA journal_mode=WAL")
+                    cursor.execute("PRAGMA synchronous=NORMAL")
+                    cursor.execute("PRAGMA foreign_keys=ON")
+                    cursor.execute("PRAGMA busy_timeout=30000")  # 30-second timeout
+                    cursor.execute("PRAGMA temp_store=MEMORY")  # Store temp tables in memory
+
+                    # Verify the connection works by doing a simple query
+                    result = cursor.execute("SELECT 1").fetchone()
+                    if not result or result[0] != 1:
+                        raise Exception("Connection test failed")
+
+                    # Connection is good - store it
+                    self._connection = conn
+                    self._connection_count = 1
+                    self._last_connection_time = time.time()
+
+                    self.logger.debug("Created new database connection")
+                    return conn
+
+                except sqlite3.OperationalError as e:
+                    # Handle database lock errors with retry
+                    if "database is locked" in str(e):
+                        attempts += 1
+                        last_error = e
+                        self.logger.warning(f"Database locked, retry {attempts}/{max_retries}")
+
+                        # Wait with exponential backoff
+                        retry_delay = 0.1 * (2 ** attempts) * (0.5 + random.random())
+                        time.sleep(retry_delay)
+                    else:
+                        # Other SQLite errors - log and raise
+                        self.logger.error(f"SQLite error creating connection: {str(e)}")
+                        raise
+
+                except Exception as e:
+                    # Handle general errors
+                    self.logger.error(f"Error creating database connection: {str(e)}")
+                    raise
+
+            # If we've exhausted retries
+            self.logger.error(f"Failed to create database connection after {max_retries} attempts")
+            if last_error:
+                raise last_error
+            else:
+                raise Exception("Failed to create database connection")
+
+    def _is_connection_valid(self, conn):
+        """Test if a connection is valid with improved error handling"""
+        try:
+            cursor = conn.cursor()
+            result = cursor.execute("SELECT 1").fetchone()
+            return result is not None and result[0] == 1
+        except Exception as e:
+            self.logger.warning(f"Connection validity check failed: {str(e)}")
+            return False
+
+
+    def release_connection(self, conn):
+        """
+        Release a connection. With this implementation, we don't actually
+        close the connection, just decrement the usage count.
+        """
+        with self._db_lock:
+            if conn is self._connection:
+                self._connection_count -= 1
+
+                # Only close if connection is old and not in use
+                if self._connection_count <= 0:
+                    # Check if connection is old (idle for more than 5 minutes)
+                    idle_time = time.time() - self._last_connection_time
+                    if idle_time > 300:  # 5 minutes
+                        try:
+                            conn.close()
+                            self._connection = None
+                            self.logger.debug("Closed idle database connection")
+                        except:
+                            pass
+
+    def execute_transaction(self, callback, retry_count=3):
+        """
+        Execute a callback within a transaction with retry logic.
+
+        Args:
+            callback: Function that takes a database connection and performs operations
+            retry_count: Number of retries on database lock errors
+
+        Returns:
+            The result of the callback function
+        """
+        conn = None
+        attempts = 0
+        delay = 0.1  # Initial delay in seconds
+
+        while attempts < retry_count:
+            try:
+                conn = self.get_connection()
+
+                # Start transaction
+                try:
+                    result = callback(conn)
+                    conn.commit()
+                    return result
+                except sqlite3.OperationalError as e:
+                    # Handle database lock errors
+                    if "database is locked" in str(e) and attempts < retry_count - 1:
+                        conn.rollback()
+                        attempts += 1
+                        self.logger.warning(f"Database locked, retry {attempts}/{retry_count}")
+                        time.sleep(delay * (2 ** attempts))  # Exponential backoff
+                    else:
+                        conn.rollback()
+                        raise
+                except Exception as e:
+                    conn.rollback()
+                    raise
+            except Exception as e:
+                self.logger.error(f"Transaction error: {str(e)}")
+                raise
+            finally:
+                if conn:
+                    self.release_connection(conn)
+
+        raise sqlite3.OperationalError(f"Database transaction failed after {retry_count} retries")
+
+    def execute_query(self, query, params=(), fetch_mode='all'):
+        """
+        Execute a simple query with proper transaction handling.
+
+        Args:
+            query: SQL query to execute
+            params: Parameters for the query
+            fetch_mode: 'all', 'one', or 'none' for result fetching
+
+        Returns:
+            Query results based on fetch_mode
+        """
+
+        def _execute(conn):
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+
+            if fetch_mode == 'all':
+                return cursor.fetchall()
+            elif fetch_mode == 'one':
+                return cursor.fetchone()
+            else:  # 'none'
+                return None
+
+        return self.execute_transaction(_execute)
+
+    def get_node_children(self, node_id):
+        """Get children of a node with transaction safety"""
+        try:
+            def _get_children(conn):
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT * FROM messages WHERE parent_id = ?',
+                    (node_id,)
+                )
+                return cursor.fetchall()
+
+            rows = self.execute_transaction(_get_children)
+            children = []
+
+            for row in rows:
+                try:
+                    child = self._create_node_from_db_row(row)
+                    if child:
+                        children.append(child)
+                except Exception as e:
+                    self.logger.warning(f"Error creating child node: {str(e)}")
+
+            return children
+        except Exception as e:
+            self.logger.error(f"Error getting children for node {node_id}: {str(e)}")
+            return []
 
     def get_path_to_root(self, node_id):
-        """Get the path from a node to the root"""
+        """Get path from node to root with transaction safety"""
         if not node_id:
             self.logger.error("Attempted to get path to root with None node_id")
             return []
 
-        conn = None
         try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
+            def _get_path(conn):
+                cursor = conn.cursor()
+                path = []
+                current_id = node_id
 
-            path = []
-            current_id = node_id
+                while current_id:
+                    cursor.execute(
+                        'SELECT * FROM messages WHERE id = ?',
+                        (current_id,)
+                    )
+                    message = cursor.fetchone()
 
-            while current_id:
-                # Get the current node
-                cursor.execute(
-                    'SELECT * FROM messages WHERE id = ?',
-                    (current_id,)
-                )
-                message = cursor.fetchone()
+                    if not message:
+                        break
 
-                if not message:
-                    self.logger.warning(f"No message found for ID {current_id}")
-                    break
-
-                # Create node object
-                try:
+                    # Create node object
                     node = self._create_node_from_db_row(message)
                     if node:
-                        # Add to path (at beginning to maintain root-to-node order)
                         path.insert(0, node)
-                    else:
-                        self.logger.error(f"Failed to create node from row for ID {current_id}")
-                        break
-                except Exception as e:
-                    self.logger.error(f"Error creating node from row for ID {current_id}: {str(e)}")
-                    break
 
-                # Move to parent
-                current_id = message['parent_id']
+                    # Move to parent
+                    current_id = message['parent_id']
 
-            # Extra validation before returning
-            valid_path = [node for node in path if node is not None]
-            if len(valid_path) != len(path):
-                self.logger.warning(f"Filtered {len(path) - len(valid_path)} None nodes from path")
+                return path
 
-            return valid_path
-
+            return self.execute_transaction(_get_path)
         except Exception as e:
             self.logger.error(f"Error getting path to root for node {node_id}: {str(e)}")
-            return []  # Return empty list instead of None on error
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception as e:
-                    self.logger.error(f"Error closing connection: {str(e)}")
-
-    def get_node_children(self, node_id):
-        """Get children of a node"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-
-        try:
-            cursor.execute(
-                'SELECT * FROM messages WHERE parent_id = ?',
-                (node_id,)
-            )
-
-            children = []
-            for row in cursor.fetchall():
-                child = self._create_node_from_db_row(row)
-                children.append(child)
-
-            return children
-
-        except Exception as e:
-            self.logger.error(f"Error getting children for node {node_id}")
-            log_exception(self.logger, e, f"Failed to get node children")
             return []
-        finally:
-            conn.close()
-
-    def get_node_metadata(self, node_id):
-        """Public method to get metadata for a node - forwards to _get_node_metadata"""
-        return self._get_node_metadata(node_id)
-
-    # Add this method to the DatabaseManager class
-    def get_message(self, message_id):
-        """Get a message by ID"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-
-        try:
-            cursor.execute(
-                'SELECT * FROM messages WHERE id = ?',
-                (message_id,)
-            )
-            message = cursor.fetchone()
-
-            if not message:
-                return None
-
-            return self._create_node_from_db_row(message)
-
-        except Exception as e:
-            self.logger.error(f"Error getting message {message_id}")
-            log_exception(self.logger, e, f"Failed to get message")
-            return None
-        finally:
-            conn.close()
-
-    def debug_print_conversations(self):
-        """Print all conversations in the database for debugging"""
-        # if not DEBUG_MODE:
-        #     return
-        conn = self.get_connection()
-        cursor = conn.cursor()
-
-        try:
-            cursor.execute('SELECT * FROM conversations')
-            conversations = cursor.fetchall()
-
-            print(f"===== DEBUG: Found {len(conversations)} conversations in database =====")
-            for conv in conversations:
-                print(f"ID: {conv['id']}, Name: {conv['name']}, Modified: {conv['modified_at']}")
-
-                # Count messages in this conversation
-                cursor.execute('SELECT COUNT(*) FROM messages WHERE conversation_id = ?', (conv['id'],))
-                message_count = cursor.fetchone()[0]
-                print(f"  Messages: {message_count}")
-
-            print("=====================================================")
-
-        except Exception as e:
-            print(f"DEBUG: Error querying conversations: {str(e)}")
-        finally:
-            conn.close()
 
     def _create_node_from_db_row(self, row):
-        """Create a DBMessageNode from a database row"""
+        """Create a node object from a database row"""
         from src.models.db_conversation import DBMessageNode
 
         try:
-            # Get metadata - handle both 3-tuple and 4-tuple returns for backward compatibility
-            metadata_result = self._get_node_metadata(row['id'])
-
-            # Handle different tuple lengths from _get_node_metadata
-            if len(metadata_result) == 4:
-                model_info, parameters, token_usage, reasoning_steps = metadata_result
-            else:
-                # Fall back to old 3-tuple format
-                model_info, parameters, token_usage = metadata_result
-                reasoning_steps = []
+            # Get metadata
+            model_info, parameters, token_usage, reasoning_steps = self._get_node_metadata(row['id'])
 
             # Get file attachments
             attached_files = self._get_node_attachments(row['id'])
 
-            # Create the node - now passing response_id from the database row
+            # Create the node
             node = DBMessageNode(
                 id=row['id'],
                 conversation_id=row['conversation_id'],
@@ -207,10 +485,10 @@ class DatabaseManager:
                 parameters=parameters,
                 token_usage=token_usage,
                 attached_files=attached_files,
-                response_id=row['response_id']  # Add the response_id parameter
+                response_id=row['response_id']
             )
 
-            # Set database manager for lazy loading children
+            # Set database manager for lazy loading
             node._db_manager = self
 
             # Add reasoning steps if available
@@ -220,24 +498,21 @@ class DatabaseManager:
             return node
         except Exception as e:
             self.logger.error(f"Error creating node from row: {str(e)}")
-            return None  # Return None rather than crashing
+            return None
 
     def _get_node_metadata(self, node_id):
-        """Get metadata for a node with improved error handling"""
+        """Get metadata for a node with transaction safety"""
         if not node_id:
-            self.logger.error("Attempted to get metadata with None node_id")
             return {}, {}, {}, []
 
-        conn = self.get_connection()
-        cursor = conn.cursor()
-
         try:
-            model_info = {}
-            parameters = {}
-            token_usage = {}
-            reasoning_steps = []
+            def _get_metadata(conn):
+                cursor = conn.cursor()
+                model_info = {}
+                parameters = {}
+                token_usage = {}
+                reasoning_steps = []
 
-            try:
                 cursor.execute(
                     'SELECT metadata_type, metadata_value FROM message_metadata WHERE message_id = ?',
                     (node_id,)
@@ -247,329 +522,191 @@ class DatabaseManager:
                 for row in cursor.fetchall():
                     try:
                         metadata_type = row['metadata_type']
+                        metadata_value = json.loads(row['metadata_value'])
 
-                        # Special handling for reasoning steps
                         if metadata_type == 'reasoning_steps':
-                            try:
-                                reasoning_steps = json.loads(row['metadata_value'])
-                                continue
-                            except Exception as e:
-                                self.logger.error(f"Error parsing reasoning steps: {e}")
-                                continue
-
-                        # Regular metadata handling
-                        try:
-                            metadata_value = json.loads(row['metadata_value'])
-
-                            if metadata_type.startswith('model_info.'):
-                                key = metadata_type.replace('model_info.', '')
-                                model_info[key] = metadata_value
-                            elif metadata_type.startswith('parameters.'):
-                                key = metadata_type.replace('parameters.', '')
-                                parameters[key] = metadata_value
-                            elif metadata_type.startswith('token_usage.'):
-                                key = metadata_type.replace('token_usage.', '')
-                                token_usage[key] = metadata_value
-                        except Exception as e:
-                            self.logger.error(f"Error parsing metadata {metadata_type}: {e}")
+                            reasoning_steps = metadata_value
+                        elif metadata_type.startswith('model_info.'):
+                            key = metadata_type.replace('model_info.', '')
+                            model_info[key] = metadata_value
+                        elif metadata_type.startswith('parameters.'):
+                            key = metadata_type.replace('parameters.', '')
+                            parameters[key] = metadata_value
+                        elif metadata_type.startswith('token_usage.'):
+                            key = metadata_type.replace('token_usage.', '')
+                            token_usage[key] = metadata_value
                     except Exception as e:
-                        self.logger.error(f"Error processing metadata row: {e}")
-            except Exception as e:
-                self.logger.error(f"Error querying metadata: {e}")
+                        self.logger.error(f"Error processing metadata: {str(e)}")
 
-            # Return tuple including reasoning steps
-            return model_info, parameters, token_usage, reasoning_steps
+                return model_info, parameters, token_usage, reasoning_steps
 
-        finally:
-            conn.close()
+            return self.execute_transaction(_get_metadata)
+        except Exception as e:
+            self.logger.error(f"Error getting metadata for node {node_id}: {str(e)}")
+            return {}, {}, {}, []
 
     def _get_node_attachments(self, node_id):
-        """Get file attachments for a node"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-
+        """Get file attachments with transaction safety"""
         try:
-            attached_files = []
+            def _get_attachments(conn):
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT * FROM file_attachments WHERE message_id = ?',
+                    (node_id,)
+                )
 
-            cursor.execute(
-                'SELECT * FROM file_attachments WHERE message_id = ?',
-                (node_id,)
-            )
+                attachments = []
+                for row in cursor.fetchall():
+                    attachments.append({
+                        'file_name': row['file_name'],
+                        'mime_type': row['mime_type'],
+                        'content': row['content'],
+                        'token_count': row['token_count']
+                    })
 
-            for row in cursor.fetchall():
-                attached_files.append({
-                    'file_name': row['file_name'],
-                    'mime_type': row['mime_type'],
-                    'content': row['content'],
-                    'token_count': row['token_count']
-                })
+                return attachments
 
-            return attached_files
-
-        finally:
-            conn.close()
-
-    """
-    Database schema migration utility to safely upgrade existing databases.
-    """
-
-    def initialize_database(self):
-        """Create database tables if they don't exist with safe migration for existing DBs"""
-        self.logger.debug(f"Initializing database at {self.db_path}")
-
-        try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-
-            # Create base tables if they don't exist
-            cursor.executescript('''
-                -- Conversations table to store conversation metadata
-                CREATE TABLE IF NOT EXISTS conversations (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    modified_at TEXT NOT NULL,
-                    current_node_id TEXT NOT NULL,
-                    system_message TEXT NOT NULL
-                );
-
-                -- Messages table to store individual messages
-                CREATE TABLE IF NOT EXISTS messages (
-                    id TEXT PRIMARY KEY,
-                    conversation_id TEXT NOT NULL,
-                    parent_id TEXT,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    response_id TEXT,  -- Store OpenAI Response ID
-                    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
-                    FOREIGN KEY (parent_id) REFERENCES messages(id) ON DELETE CASCADE
-                );
-
-                -- Message metadata table for model info, parameters, etc.
-                CREATE TABLE IF NOT EXISTS message_metadata (
-                    message_id TEXT NOT NULL,
-                    metadata_type TEXT NOT NULL,
-                    metadata_value TEXT NOT NULL,
-                    PRIMARY KEY (message_id, metadata_type),
-                    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
-                );
-
-                -- Reasoning steps table for Response API reasoning
-                CREATE TABLE IF NOT EXISTS reasoning_steps (
-                    id TEXT PRIMARY KEY,
-                    message_id TEXT NOT NULL,
-                    step_name TEXT NOT NULL,
-                    step_content TEXT NOT NULL,
-                    step_order INTEGER NOT NULL,
-                    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
-                );
-            ''')
-
-            # Check if file_attachments table exists
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='file_attachments'")
-            table_exists = cursor.fetchone() is not None
-
-            if not table_exists:
-                # Create new table with all columns if it doesn't exist
-                cursor.executescript('''
-                    -- File attachments table with optimized storage
-                    CREATE TABLE IF NOT EXISTS file_attachments (
-                        id TEXT PRIMARY KEY,
-                        message_id TEXT NOT NULL,
-                        file_name TEXT NOT NULL,
-                        display_name TEXT, -- For relative paths in directory imports
-                        mime_type TEXT NOT NULL,
-                        token_count INTEGER NOT NULL,
-                        file_size INTEGER NOT NULL,
-                        file_hash TEXT NOT NULL, -- For identifying and caching files
-                        storage_type TEXT NOT NULL DEFAULT 'database', -- 'database', 'disk', or 'hybrid'
-                        content_preview TEXT, -- First 4KB for preview
-                        storage_path TEXT, -- Path for disk storage
-                        content TEXT, -- File content (will be moved to separate table in future)
-                        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
-                    );
-                ''')
-            else:
-                # Table exists - check columns and add missing ones
-                self.logger.info("File attachments table exists, checking for missing columns")
-
-                # Get existing columns
-                cursor.execute("PRAGMA table_info(file_attachments)")
-                existing_columns = [row['name'] for row in cursor.fetchall()]
-
-                # Define required columns and their definitions
-                required_columns = {
-                    'display_name': 'TEXT',
-                    'file_size': 'INTEGER NOT NULL DEFAULT 0',
-                    'file_hash': 'TEXT NOT NULL DEFAULT ""',
-                    'storage_type': "TEXT NOT NULL DEFAULT 'database'",
-                    'content_preview': 'TEXT',
-                    'storage_path': 'TEXT'
-                }
-
-                # Add missing columns
-                for column, definition in required_columns.items():
-                    if column not in existing_columns:
-                        self.logger.info(f"Adding missing column: {column}")
-                        try:
-                            cursor.execute(f"ALTER TABLE file_attachments ADD COLUMN {column} {definition}")
-                        except Exception as e:
-                            self.logger.error(f"Error adding column {column}: {e}")
-
-                # For existing rows, update file_hash based on content
-                if 'file_hash' in required_columns and 'file_hash' not in existing_columns:
-                    self.logger.info("Updating file_hash for existing attachments")
-                    try:
-                        # First check if content column exists
-                        if 'content' in existing_columns:
-                            cursor.execute("SELECT id, content FROM file_attachments")
-                            for row in cursor.fetchall():
-                                import hashlib
-                                # Generate hash from content
-                                content_hash = hashlib.sha256(row['content'].encode('utf-8')).hexdigest()
-                                cursor.execute(
-                                    "UPDATE file_attachments SET file_hash = ? WHERE id = ?",
-                                    (content_hash, row['id'])
-                                )
-                    except Exception as e:
-                        self.logger.error(f"Error updating file_hash values: {e}")
-
-                # Update file_size for existing rows if needed
-                if 'file_size' in required_columns and 'file_size' not in existing_columns:
-                    self.logger.info("Updating file_size for existing attachments")
-                    try:
-                        if 'content' in existing_columns:
-                            cursor.execute("SELECT id, content FROM file_attachments")
-                            for row in cursor.fetchall():
-                                content_size = len(row['content'].encode('utf-8'))
-                                cursor.execute(
-                                    "UPDATE file_attachments SET file_size = ? WHERE id = ?",
-                                    (content_size, row['id'])
-                                )
-                    except Exception as e:
-                        self.logger.error(f"Error updating file_size values: {e}")
-
-                # Update content_preview for existing rows
-                if 'content_preview' in required_columns and 'content_preview' not in existing_columns:
-                    self.logger.info("Updating content_preview for existing attachments")
-                    try:
-                        if 'content' in existing_columns:
-                            cursor.execute("SELECT id, content FROM file_attachments")
-                            for row in cursor.fetchall():
-                                # First 4KB for preview
-                                preview = row['content'][:4096] if row['content'] else ''
-                                cursor.execute(
-                                    "UPDATE file_attachments SET content_preview = ? WHERE id = ?",
-                                    (preview, row['id'])
-                                )
-                    except Exception as e:
-                        self.logger.error(f"Error updating content_preview values: {e}")
-
-            # Create indices if they don't exist
-            cursor.executescript('''
-                -- Indices for faster lookups
-                CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
-                CREATE INDEX IF NOT EXISTS idx_messages_parent_id ON messages(parent_id);
-                CREATE INDEX IF NOT EXISTS idx_message_metadata_message_id ON message_metadata(message_id);
-                CREATE INDEX IF NOT EXISTS idx_file_attachments_message_id ON file_attachments(message_id);
-                CREATE INDEX IF NOT EXISTS idx_file_attachments_file_hash ON file_attachments(file_hash);
-                CREATE INDEX IF NOT EXISTS idx_reasoning_steps_message_id ON reasoning_steps(message_id);
-            ''')
-
-            # Check if the file_contents table needs to be created
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='file_contents'")
-            if cursor.fetchone() is None:
-                cursor.executescript('''
-                    -- Separate content table for large files
-                    CREATE TABLE IF NOT EXISTS file_contents (
-                        file_id TEXT PRIMARY KEY,
-                        content TEXT NOT NULL,
-                        FOREIGN KEY (file_id) REFERENCES file_attachments(id) ON DELETE CASCADE
-                    );
-
-                    -- Index for faster lookups
-                    CREATE INDEX IF NOT EXISTS idx_file_contents_file_id ON file_contents(file_id);
-                ''')
-
-            conn.commit()
-            conn.close()
-            self.logger.info("Database schema initialized/migrated successfully")
-
+            return self.execute_transaction(_get_attachments)
         except Exception as e:
-            self.logger.error("Error initializing database")
-            log_exception(self.logger, e, "Database initialization failed")
-            raise
+            self.logger.error(f"Error getting attachments for node {node_id}: {str(e)}")
+            return []
+
+    def get_message(self, message_id):
+        """Get a message by ID with transaction safety"""
+        try:
+            def _get_message(conn):
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT * FROM messages WHERE id = ?',
+                    (message_id,)
+                )
+                return cursor.fetchone()
+
+            row = self.execute_transaction(_get_message)
+            if not row:
+                return None
+
+            return self._create_node_from_db_row(row)
+        except Exception as e:
+            self.logger.error(f"Error getting message {message_id}: {str(e)}")
+            return None
 
     def add_file_attachment(self, message_id, file_info, storage_type='auto'):
-        """
-        Add a file attachment with optimized storage strategy
+        """Queue a file attachment for processing"""
+        # Create a result queue
+        result_queue = queue.Queue()
 
-        Args:
-            message_id: ID of the message to attach the file to
-            file_info: Dictionary with file information
-            storage_type: 'database', 'disk', 'hybrid', or 'auto'
+        # Create placeholder file ID
+        file_id = str(QUuid.createUuid())
 
-        Returns:
-            ID of the created attachment
-        """
-        conn = self.get_connection()
-        cursor = conn.cursor()
+        # Add to processing queue
+        self._file_queue.put((message_id, file_info, storage_type, result_queue))
 
         try:
-            from PyQt6.QtCore import QUuid
+            # Wait for result with timeout
+            success, result = result_queue.get(timeout=30.0)
 
-            file_id = str(QUuid.createUuid())
-            file_name = file_info['file_name']
-            display_name = file_info.get('display_name', file_name)
-            mime_type = file_info.get('mime_type', 'text/plain')
-            token_count = file_info.get('token_count', 0)
-            file_size = file_info.get('size', 0)
-            file_hash = file_info.get('file_hash', '')
-            content = file_info.get('content', '')
+            if success:
+                return result
+            else:
+                raise Exception(f"Failed to add file attachment: {result}")
+        except queue.Empty:
+            raise Exception("Timeout waiting for file attachment to be processed")
 
-            # If no file hash provided, calculate one
-            if not file_hash and content:
+    def _start_file_processor(self):
+        """Start the background thread for processing file attachments"""
+        if self._file_processor_running:
+            return
+
+        self._file_processor_running = True
+
+        def process_file_queue():
+            self.logger.info("File attachment processor thread started")
+
+            while self._file_processor_running:
+                try:
+                    # Get next task with timeout
+                    try:
+                        task = self._file_queue.get(timeout=5.0)
+                    except queue.Empty:
+                        continue
+
+                    try:
+                        message_id, file_info, storage_type, result_queue = task
+
+                        # Process file attachment
+                        file_id = self._process_file_attachment(message_id, file_info, storage_type)
+
+                        # Return result
+                        if result_queue:
+                            result_queue.put((True, file_id))
+                    except Exception as e:
+                        self.logger.error(f"Error processing file attachment: {str(e)}")
+                        if result_queue:
+                            result_queue.put((False, str(e)))
+                    finally:
+                        self._file_queue.task_done()
+                except Exception as e:
+                    self.logger.error(f"Error in file processor thread: {str(e)}")
+                    time.sleep(0.1)
+
+        # Start processor thread
+        self._file_processor_thread = threading.Thread(
+            target=process_file_queue,
+            name="FileAttachmentProcessor",
+            daemon=True
+        )
+        self._file_processor_thread.start()
+
+    def _process_file_attachment(self, message_id, file_info, storage_type='auto'):
+        """Process a file attachment with its own transaction"""
+        try:
+            def _process_file(conn):
                 import hashlib
-                file_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
 
-            # Determine storage strategy if auto
-            if storage_type == 'auto':
-                if file_size > 1024 * 1024:  # > 1MB
-                    storage_type = 'disk'
-                else:
-                    storage_type = 'database'
+                cursor = conn.cursor()
+                file_id = str(QUuid.createUuid())
+                file_name = file_info['file_name']
+                display_name = file_info.get('display_name', file_name)
+                mime_type = file_info.get('mime_type', 'text/plain')
+                token_count = file_info.get('token_count', 0)
+                file_size = file_info.get('size', 0)
+                content = file_info.get('content', '')
 
-            # Generate a preview (first 4KB)
-            content_preview = content[:4096] if content else ''
+                # Calculate file hash if not provided
+                file_hash = file_info.get('file_hash', '')
+                if not file_hash and content:
+                    file_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
 
-            storage_path = None
+                # Determine storage strategy
+                content_too_large = len(content) > 2 * 1024 * 1024  # 2MB
 
-            # If disk storage, save to disk
-            if storage_type in ('disk', 'hybrid'):
-                # Import here to avoid circular imports
-                from src.utils.file_utils import FileCacheManager
+                if storage_type == 'auto':
+                    if content_too_large or file_size > 1024 * 1024:  # > 1MB
+                        storage_type = 'disk'
+                    else:
+                        storage_type = 'database'
 
-                # Get cache manager
-                cache_manager = FileCacheManager()
+                # Generate preview (first 4KB)
+                content_preview = content[:4096] if content else ''
 
-                # Cache the file
-                storage_path = cache_manager.cache_file(content, file_hash)
+                storage_path = None
 
-                # For hybrid, we keep content in the database
-                # For disk, we just store the path and free the memory
-                if storage_type == 'disk':
-                    content = None  # Free memory
+                # If disk storage, save to disk
+                if storage_type in ('disk', 'hybrid'):
+                    from src.utils.file_utils import FileCacheManager
 
-            # Check which version of the table we're working with
-            cursor.execute("PRAGMA table_info(file_attachments)")
-            columns = [row['name'] for row in cursor.fetchall()]
+                    # Get cache manager
+                    cache_manager = FileCacheManager()
 
-            # Determine if we should use the old or new schema
-            using_new_schema = all(col in columns for col in ['file_hash', 'storage_type', 'content_preview'])
+                    # Cache the file
+                    storage_path = cache_manager.cache_file(content, file_hash)
 
-            if using_new_schema:
-                # Use new optimized schema
+                    # Free memory for disk-only storage
+                    if storage_type == 'disk':
+                        content = None
+
+                # Insert into file_attachments
                 cursor.execute(
                     '''
                     INSERT INTO file_attachments
@@ -581,12 +718,11 @@ class DatabaseManager:
                      file_size, file_hash, storage_type, content_preview, storage_path)
                 )
 
-                # If database or hybrid storage, save content to separate table
+                # Store content in separate table if needed
                 if storage_type in ('database', 'hybrid') and content:
                     # Check if file_contents table exists
                     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='file_contents'")
                     if cursor.fetchone():
-                        # Use the separate content table
                         cursor.execute(
                             '''
                             INSERT INTO file_contents (file_id, content)
@@ -595,7 +731,7 @@ class DatabaseManager:
                             (file_id, content)
                         )
                     else:
-                        # Fall back to storing in main table
+                        # Fall back to main table
                         cursor.execute(
                             '''
                             UPDATE file_attachments SET content = ?
@@ -603,202 +739,133 @@ class DatabaseManager:
                             ''',
                             (content, file_id)
                         )
-            else:
-                # Fall back to original schema
-                cursor.execute(
-                    '''
-                    INSERT INTO file_attachments (id, message_id, file_name, mime_type, content, token_count)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ''',
-                    (file_id, message_id, file_name, mime_type, content, token_count)
-                )
 
-            conn.commit()
-            return file_id
+                return file_id
 
+            return self.execute_transaction(_process_file)
         except Exception as e:
-            conn.rollback()
-            self.logger.error(f"Error adding file attachment: {e}")
+            self.logger.error(f"Error processing file attachment: {str(e)}")
             raise
 
-        finally:
-            conn.close()
-
-    def get_file_attachment(self, file_id):
-        """
-        Get a file attachment by ID with efficient content loading
-
-        Args:
-            file_id: ID of the attachment
-
-        Returns:
-            Dictionary with file information
-        """
-        conn = self.get_connection()
-        cursor = conn.cursor()
+    def verify_database_health(self):
+        """Perform a comprehensive health check on the database"""
+        self.logger.info("Performing database health check")
+        issues_found = 0
 
         try:
-            # First check if we have the new schema
-            cursor.execute("PRAGMA table_info(file_attachments)")
-            columns = [row['name'] for row in cursor.fetchall()]
-            using_new_schema = all(col in columns for col in ['file_hash', 'storage_type', 'content_preview'])
+            # Check if database file exists
+            import os
+            if not os.path.exists(self.db_path):
+                self.logger.error(f"Database file not found at {self.db_path}")
+                os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+                issues_found += 1
 
-            if using_new_schema:
-                # Get attachment metadata
-                cursor.execute(
-                    '''
-                    SELECT * FROM file_attachments
-                    WHERE id = ?
-                    ''',
-                    (file_id,)
-                )
+            # Try a test connection
+            conn = None
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30.0)
+                conn.row_factory = sqlite3.Row
+
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                result = cursor.fetchone()
+
+                if result and result[0] == 1:
+                    self.logger.info("Database connection test passed")
+                else:
+                    self.logger.warning("Database connection test returned unexpected result")
+                    issues_found += 1
+
+                # Check schema
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = [row['name'] for row in cursor.fetchall()]
+
+                expected_tables = [
+                    'conversations', 'messages', 'message_metadata',
+                    'reasoning_steps', 'file_attachments'
+                ]
+
+                missing_tables = [t for t in expected_tables if t not in tables]
+                if missing_tables:
+                    self.logger.warning(f"Missing tables in database: {', '.join(missing_tables)}")
+                    issues_found += 1
+                else:
+                    self.logger.info("Database schema integrity check passed")
+
+            except Exception as e:
+                self.logger.error(f"Failed to establish test connection: {str(e)}")
+                connection_ok = False
+                issues_found += 1
+            finally:
+                if conn:
+                    try:
+                        conn.close()
+                    except:
+                        pass
+
+            # Report results
+            if issues_found <= 0:
+                self.logger.info("Database health check completed successfully - no issues found")
+                return True
             else:
-                # Use original schema
-                cursor.execute(
-                    '''
-                    SELECT id, message_id, file_name, mime_type, content, token_count
-                    FROM file_attachments
-                    WHERE id = ?
-                    ''',
-                    (file_id,)
-                )
-
-            attachment = cursor.fetchone()
-
-            if not attachment:
-                return None
-
-            # Convert to dict
-            attachment_dict = dict(attachment)
-
-            # For new schema, load content based on storage type
-            if using_new_schema and 'storage_type' in attachment_dict:
-                storage_type = attachment_dict['storage_type']
-
-                if storage_type == 'database':
-                    # Check if separate content table exists
-                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='file_contents'")
-                    if cursor.fetchone():
-                        # Get content from separate table
-                        cursor.execute(
-                            '''
-                            SELECT content FROM file_contents
-                            WHERE file_id = ?
-                            ''',
-                            (file_id,)
-                        )
-
-                        result = cursor.fetchone()
-                        if result:
-                            attachment_dict['content'] = result['content']
-                        elif 'content' not in attachment_dict or not attachment_dict['content']:
-                            attachment_dict['content'] = ''
-                    # If content field exists but is null, set to empty string
-                    elif 'content' not in attachment_dict or not attachment_dict['content']:
-                        attachment_dict['content'] = ''
-
-                elif storage_type == 'disk':
-                    # Load from disk
-                    storage_path = attachment_dict.get('storage_path')
-
-                    if storage_path and os.path.exists(storage_path):
-                        with open(storage_path, 'r', encoding='utf-8') as f:
-                            attachment_dict['content'] = f.read()
-                    else:
-                        attachment_dict['content'] = ''
-
-                elif storage_type == 'hybrid':
-                    # Try database first - check both separate table and main table
-                    content_found = False
-
-                    # Check separate content table
-                    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='file_contents'")
-                    if cursor.fetchone():
-                        cursor.execute(
-                            '''
-                            SELECT content FROM file_contents
-                            WHERE file_id = ?
-                            ''',
-                            (file_id,)
-                        )
-
-                        result = cursor.fetchone()
-                        if result:
-                            attachment_dict['content'] = result['content']
-                            content_found = True
-
-                    # If not found and content field is in main table
-                    if not content_found and 'content' in attachment_dict and attachment_dict['content']:
-                        content_found = True
-
-                    # Fall back to disk if needed
-                    if not content_found:
-                        storage_path = attachment_dict.get('storage_path')
-
-                        if storage_path and os.path.exists(storage_path):
-                            with open(storage_path, 'r', encoding='utf-8') as f:
-                                attachment_dict['content'] = f.read()
-                        else:
-                            attachment_dict['content'] = ''
-
-            return attachment_dict
+                self.logger.warning(f"Database health check completed with {issues_found} unresolved issues")
+                return False
 
         except Exception as e:
-            self.logger.error(f"Error getting file attachment: {e}")
-            return None
+            self.logger.error(f"Database health check failed with error: {str(e)}")
+            return False
 
-        finally:
-            conn.close()
-
-    def get_node_attachments(self, node_id):
-        """Get file attachments for a node with optimized loading"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-
+    def debug_print_conversations(self):
+        """Print all conversations for debugging"""
         try:
-            attached_files = []
+            def _get_conversations(conn):
+                cursor = conn.cursor()
+                cursor.execute('SELECT * FROM conversations')
+                conversations = cursor.fetchall()
 
-            # Check schema version
-            cursor.execute("PRAGMA table_info(file_attachments)")
-            columns = [row['name'] for row in cursor.fetchall()]
-            using_new_schema = all(col in columns for col in ['file_hash', 'storage_type', 'content_preview'])
+                results = []
+                for conv in conversations:
+                    # Also count messages
+                    cursor.execute('SELECT COUNT(*) FROM messages WHERE conversation_id = ?', (conv['id'],))
+                    message_count = cursor.fetchone()[0]
 
-            if using_new_schema:
-                # Use new schema with preview
-                cursor.execute(
-                    '''
-                    SELECT id, file_name, display_name, mime_type, token_count, 
-                           file_size, file_hash, storage_type, content_preview, storage_path
-                    FROM file_attachments WHERE message_id = ?
-                    ''',
-                    (node_id,)
-                )
-            else:
-                # Use original schema
-                cursor.execute(
-                    '''
-                    SELECT id, file_name, mime_type, content, token_count
-                    FROM file_attachments WHERE message_id = ?
-                    ''',
-                    (node_id,)
-                )
+                    results.append((conv, message_count))
 
-            for row in cursor.fetchall():
-                # Convert row to dict
-                attachment = dict(row)
+                return results
 
-                if using_new_schema:
-                    # For normal UI display, we only need the preview
-                    if 'content_preview' in attachment and attachment['content_preview']:
-                        attachment['content'] = attachment['content_preview']
+            conversation_data = self.execute_transaction(_get_conversations)
 
-                attached_files.append(attachment)
+            # Print results
+            print(f"===== DEBUG: Found {len(conversation_data)} conversations in database =====")
+            for conv, message_count in conversation_data:
+                print(f"ID: {conv['id']}, Name: {conv['name']}, Modified: {conv['modified_at']}")
+                print(f"  Messages: {message_count}")
+            print("=====================================================")
 
-            return attached_files
+        except Exception as e:
+            print(f"DEBUG: Error querying conversations: {str(e)}")
+            self.logger.error(f"Error in debug_print_conversations: {str(e)}")
 
-        finally:
-            conn.close()
+    def shutdown(self):
+        """Clean shutdown procedure"""
+        self.logger.info("Starting database manager shutdown")
 
-    def load_attachment_content(self, attachment_id):
-        """Load full attachment content on demand"""
-        return self.get_file_attachment(attachment_id)['content']
+        # Stop the file processor
+        self._file_processor_running = False
+
+        # Wait for processor thread to finish
+        if self._file_processor_thread and self._file_processor_thread.is_alive():
+            self.logger.info("Waiting for file processor to finish...")
+            self._file_processor_thread.join(timeout=5.0)
+
+        # Close and clean up the connection
+        with self._db_lock:
+            if self._connection:
+                try:
+                    self._connection.close()
+                    self._connection = None
+                    self.logger.info("Database connection closed")
+                except Exception as e:
+                    self.logger.error(f"Error closing database connection: {str(e)}")
+
+        self.logger.info("Database manager shutdown complete")

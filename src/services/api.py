@@ -10,6 +10,7 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 from src.utils import REASONING_MODELS
+from src.utils.constants import GEMINI_MODELS, GEMINI_BASE_URL
 from src.utils.logging_utils import get_logger, log_exception
 
 # Get a logger for this module
@@ -86,7 +87,8 @@ class OpenAIThreadManager:
             self.logger.debug(f"Thread {thread_id} cleaned up, {len(self.active_threads)} active threads remaining")
 
 class OpenAIAPIWorker(QObject):
-    """Worker object for making OpenAI API calls using either the Responses or Chat Completions API"""
+    """Worker object for making OpenAI API calls using either the Responses or Chat Completions API,
+    or Google Gemini API through the OpenAI client interface."""
     message_received = pyqtSignal(str)  # Full final message
     chunk_received = pyqtSignal(str)  # Streaming chunks
     thinking_step = pyqtSignal(str, str)
@@ -145,11 +147,45 @@ class OpenAIAPIWorker(QObject):
             model = self.settings.get("model", "gpt-4o")
             api_type = self.settings.get("api_type", "responses")
 
+            # Check if this is a Gemini model
+            is_gemini_model = model in GEMINI_MODELS
+
+            # If using a Gemini model, override settings
+            if is_gemini_model:
+                api_type = "gemini"
+
+                # Get Gemini API key with fallbacks
+                gemini_api_key = self.settings.get("gemini_api_key", "")
+
+                # If no key in settings, try environment variable directly
+                if not gemini_api_key:
+                    import os
+                    gemini_api_key = os.environ.get("GEMINI_API_KEY", "")
+                    self.logger.debug(f"Trying to get Gemini API key from environment")
+
+                api_key = gemini_api_key
+                api_base = GEMINI_BASE_URL
+                self.logger.info(f"Using Gemini model: {model} with Gemini API")
+
+                # Debug log for API key (masked)
+                if api_key:
+                    masked_key = api_key[:4] + "*" * (len(api_key) - 8) + api_key[-4:] if len(api_key) > 8 else "***"
+                    self.logger.debug(f"Gemini API key: {masked_key}")
+                else:
+                    self.logger.warning("No Gemini API key found in settings or environment variables")
+
             self.logger.info(f"Using model: {model} with API type: {api_type}")
 
             # Check for API key
             if not api_key:
-                raise ValueError("No API key provided. Please check your settings.")
+                error_msg = "No API key provided. Please check your settings."
+                if is_gemini_model:
+                    error_msg = "No Gemini API key provided. Please add your Gemini API key in the settings."
+                self.logger.error(error_msg)
+                self.error_occurred.emit(error_msg)
+                self._is_processing = False
+                self.worker_finished.emit()
+                return  # Important: exit early instead of raising exception
 
             # Create client with timeout
             client_kwargs = {
@@ -166,12 +202,16 @@ class OpenAIAPIWorker(QObject):
             except Exception as client_error:
                 self.logger.error(f"Error creating OpenAI client: {str(client_error)}")
                 self.error_occurred.emit(f"Error initializing API client: {str(client_error)}")
-                raise
+                self._is_processing = False
+                self.worker_finished.emit()
+                return  # Exit early instead of raising
 
             # Prepare parameters in a separate try block
             try:
                 if api_type == "responses":
                     params = self._prepare_response_api_params(model)
+                elif api_type == "gemini":
+                    params = self._prepare_gemini_params(model)
                 else:
                     params = self._prepare_chat_completions_params(model)
 
@@ -186,11 +226,15 @@ class OpenAIAPIWorker(QObject):
             except Exception as param_error:
                 self.logger.error(f"Error preparing parameters: {str(param_error)}")
                 self.error_occurred.emit(f"Error preparing request: {str(param_error)}")
-                raise
+                self._is_processing = False
+                self.worker_finished.emit()
+                return  # Exit early instead of raising
 
             # Check for cancellation before making the request
             if self._is_cancelled:
                 self.logger.info(f"Worker {self._worker_id} cancelled before execution")
+                self._is_processing = False
+                self.worker_finished.emit()
                 return
 
             # Execute API call with proper error handling
@@ -203,6 +247,8 @@ class OpenAIAPIWorker(QObject):
                     try:
                         if api_type == "responses":
                             stream = client.responses.create(**params)
+                        elif api_type == "gemini":
+                            stream = client.chat.completions.create(**params)
                         else:
                             stream = client.chat.completions.create(**params)
 
@@ -218,6 +264,8 @@ class OpenAIAPIWorker(QObject):
                     try:
                         if api_type == "responses":
                             response = client.responses.create(**params)
+                        elif api_type == "gemini":
+                            response = client.chat.completions.create(**params)
                         else:
                             response = client.chat.completions.create(**params)
 
@@ -253,49 +301,48 @@ class OpenAIAPIWorker(QObject):
 
             self.logger.info(f"Worker {self._worker_id} finished processing")
 
-    def _handle_api_error(self, error):
-        """Classify and handle different types of API errors"""
-        error_type = type(error).__name__
-        error_msg = str(error)
+    def _prepare_gemini_params(self, model):
+        """Prepare parameters for Google Gemini API via the OpenAI client interface"""
+        self.logger.debug(f"Settings for prepare_gemini_params: {self.settings}")
 
-        # Instead of using isinstance, check the error type name
-        # This works better with mock objects in tests
+        # Process messages for the Chat Completions API format
+        prepared_messages = self.prepare_input(self.messages, "chat_completions")
 
-        if error_type == "AuthenticationError":
-            self.logger.error(f"Authentication error: {error_msg}")
-            self.error_occurred.emit(f"Authentication failed: Please check your API key")
+        # Base parameters
+        params = {
+            "model": model,
+            "messages": prepared_messages,
+            "temperature": self.settings.get("temperature", 0.7),
+            "top_p": self.settings.get("top_p", 1.0),
+            "stream": self.settings.get("stream", True),
+        }
 
-        elif error_type == "RateLimitError":
-            self.logger.error(f"Rate limit error: {error_msg}")
-            self.error_occurred.emit(f"Rate limit exceeded: {error_msg}")
+        # Get token limit
+        token_limit = self.settings.get("max_output_tokens",
+                                        self.settings.get("max_completion_tokens",
+                                                          self.settings.get("max_tokens", 1024)))
 
-        elif error_type == "APITimeoutError":
-            self.logger.error(f"API timeout: {error_msg}")
-            self.error_occurred.emit(f"Request timed out: {error_msg}")
+        # Gemini uses max_tokens parameter
+        params["max_tokens"] = token_limit
+        self.logger.debug(f"Using max_tokens={token_limit} for Gemini API")
 
-        elif error_type == "APIConnectionError":
-            self.logger.error(f"API connection error: {error_msg}")
-            self.error_occurred.emit(f"Connection error: {error_msg}")
+        # Handle response format for JSON mode
+        response_format_type = "text"
+        if "text" in self.settings and isinstance(self.settings["text"], dict):
+            if "format" in self.settings["text"] and isinstance(self.settings["text"]["format"], dict):
+                format_type = self.settings["text"]["format"].get("type", "text")
+                if format_type == "json_object":
+                    response_format_type = "json_object"
 
-        elif error_type == "BadRequestError":
-            self.logger.error(f"Bad request error: {error_msg}")
+        if response_format_type == "json_object":
+            params["response_format"] = {"type": "json_object"}
 
-            if "string too long" in error_msg or "maximum context length" in error_msg:
-                # This is a token/character limit error
-                self.error_occurred.emit(
-                    "Your message is too large for the API to process. Please reduce the size or number of file attachments."
-                )
-            else:
-                self.error_occurred.emit(f"Bad request: {error_msg}")
+        # Add user identifier if present
+        if self.settings.get("user") is not None:
+            params["user"] = self.settings.get("user")
 
-        elif error_type == "InternalServerError":
-            self.logger.error(f"OpenAI server error: {error_msg}")
-            self.error_occurred.emit(f"OpenAI server error: Please try again later")
-
-        else:
-            # Generic error handling
-            self.logger.error(f"Unexpected error ({error_type}): {error_msg}")
-            self.error_occurred.emit(f"Unexpected error: {error_msg}")
+        self.logger.debug(f"Final Gemini API parameters: {list(params.keys())}")
+        return params
 
     def _prepare_response_api_params(self, model):
         """Prepare parameters for the Response API with consistent parameter handling"""
@@ -532,19 +579,18 @@ class OpenAIAPIWorker(QObject):
                     self.logger.debug(f"Emitting final accumulated text (length: {len(full_text)})")
                     self.message_received.emit(full_text)
 
-            else:
-                # This is the chat_completions API streaming
-                self.logger.info("Processing chat completions streaming")
+            else:  # This covers both chat_completions API and gemini API
+                # Process each chunk in the stream
+                self.logger.info(f"Processing {api_type} streaming")
                 model_info = {}
 
-                # Process each chunk in the stream
                 for chunk in stream:
                     # Check for cancellation
                     if self._is_cancelled:
                         self.logger.info("API request cancelled during streaming")
                         break
 
-                    self.logger.debug(f"Got chat completion chunk: {chunk}")
+                    self.logger.debug(f"Got {api_type} chunk: {chunk}")
 
                     # Process the chunk based on the OpenAI API structure
                     if hasattr(chunk, 'choices') and len(chunk.choices) > 0:
@@ -561,7 +607,7 @@ class OpenAIAPIWorker(QObject):
                             self.logger.debug(f"Extracted completion ID: {chunk.id}")
                             self.completion_id.emit(chunk.id)
 
-                        # Handle delta content
+                        # Handle delta content - works for both OpenAI and Gemini
                         if hasattr(choice, 'delta') and hasattr(choice.delta, 'content') and choice.delta.content:
                             delta = choice.delta.content
                             self.logger.debug(f"Extracted content delta: {delta[:20]}...")
@@ -573,10 +619,19 @@ class OpenAIAPIWorker(QObject):
                         if hasattr(choice, 'finish_reason') and choice.finish_reason:
                             self.logger.debug(f"Chat completion finished with reason: {choice.finish_reason}")
 
+                    # Handle special case for Gemini where delta could be structured differently
+                    elif api_type == "gemini" and hasattr(chunk, 'delta'):
+                        delta = getattr(chunk.delta, 'content', '')
+                        if delta:
+                            self.logger.debug(f"Extracted Gemini delta content: {delta[:20]}...")
+                            self._current_text_content += delta
+                            full_text += delta
+                            self.chunk_received.emit(delta)
+
                     # Extract usage data if this is the final chunk
                     if hasattr(chunk, 'usage') and chunk.usage:
                         self.logger.debug(f"Extracted usage data: {chunk.usage}")
-                        usage_data = self._normalize_token_usage(chunk.usage, "chat_completions")
+                        usage_data = self._normalize_token_usage(chunk.usage, api_type)
                         self.usage_info.emit(usage_data)
 
                 # Emit the full message when done
@@ -586,108 +641,6 @@ class OpenAIAPIWorker(QObject):
         except Exception as e:
             self.logger.warning(f"Error: {str(e)}")
             return None
-
-    def _extract_thinking_step(self, event):
-        """Extract thinking step name and content from various event formats"""
-        try:
-            # Handle different event structures
-            if hasattr(event, 'thinking') and event.thinking:
-                thinking_info = event.thinking
-
-                if isinstance(thinking_info, dict):
-                    step_name = thinking_info.get("step", "Reasoning")
-                    step_content = thinking_info.get("content", "")
-                else:
-                    step_name = getattr(thinking_info, "step", "Reasoning")
-                    step_content = getattr(thinking_info, "content", "")
-
-            elif hasattr(event, 'step'):
-                if isinstance(event.step, dict):
-                    step_name = event.step.get("name", "Reasoning")
-                    step_content = event.step.get("content", "")
-                else:
-                    step_name = getattr(event.step, "name", "Reasoning")
-                    step_content = getattr(event.step, "content", "")
-            else:
-                return None
-
-            return step_name, step_content
-        except Exception as e:
-            self.logger.warning(f"Error extracting thinking step: {str(e)}")
-            return None
-
-    def _process_completion_metadata(self, response):
-        """Process metadata from a completed response with comprehensive extraction"""
-        try:
-            self.logger.debug(f"Processing completion metadata. Response type: {type(response)}")
-            self.logger.debug(f"Response attributes: {[attr for attr in dir(response) if not attr.startswith('_') and not callable(getattr(response, attr))]}")
-
-            # Try multiple ways to get usage data
-            usage_data = None
-
-            # Method 1: Direct usage attribute
-            if hasattr(response, "usage"):
-                self.logger.debug("Found usage attribute")
-                usage_data = self._normalize_token_usage(response.usage, "responses")
-
-            # Method 2: token_usage attribute
-            elif hasattr(response, "token_usage"):
-                self.logger.debug("Found token_usage attribute")
-                usage_data = self._normalize_token_usage(response.token_usage, "responses")
-
-            # Method 3: Try other possible attribute names
-            else:
-                for attr_name in dir(response):
-                    if ("usage" in attr_name.lower() or "token" in attr_name.lower()) and not attr_name.startswith("_"):
-                        attr_value = getattr(response, attr_value)
-                        if attr_value is not None:
-                            self.logger.debug(f"Found potential usage data in {attr_name}")
-                            usage_data = self._normalize_token_usage(attr_value, "responses")
-                            break
-
-            # Method 4: Last resort - try to build usage data from response properties
-            if usage_data is None:
-                self.logger.debug("Building usage data from response properties")
-                model = getattr(response, "model", self.settings.get("model", "unknown"))
-                token_data = {}
-
-                # Search for token-related properties
-                for attr_name in dir(response):
-                    if "token" in attr_name.lower() and not attr_name.startswith("_"):
-                        value = getattr(response, attr_name)
-                        if isinstance(value, (int, float)):
-                            token_data[attr_name] = value
-
-                # If we found any token data, try to normalize it
-                if token_data:
-                    self.logger.debug(f"Found token data: {token_data}")
-                    usage_data = self._normalize_token_usage(token_data, "responses")
-
-            # Emit usage data if we found it
-            if usage_data:
-                self.logger.debug(f"Emitting usage data: {usage_data}")
-                self.usage_info.emit(usage_data)
-            else:
-                self.logger.warning("No usage data found in completion metadata")
-        except Exception as e:
-            self.logger.error(f"Error processing completion metadata: {str(e)}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-
-    def _process_chat_usage(self, usage):
-        """Process usage information from chat completion"""
-        try:
-            usage_data = self._normalize_token_usage(
-                {
-                    "prompt_tokens": getattr(usage, 'prompt_tokens', 0),
-                    "completion_tokens": getattr(usage, 'completion_tokens', 0),
-                    "total_tokens": getattr(usage, 'total_tokens', 0)
-                },
-                "chat_completions"
-            )
-            self.usage_info.emit(usage_data)
-        except Exception as e:
-            self.logger.warning(f"Error processing usage data: {str(e)}")
 
     def _handle_full_response(self, response, api_type="responses"):
         """
@@ -726,6 +679,10 @@ class OpenAIAPIWorker(QObject):
                     # Use model from settings as fallback
                     model_info["model"] = self.settings.get("model", "unknown")
                     self.logger.debug(f"Using fallback model from settings: {model_info['model']}")
+
+                # For Gemini API responses, ensure provider info is included
+                if api_type == "gemini" and not model_info.get("provider"):
+                    model_info["provider"] = "Google"
 
                 # Emit model info first (critical for UI display)
                 self.system_info.emit(model_info)
@@ -840,6 +797,20 @@ class OpenAIAPIWorker(QObject):
                         content = response.content
                         self.logger.debug(f"Found content in content attribute, length: {len(content)}")
 
+                elif api_type == "gemini":
+                    # Gemini API responses through OpenAI client look like Chat Completions
+                    if hasattr(response, "choices") and len(getattr(response, "choices", [])) > 0:
+                        choice = response.choices[0]
+                        if hasattr(choice, "message") and hasattr(choice.message, "content"):
+                            content = choice.message.content or ""
+                            self.logger.debug(f"Found Gemini content in choices[0].message.content, length: {len(content)}")
+                        elif hasattr(choice, "text"):
+                            content = choice.text
+                            self.logger.debug(f"Found Gemini content in choices[0].text, length: {len(content)}")
+                    elif hasattr(response, "content"):
+                        content = response.content
+                        self.logger.debug(f"Found direct Gemini content, length: {len(content)}")
+
                 else:  # Chat Completions API
                     # Chat Completions API content extraction
                     if hasattr(response, "choices") and len(getattr(response, "choices", [])) > 0:
@@ -897,106 +868,6 @@ class OpenAIAPIWorker(QObject):
             except Exception as content_error:
                 self.logger.error(f"Error extracting content: {str(content_error)}")
 
-                # STEP 5: Extract any reasoning steps if available
-                try:
-                    # Reasoning extraction is currently disabled since it's not supported by OpenAI API
-                    # Keeping the structure for future updates when reasoning becomes available
-                    self.logger.debug("Reasoning extraction is disabled - skipping reasoning step extraction")
-                    """
-                    # Extract reasoning steps with robust fallbacks
-                    if api_type == "responses":
-                        reasoning_extracted = False
-
-                        # Method 1: Standard reasoning attribute
-                        if hasattr(response, "reasoning"):
-                            reasoning_obj = response.reasoning
-
-                            # Extract summary if available
-                            if hasattr(reasoning_obj, "summary") and reasoning_obj.summary:
-                                self.collected_reasoning_steps.append({
-                                    "name": "Reasoning Summary",
-                                    "content": reasoning_obj.summary
-                                })
-                                reasoning_extracted = True
-                                self.logger.debug("Extracted reasoning summary")
-
-                            # Extract steps list if available
-                            if hasattr(reasoning_obj, "steps") and reasoning_obj.steps:
-                                steps_list = reasoning_obj.steps
-                                for step in steps_list:
-                                    if isinstance(step, dict):
-                                        self.collected_reasoning_steps.append({
-                                            "name": step.get("name", "Step"),
-                                            "content": step.get("content", "")
-                                        })
-                                    else:
-                                        self.collected_reasoning_steps.append({
-                                            "name": getattr(step, "name", "Step"),
-                                            "content": getattr(step, "content", "")
-                                        })
-                                reasoning_extracted = True
-                                self.logger.debug(f"Extracted {len(steps_list)} reasoning steps")
-
-                        # Method 2: Check for thinking_steps attribute
-                        if not reasoning_extracted and hasattr(response, "thinking_steps"):
-                            thinking_steps = response.thinking_steps
-                            if isinstance(thinking_steps, list):
-                                for i, step in enumerate(thinking_steps):
-                                    step_dict = {}
-                                    if isinstance(step, dict):
-                                        step_dict = step
-                                    elif hasattr(step, "__dict__"):
-                                        step_dict = {k: v for k, v in step.__dict__.items() if not k.startswith('_')}
-                                    else:
-                                        # Create from attributes
-                                        step_dict = {
-                                            "name": getattr(step, "name", f"Step {i + 1}"),
-                                            "content": getattr(step, "content", str(step))
-                                        }
-
-                                    self.collected_reasoning_steps.append({
-                                        "name": step_dict.get("name", f"Step {i + 1}"),
-                                        "content": step_dict.get("content", "")
-                                    })
-                                reasoning_extracted = True
-                                self.logger.debug(f"Extracted {len(thinking_steps)} thinking steps")
-
-                        # Check for o3-mini and other reasoning models
-                        model_name = model_info.get("model", "").lower()
-                        is_reasoning_model = ("o1" in model_name or "o3" in model_name or
-                                              "deepseek-reasoner" in model_name or
-                                              model_name in self.settings.get("reasoning_models", []))
-
-                        # For o3-mini, check usage data for reasoning tokens
-                        if not reasoning_extracted and is_reasoning_model and hasattr(response, "usage"):
-                            usage_obj = response.usage
-                            reasoning_tokens = 0
-
-                            # Try to extract reasoning tokens
-                            if hasattr(usage_obj, "output_tokens_details"):
-                                details = usage_obj.output_tokens_details
-                                if isinstance(details, dict):
-                                    reasoning_tokens = details.get("reasoning_tokens", 0)
-                                else:
-                                    reasoning_tokens = getattr(details, "reasoning_tokens", 0)
-
-                            # Add placeholder step for models that used reasoning
-                            if reasoning_tokens > 0:
-                                self.collected_reasoning_steps.append({
-                                    "name": f"{model_name.upper()} Reasoning",
-                                    "content": f"Model performed internal reasoning using {reasoning_tokens} tokens (detailed steps not available)"
-                                })
-                                reasoning_extracted = True
-                                self.logger.debug(f"Added reasoning placeholder for {model_name} with {reasoning_tokens} reasoning tokens")
-
-                    # Emit collected reasoning steps if any were found
-                    if self.collected_reasoning_steps:
-                        self.reasoning_steps.emit(self.collected_reasoning_steps)
-                        self.logger.debug(f"Emitted {len(self.collected_reasoning_steps)} reasoning steps")
-                    """
-                except Exception as reasoning_error:
-                    self.logger.error(f"Error extracting reasoning steps: {str(reasoning_error)}")
-
             # STEP 6: FINALLY emit the content or error message
             if content:
                 self.logger.debug(f"Emitting message content, length: {len(content)}")
@@ -1013,6 +884,284 @@ class OpenAIAPIWorker(QObject):
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             # Send a fallback message so UI isn't stuck
             self.message_received.emit("Error processing response. Please try again.")
+
+    def _normalize_token_usage(self, usage, api_type="responses"):
+        """Normalize token usage data to a consistent format regardless of API type"""
+        normalized = {}
+
+        # Log the incoming usage data for better debugging
+        self.logger.debug(f"Normalizing token usage from {api_type} API: {usage}")
+
+        # Perform type detection to handle different response structures
+        usage_dict = {}
+        is_dict = isinstance(usage, dict)
+
+        # Extract data from various object types
+        if is_dict:
+            usage_dict = usage
+        elif hasattr(usage, "__dict__"):
+            # Standard Python object with __dict__
+            usage_dict = {k: v for k, v in usage.__dict__.items() if not k.startswith('_')}
+        elif hasattr(usage, "model_dump"):
+            # Pydantic model with model_dump() method
+            usage_dict = usage.model_dump()
+        elif hasattr(usage, "dict"):
+            # Object with dict() method
+            usage_dict = usage.dict()
+        else:
+            # Last resort - try to get attributes directly
+            usage_dict = {}
+            for attr in dir(usage):
+                if not attr.startswith('_') and not callable(getattr(usage, attr)):
+                    usage_dict[attr] = getattr(usage, attr)
+
+        # Log the extracted dictionary for debugging
+        self.logger.debug(f"Extracted usage dictionary: {usage_dict}")
+
+        # Handle different API types
+        if api_type == "responses":
+            # Response API uses input_tokens/output_tokens
+            normalized["prompt_tokens"] = self._safe_get(usage, usage_dict, "input_tokens", 0)
+            normalized["completion_tokens"] = self._safe_get(usage, usage_dict, "output_tokens", 0)
+            normalized["total_tokens"] = self._safe_get(usage, usage_dict, "total_tokens",
+                                                        normalized["prompt_tokens"] + normalized["completion_tokens"])
+        elif api_type == "gemini":
+            # Gemini API through OpenAI client uses prompt_tokens/completion_tokens like Chat Completions
+            normalized["prompt_tokens"] = self._safe_get(usage, usage_dict, "prompt_tokens", 0)
+            normalized["completion_tokens"] = self._safe_get(usage, usage_dict, "completion_tokens", 0)
+            normalized["total_tokens"] = self._safe_get(usage, usage_dict, "total_tokens",
+                                                        normalized["prompt_tokens"] + normalized["completion_tokens"])
+
+            # For Gemini, add provider information
+            normalized["provider"] = "Google"
+        else:
+            # Chat Completions API uses prompt_tokens/completion_tokens
+            normalized["prompt_tokens"] = self._safe_get(usage, usage_dict, "prompt_tokens", 0)
+            normalized["completion_tokens"] = self._safe_get(usage, usage_dict, "completion_tokens", 0)
+            normalized["total_tokens"] = self._safe_get(usage, usage_dict, "total_tokens",
+                                                        normalized["prompt_tokens"] + normalized["completion_tokens"])
+
+        # Return the normalized usage data
+        self.logger.debug(f"Normalized token usage: {normalized}")
+        return normalized
+
+    def prepare_input(self, messages, api_type="responses"):
+        """
+        Prepare messages for the API format based on api_type
+
+        Args:
+            messages: The raw messages
+            api_type: Either "responses", "chat_completions", or "gemini"
+
+        Returns:
+            Formatted input for the specified API
+        """
+        if api_type == "responses":
+            # Format for Response API - combine into text
+            all_content = []
+
+            for message in messages:
+                # Skip system messages as they will be handled as 'instructions'
+                if message["role"] == "system":
+                    continue
+
+                role_prefix = ""
+                if message["role"] == "user":
+                    role_prefix = "User: "
+                elif message["role"] == "assistant":
+                    role_prefix = "Assistant: "
+
+                # Add message content
+                if "content" in message:
+                    all_content.append(f"{role_prefix}{message['content']}")
+
+                # Handle file attachments if present
+                if "attached_files" in message and message["attached_files"]:
+                    file_sections = ["\n\n# ATTACHED FILES"]
+
+                    for file_info in message["attached_files"]:
+                        file_name = file_info["file_name"]
+                        file_type = file_info.get("mime_type", "Unknown type")
+                        file_size = file_info.get("size", 0)
+                        file_content = file_info["content"]
+
+                        file_sections.append(f"""
+                            ### FILE: {file_name}
+                            {file_content}
+                            Copy""")
+
+                    all_content.append("\n".join(file_sections))
+
+            # Return the combined text as the input
+            return "\n\n".join(all_content)
+        else:
+            # Format for Chat Completions API and Gemini API - as message objects
+            prepared_messages = []
+
+            # For Gemini via OpenAI client, ensure we handle system messages properly
+            if api_type == "gemini":
+                # Find system message (there should be only one)
+                system_content = None
+                for message in messages:
+                    if message["role"] == "system":
+                        system_content = message["content"]
+                        break
+
+                # Add user and assistant messages (skipping system message)
+                for message in messages:
+                    if message["role"] != "system":
+                        # Clone the message with only the necessary fields
+                        prepared_message = {
+                            "role": message["role"],
+                            "content": message["content"]
+                        }
+
+                        # Handle file attachments if present
+                        if "attached_files" in message and message["attached_files"]:
+                            file_content = "\n\n# ATTACHED FILES\n"
+
+                            for file_info in message["attached_files"]:
+                                file_name = file_info["file_name"]
+                                file_content += f"\n### FILE: {file_name}\n{file_info['content']}\n"
+
+                            # Append file content to message content
+                            prepared_message["content"] += file_content
+
+                        prepared_messages.append(prepared_message)
+
+                # If we found a system message, prepend it as a user message with special prefix
+                if system_content:
+                    # Insert system message at beginning with clear formatting
+                    prepared_messages.insert(0, {
+                        "role": "user",
+                        "content": f"SYSTEM INSTRUCTIONS (please follow these for all interactions):\n\n{system_content}"
+                    })
+            else:
+                # Standard chat completions format - include all messages directly
+                for message in messages:
+                    # Clone the message with only the necessary fields
+                    prepared_message = {
+                        "role": message["role"],
+                        "content": message["content"]
+                    }
+
+                    # Handle file attachments if present
+                    if "attached_files" in message and message["attached_files"]:
+                        file_content = "\n\n# ATTACHED FILES\n"
+
+                        for file_info in message["attached_files"]:
+                            file_name = file_info["file_name"]
+                            file_content += f"\n### FILE: {file_name}\n{file_info['content']}\n"
+
+                        # Append file content to message content
+                        prepared_message["content"] += file_content
+
+                    prepared_messages.append(prepared_message)
+
+            self.logger.debug(f"Prepared {len(prepared_messages)} messages for {api_type} API")
+            return prepared_messages
+
+    def _extract_thinking_step(self, event):
+        """Extract thinking step name and content from various event formats"""
+        try:
+            # Handle different event structures
+            if hasattr(event, 'thinking') and event.thinking:
+                thinking_info = event.thinking
+
+                if isinstance(thinking_info, dict):
+                    step_name = thinking_info.get("step", "Reasoning")
+                    step_content = thinking_info.get("content", "")
+                else:
+                    step_name = getattr(thinking_info, "step", "Reasoning")
+                    step_content = getattr(thinking_info, "content", "")
+
+            elif hasattr(event, 'step'):
+                if isinstance(event.step, dict):
+                    step_name = event.step.get("name", "Reasoning")
+                    step_content = event.step.get("content", "")
+                else:
+                    step_name = getattr(event.step, "name", "Reasoning")
+                    step_content = getattr(event.step, "content", "")
+            else:
+                return None
+
+            return step_name, step_content
+        except Exception as e:
+            self.logger.warning(f"Error extracting thinking step: {str(e)}")
+            return None
+
+    def _process_completion_metadata(self, response):
+        """Process metadata from a completed response with comprehensive extraction"""
+        try:
+            self.logger.debug(f"Processing completion metadata. Response type: {type(response)}")
+            self.logger.debug(f"Response attributes: {[attr for attr in dir(response) if not attr.startswith('_') and not callable(getattr(response, attr))]}")
+
+            # Try multiple ways to get usage data
+            usage_data = None
+
+            # Method 1: Direct usage attribute
+            if hasattr(response, "usage"):
+                self.logger.debug("Found usage attribute")
+                usage_data = self._normalize_token_usage(response.usage, "responses")
+
+            # Method 2: token_usage attribute
+            elif hasattr(response, "token_usage"):
+                self.logger.debug("Found token_usage attribute")
+                usage_data = self._normalize_token_usage(response.token_usage, "responses")
+
+            # Method 3: Try other possible attribute names
+            else:
+                for attr_name in dir(response):
+                    if ("usage" in attr_name.lower() or "token" in attr_name.lower()) and not attr_name.startswith("_"):
+                        attr_value = getattr(response, attr_value)
+                        if attr_value is not None:
+                            self.logger.debug(f"Found potential usage data in {attr_name}")
+                            usage_data = self._normalize_token_usage(attr_value, "responses")
+                            break
+
+            # Method 4: Last resort - try to build usage data from response properties
+            if usage_data is None:
+                self.logger.debug("Building usage data from response properties")
+                model = getattr(response, "model", self.settings.get("model", "unknown"))
+                token_data = {}
+
+                # Search for token-related properties
+                for attr_name in dir(response):
+                    if "token" in attr_name.lower() and not attr_name.startswith("_"):
+                        value = getattr(response, attr_name)
+                        if isinstance(value, (int, float)):
+                            token_data[attr_name] = value
+
+                # If we found any token data, try to normalize it
+                if token_data:
+                    self.logger.debug(f"Found token data: {token_data}")
+                    usage_data = self._normalize_token_usage(token_data, "responses")
+
+            # Emit usage data if we found it
+            if usage_data:
+                self.logger.debug(f"Emitting usage data: {usage_data}")
+                self.usage_info.emit(usage_data)
+            else:
+                self.logger.warning("No usage data found in completion metadata")
+        except Exception as e:
+            self.logger.error(f"Error processing completion metadata: {str(e)}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+
+    def _process_chat_usage(self, usage):
+        """Process usage information from chat completion"""
+        try:
+            usage_data = self._normalize_token_usage(
+                {
+                    "prompt_tokens": getattr(usage, 'prompt_tokens', 0),
+                    "completion_tokens": getattr(usage, 'completion_tokens', 0),
+                    "total_tokens": getattr(usage, 'total_tokens', 0)
+                },
+                "chat_completions"
+            )
+            self.usage_info.emit(usage_data)
+        except Exception as e:
+            self.logger.warning(f"Error processing usage data: {str(e)}")
 
     def cancel(self):
         """Mark the worker for cancellation"""
@@ -1096,208 +1245,6 @@ class OpenAIAPIWorker(QObject):
             # Signal that streaming is complete but WITHOUT sending the content again
             self.worker_finished.emit()
 
-    def _normalize_token_usage(self, usage, api_type="responses"):
-        """Normalize token usage data to a consistent format regardless of API type"""
-        normalized = {}
-
-        # Log the incoming usage data for better debugging
-        self.logger.debug(f"Normalizing token usage from {api_type} API: {usage}")
-
-        # Perform type detection to handle different response structures
-        usage_dict = {}
-        is_dict = isinstance(usage, dict)
-
-        # Extract data from various object types
-        if is_dict:
-            usage_dict = usage
-        elif hasattr(usage, "__dict__"):
-            # Standard Python object with __dict__
-            usage_dict = {k: v for k, v in usage.__dict__.items() if not k.startswith('_')}
-        elif hasattr(usage, "model_dump"):
-            # Pydantic model with model_dump() method
-            usage_dict = usage.model_dump()
-        elif hasattr(usage, "dict"):
-            # Object with dict() method
-            usage_dict = usage.dict()
-        else:
-            # Last resort - try to get attributes directly
-            usage_dict = {}
-            for attr in dir(usage):
-                if not attr.startswith('_') and not callable(getattr(usage, attr)):
-                    usage_dict[attr] = getattr(usage, attr)
-
-        # Log the extracted dictionary for debugging
-        self.logger.debug(f"Extracted usage dictionary: {usage_dict}")
-
-        # Handle different API types
-        if api_type == "responses":
-            # Response API uses input_tokens/output_tokens
-            normalized["prompt_tokens"] = self._safe_get(usage, usage_dict, "input_tokens", 0)
-            normalized["completion_tokens"] = self._safe_get(usage, usage_dict, "output_tokens", 0)
-            normalized["total_tokens"] = self._safe_get(usage, usage_dict, "total_tokens",
-                                                        normalized["prompt_tokens"] + normalized["completion_tokens"])
-        else:
-            # Chat Completions API uses prompt_tokens/completion_tokens
-            normalized["prompt_tokens"] = self._safe_get(usage, usage_dict, "prompt_tokens", 0)
-            normalized["completion_tokens"] = self._safe_get(usage, usage_dict, "completion_tokens", 0)
-            normalized["total_tokens"] = self._safe_get(usage, usage_dict, "total_tokens",
-                                                        normalized["prompt_tokens"] + normalized["completion_tokens"])
-
-        # Process reasoning data - check multiple possible locations
-        model = self.settings.get("model", "")
-        is_reasoning_model = model in REASONING_MODELS or "o1" in model or "o3" in model
-        self.logger.debug(f"Processing model {model}, is_reasoning_model: {is_reasoning_model}")
-
-        # Extract output_tokens_details using multiple methods
-        details_dict = {}
-
-        # Method 1: Try to get directly from usage_dict
-        if "output_tokens_details" in usage_dict:
-            raw_details = usage_dict["output_tokens_details"]
-            details_dict = self._extract_details_dict(raw_details)
-            self.logger.debug(f"Found output_tokens_details in usage_dict: {details_dict}")
-
-        # Method 2: Try to get via attribute access
-        elif hasattr(usage, "output_tokens_details"):
-            raw_details = getattr(usage, "output_tokens_details")
-            details_dict = self._extract_details_dict(raw_details)
-            self.logger.debug(f"Found output_tokens_details via attribute: {details_dict}")
-
-        # Method 3: Try other possible field names for reasoning metrics
-        elif "reasoning_output_tokens" in usage_dict:
-            details_dict["reasoning_tokens"] = usage_dict["reasoning_output_tokens"]
-            self.logger.debug(f"Found reasoning_output_tokens: {details_dict['reasoning_tokens']}")
-        elif "reasoning_tokens" in usage_dict:
-            details_dict["reasoning_tokens"] = usage_dict["reasoning_tokens"]
-            self.logger.debug(f"Found direct reasoning_tokens: {details_dict['reasoning_tokens']}")
-
-        # Create standardized completion_tokens_details
-        if details_dict:
-            normalized["completion_tokens_details"] = {
-                "reasoning_tokens": details_dict.get("reasoning_tokens", 0),
-                "accepted_prediction_tokens": details_dict.get("accepted_prediction_tokens", 0),
-                "rejected_prediction_tokens": details_dict.get("rejected_prediction_tokens", 0)
-            }
-        # Add placeholder for reasoning models even if not found
-        elif is_reasoning_model:
-            normalized["completion_tokens_details"] = {
-                "reasoning_tokens": 0,
-                "accepted_prediction_tokens": 0,
-                "rejected_prediction_tokens": 0
-            }
-            self.logger.debug(f"Added placeholder reasoning data for {model}")
-
-        self.logger.debug(f"Normalized token usage: {normalized}")
-        return normalized
-
-    def _safe_get(self, obj, obj_dict, key, default=0):
-        """Safely get a value from either dict or object attributes"""
-        # Try dict access first
-        if key in obj_dict:
-            return obj_dict[key]
-        # Then try attribute access
-        elif hasattr(obj, key):
-            return getattr(obj, key)
-        # Finally return default
-        return default
-
-    def _extract_details_dict(self, details):
-        """Extract a dictionary from details object regardless of type"""
-        if details is None:
-            return {}
-        if isinstance(details, dict):
-            return details
-        # Try standard object with __dict__
-        if hasattr(details, "__dict__"):
-            return {k: v for k, v in details.__dict__.items() if not k.startswith('_')}
-        # Try Pydantic model
-        if hasattr(details, "model_dump"):
-            return details.model_dump()
-        # Try dict() method
-        if hasattr(details, "dict"):
-            return details.dict()
-        # Manually extract attributes
-        result = {}
-        for attr in ["reasoning_tokens", "accepted_prediction_tokens", "rejected_prediction_tokens"]:
-            if hasattr(details, attr):
-                result[attr] = getattr(details, attr)
-        return result
-
-    def prepare_input(self, messages, api_type="responses"):
-        """
-        Prepare messages for the API format based on api_type
-
-        Args:
-            messages: The raw messages
-            api_type: Either "responses" or "chat_completions"
-
-        Returns:
-            Formatted input for the specified API
-        """
-        if api_type == "responses":
-            # Format for Response API - combine into text
-            all_content = []
-
-            for message in messages:
-                # Skip system messages as they will be handled as 'instructions'
-                if message["role"] == "system":
-                    continue
-
-                role_prefix = ""
-                if message["role"] == "user":
-                    role_prefix = "User: "
-                elif message["role"] == "assistant":
-                    role_prefix = "Assistant: "
-
-                # Add message content
-                if "content" in message:
-                    all_content.append(f"{role_prefix}{message['content']}")
-
-                # Handle file attachments if present
-                if "attached_files" in message and message["attached_files"]:
-                    file_sections = ["\n\n# ATTACHED FILES"]
-
-                    for file_info in message["attached_files"]:
-                        file_name = file_info["file_name"]
-                        file_type = file_info.get("mime_type", "Unknown type")
-                        file_size = file_info.get("size", 0)
-                        file_content = file_info["content"]
-
-                        file_sections.append(f"""
-                            ### FILE: {file_name}
-                            {file_content}
-                            Copy""")
-
-                    all_content.append("\n".join(file_sections))
-
-            # Return the combined text as the input
-            return "\n\n".join(all_content)
-        else:
-            # Format for Chat Completions API - as message objects
-            prepared_messages = []
-
-            for message in messages:
-                # Clone the message with only the necessary fields
-                prepared_message = {
-                    "role": message["role"],
-                    "content": message["content"]
-                }
-
-                # Handle file attachments if present
-                if "attached_files" in message and message["attached_files"]:
-                    file_content = "\n\n# ATTACHED FILES\n"
-
-                    for file_info in message["attached_files"]:
-                        file_name = file_info["file_name"]
-                        file_content += f"\n### FILE: {file_name}\n{file_info['content']}\n"
-
-                    # Append file content to message content
-                    prepared_message["content"] += file_content
-
-                prepared_messages.append(prepared_message)
-
-            return prepared_messages
-
     def _get_file_extension(self, filename):
         """Extract extension from filename for syntax highlighting"""
         try:
@@ -1366,3 +1313,155 @@ class OpenAIAPIWorker(QObject):
                 self.message_received.emit(self._current_text_content)
             except Exception as e:
                 self.logger.error(f"Error emitting message in timeout handler: {str(e)}")
+
+    def _handle_api_error(self, error):
+        """Classify and handle different types of API errors including Gemini-specific ones"""
+        error_type = type(error).__name__
+        error_msg = str(error)
+        model = self.settings.get("model", "")
+        is_gemini = model in GEMINI_MODELS
+
+        # Log the error with model information for better debugging
+        self.logger.error(f"API error ({error_type}) with model {model}: {error_msg}")
+
+        # Check if this is a Gemini-specific error
+        if is_gemini and ("googleapi" in error_msg.lower() or "google" in error_msg.lower()):
+            if "permission" in error_msg.lower() or "unauthorized" in error_msg.lower() or "auth" in error_msg.lower():
+                self.error_occurred.emit(f"Gemini API authentication failed: Please check your API key")
+            elif "limit" in error_msg.lower() or "quota" in error_msg.lower():
+                self.error_occurred.emit(f"Gemini API rate limit exceeded: {error_msg}")
+            elif "invalid" in error_msg.lower() and "model" in error_msg.lower():
+                self.error_occurred.emit(f"Invalid Gemini model: {error_msg}")
+            elif "content" in error_msg.lower() and ("filter" in error_msg.lower() or "blocked" in error_msg.lower()):
+                self.error_occurred.emit(f"Content filtered by Gemini safety settings: {error_msg}")
+            else:
+                self.error_occurred.emit(f"Gemini API error: {error_msg}")
+            return
+
+        # Standard OpenAI error handling
+        if error_type == "AuthenticationError":
+            self.error_occurred.emit(f"Authentication failed: Please check your API key")
+        elif error_type == "RateLimitError":
+            self.error_occurred.emit(f"Rate limit exceeded: {error_msg}")
+        elif error_type == "APITimeoutError":
+            self.error_occurred.emit(f"Request timed out: {error_msg}")
+        elif error_type == "APIConnectionError":
+            self.error_occurred.emit(f"Connection error: {error_msg}")
+        elif error_type == "BadRequestError":
+            if "string too long" in error_msg or "maximum context length" in error_msg:
+                # This is a token/character limit error
+                self.error_occurred.emit(
+                    "Your message is too large for the API to process. Please reduce the size or number of file attachments."
+                )
+            else:
+                self.error_occurred.emit(f"Bad request: {error_msg}")
+        elif error_type == "InternalServerError":
+            self.error_occurred.emit(f"Server error: Please try again later")
+        else:
+            # Generic error handling
+            self.error_occurred.emit(f"Unexpected error: {error_msg}")
+
+    def _safe_get(self, obj, obj_dict, key, default=0):
+        """Safely get a value from either dict or object attributes"""
+        # Try dict access first
+        if key in obj_dict:
+            return obj_dict[key]
+        # Then try attribute access
+        elif hasattr(obj, key):
+            return getattr(obj, key)
+        # Finally return default
+        return default
+
+    def _extract_details_dict(self, details):
+        """Extract a dictionary from details object regardless of type"""
+        if details is None:
+            return {}
+        if isinstance(details, dict):
+            return details
+        # Try standard object with __dict__
+        if hasattr(details, "__dict__"):
+            return {k: v for k, v in details.__dict__.items() if not k.startswith('_')}
+        # Try Pydantic model
+        if hasattr(details, "model_dump"):
+            return details.model_dump()
+        # Try dict() method
+        if hasattr(details, "dict"):
+            return details.dict()
+        # Manually extract attributes
+        result = {}
+        for attr in ["reasoning_tokens", "accepted_prediction_tokens", "rejected_prediction_tokens"]:
+            if hasattr(details, attr):
+                result[attr] = getattr(details, attr)
+        return result
+
+    def _update_token_usage_with_reasoning(self, token_usage, model):
+        """Update token usage with reasoning information if applicable"""
+        # Skip for Gemini models
+        if model in GEMINI_MODELS:
+            return token_usage
+
+        # For reasoning models, add reasoning info if not present
+        if model in REASONING_MODELS or "o1" in model or "o3" in model:
+            if "completion_tokens_details" not in token_usage:
+                # Add placeholder for reasoning tokens
+                token_usage["completion_tokens_details"] = {
+                    "reasoning_tokens": 0,
+                    "accepted_prediction_tokens": 0,
+                    "rejected_prediction_tokens": 0
+                }
+                self.logger.debug(f"Added placeholder reasoning data for {model}")
+
+        return token_usage
+
+    def _update_model_info_with_provider(self, model_info, model):
+        """Add provider information to model info"""
+        if model in GEMINI_MODELS and "provider" not in model_info:
+            model_info["provider"] = "Google"
+        elif "provider" not in model_info:
+            model_info["provider"] = "OpenAI"
+
+        return model_info
+
+    def _create_formatted_messages(self, raw_messages, api_type):
+        """Creates properly formatted messages for the specified API type"""
+        if not raw_messages:
+            return []
+
+        if api_type == "gemini":
+            # Convert system message to a user message for Gemini
+            formatted_messages = []
+            system_content = None
+
+            # Extract system message content
+            for msg in raw_messages:
+                if msg.get("role") == "system":
+                    system_content = msg.get("content", "")
+                    break
+
+            # Add all non-system messages
+            for msg in raw_messages:
+                if msg.get("role") != "system":
+                    formatted_messages.append({
+                        "role": msg.get("role"),
+                        "content": msg.get("content", "")
+                    })
+
+            # Prepend system instruction as a user message if found
+            if system_content:
+                formatted_messages.insert(0, {
+                    "role": "user",
+                    "content": f"SYSTEM INSTRUCTIONS:\n\n{system_content}\n\nPlease follow these instructions for all interactions."
+                })
+
+            return formatted_messages
+        else:
+            # For OpenAI APIs, use messages as-is
+            return [{
+                "role": msg.get("role"),
+                "content": msg.get("content", "")
+            } for msg in raw_messages]
+
+    def cancel(self):
+        """Mark the worker for cancellation"""
+        self._is_cancelled = True
+        self.logger.info("Worker marked for cancellation")

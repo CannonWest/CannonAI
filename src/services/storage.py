@@ -1,11 +1,15 @@
+# Replace this in src/services/storage.py
+
 """
-Storage services for saving and loading application data.
+Storage services for saving and loading application data with improved caching.
 """
 
 import os
 import json
+import threading
 from typing import Dict, Any, Optional
 
+import tiktoken
 from PyQt6.QtCore import QSettings
 
 from src.utils import CONFIG_DIR, SETTINGS_FILE, DEFAULT_PARAMS
@@ -14,11 +18,25 @@ from src.utils.logging_utils import get_logger, log_exception
 # Get a logger for this module
 logger = get_logger(__name__)
 
+# Global settings instance to prevent repeated loading
+_GLOBAL_SETTINGS_INSTANCE = None
+_GLOBAL_SETTINGS_LOCK = threading.RLock()
 
 class SettingsManager:
-    """Manages application settings"""
+    """Manages application settings with improved caching"""
 
     def __init__(self):
+        global _GLOBAL_SETTINGS_INSTANCE, _GLOBAL_SETTINGS_LOCK
+        
+        # Check if we already have a global instance
+        with _GLOBAL_SETTINGS_LOCK:
+            if _GLOBAL_SETTINGS_INSTANCE is not None:
+                # Copy from global instance
+                self.settings = _GLOBAL_SETTINGS_INSTANCE.settings.copy()
+                self.logger = get_logger(f"{__name__}.SettingsManager")
+                return
+        
+        # No global instance yet, create a new one
         self.settings = DEFAULT_PARAMS.copy()
         self.logger = get_logger(f"{__name__}.SettingsManager")
 
@@ -28,9 +46,21 @@ class SettingsManager:
 
         # Load settings from disk if they exist
         self.load_settings()
+        
+        # Store as global instance
+        with _GLOBAL_SETTINGS_LOCK:
+            _GLOBAL_SETTINGS_INSTANCE = self
 
     def load_settings(self) -> Dict[str, Any]:
-        """Load settings from disk"""
+        """Load settings from disk - only does actual loading if needed"""
+        global _GLOBAL_SETTINGS_INSTANCE
+        
+        # If we already have global settings loaded, just use those
+        with _GLOBAL_SETTINGS_LOCK:
+            if _GLOBAL_SETTINGS_INSTANCE is not None and _GLOBAL_SETTINGS_INSTANCE is not self:
+                self.settings = _GLOBAL_SETTINGS_INSTANCE.settings.copy()
+                return self.settings
+        
         self.logger.debug("Loading settings")
 
         # First check environment variable for API key
@@ -67,7 +97,9 @@ class SettingsManager:
         return self.settings
 
     def save_settings(self) -> bool:
-        """Save settings to disk"""
+        """Save settings to disk - updates the global instance"""
+        global _GLOBAL_SETTINGS_INSTANCE
+        
         try:
             self.logger.debug("Saving settings")
 
@@ -89,6 +121,11 @@ class SettingsManager:
             q_settings = QSettings("OpenAI", "ChatApp")
             q_settings.setValue("app_settings", settings_to_save)
 
+            # Update global instance with the latest settings
+            with _GLOBAL_SETTINGS_LOCK:
+                if _GLOBAL_SETTINGS_INSTANCE is not None:
+                    _GLOBAL_SETTINGS_INSTANCE.settings = self.settings.copy()
+
             self.logger.info("Settings saved successfully")
             return True
         except Exception as e:
@@ -97,8 +134,24 @@ class SettingsManager:
             return False
 
     def get_settings(self) -> Dict[str, Any]:
-        """Get the current settings"""
+        """Get the current settings - uses cached settings for performance"""
         return self.settings.copy()
+    
+    @staticmethod
+    def get_cached_settings() -> Dict[str, Any]:
+        """
+        Static method to get cached settings without creating a new instance.
+        This is much more efficient for frequent access.
+        """
+        global _GLOBAL_SETTINGS_INSTANCE, _GLOBAL_SETTINGS_LOCK
+        
+        with _GLOBAL_SETTINGS_LOCK:
+            if _GLOBAL_SETTINGS_INSTANCE is not None:
+                return _GLOBAL_SETTINGS_INSTANCE.settings.copy()
+        
+        # No cached instance, create one (which will load settings)
+        instance = SettingsManager()
+        return instance.settings.copy()
 
     @staticmethod
     def get_cached_settings() -> Dict[str, Any]:
@@ -117,9 +170,18 @@ class SettingsManager:
         return instance.settings.copy()
 
     def update_settings(self, new_settings: Dict[str, Any]) -> None:
-        """Update settings with new values"""
+        """Update settings with new values and update the global instance"""
+        global _GLOBAL_SETTINGS_INSTANCE
+        
         self.logger.debug("Updating settings")
         self.settings.update(new_settings)
+        
+        # Update global instance
+        with _GLOBAL_SETTINGS_LOCK:
+            if _GLOBAL_SETTINGS_INSTANCE is not None and _GLOBAL_SETTINGS_INSTANCE is not self:
+                _GLOBAL_SETTINGS_INSTANCE.settings.update(new_settings)
+        
+        # Save the updated settings
         self.save_settings()
         self.logger.info("Settings updated and saved")
 

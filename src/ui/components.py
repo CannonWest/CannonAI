@@ -17,6 +17,7 @@ from src.utils import (
     RESPONSE_FORMATS, DEFAULT_PARAMS, MODEL_PRICING
 )
 from src.models import DBMessageNode, DBConversationTree
+from src.utils.constants import GEMINI_BASE_URL, GEMINI_MODELS
 from src.utils.file_utils import extract_display_text
 
 class ConversationTreeWidget(QTreeWidget):
@@ -600,35 +601,49 @@ class SettingsDialog(QDialog):
         adv_group = QGroupBox("Advanced Options")
         adv_layout = QFormLayout()
 
-        self.api_key_input = QLineEdit()
-        self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key_input.setText(current_settings.get("api_key", ""))
-        adv_layout.addRow("API Key:", self.api_key_input)
-
-        self.api_base_input = QLineEdit()
-        self.api_base_input.setText(current_settings.get("api_base", ""))
-        adv_layout.addRow("API Base URL:", self.api_base_input)
-
-        # API Type selection
+        # API Type selection with Gemini option
         api_type_layout = QHBoxLayout()
         self.api_type_combo = QComboBox()
-        self.api_type_combo.addItems(["responses", "chat_completions"])
+        self.api_type_combo.addItems(["responses", "chat_completions", "gemini"])
         current_api_type = current_settings.get("api_type", "responses")
         self.api_type_combo.setCurrentText(current_api_type)
+        # Connect signal to update UI when API type changes
+        self.api_type_combo.currentTextChanged.connect(self.update_ui_for_api_type)
         api_type_layout.addWidget(self.api_type_combo)
 
         api_type_explanation = QPushButton("?")
-        api_type_explanation.setToolTip("Select which OpenAI API endpoint to use")
+        api_type_explanation.setToolTip("Select which API endpoint to use")
         api_type_explanation.setFixedWidth(25)
         api_type_explanation.clicked.connect(lambda: QMessageBox.information(
             self,
             "API Type",
             "Choose between:\n\n"
-            "- responses: New endpoint for single-turn completions\n"
-            "- chat_completions: Traditional chat endpoint for multi-turn conversations"
+            "- responses: OpenAI endpoint for single-turn completions\n"
+            "- chat_completions: OpenAI endpoint for multi-turn conversations\n"
+            "- gemini: Google Gemini AI models via OpenAI client interface"
         ))
         api_type_layout.addWidget(api_type_explanation)
         adv_layout.addRow("API Type:", api_type_layout)
+
+        # OpenAI API Key
+        self.api_key_label = QLabel("OpenAI API Key:")
+        self.api_key_input = QLineEdit()
+        self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key_input.setText(current_settings.get("api_key", ""))
+        adv_layout.addRow(self.api_key_label, self.api_key_input)
+
+        # Gemini API Key (new field)
+        self.gemini_api_key_label = QLabel("Gemini API Key:")
+        self.gemini_api_key_input = QLineEdit()
+        self.gemini_api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.gemini_api_key_input.setText(current_settings.get("gemini_api_key", ""))
+        adv_layout.addRow(self.gemini_api_key_label, self.gemini_api_key_input)
+
+        # API Base URL
+        self.api_base_label = QLabel("API Base URL:")
+        self.api_base_input = QLineEdit()
+        self.api_base_input.setText(current_settings.get("api_base", ""))
+        adv_layout.addRow(self.api_base_label, self.api_base_input)
 
         # Add metadata options
         self.metadata_layout = QGridLayout()
@@ -675,11 +690,51 @@ class SettingsDialog(QDialog):
         button_layout.addWidget(save_button)
         layout.addLayout(button_layout)
 
-        # Initialize UI based on current model
+        # Initialize UI based on current model and API type
         self.update_ui_for_model()
+        self.update_ui_for_api_type()
         self.update_metadata_fields_state()
 
-    # Replace the update_ui_for_model method in the SettingsDialog class in src/ui/components.py
+    def update_ui_for_api_type(self):
+        """Update UI elements based on selected API type"""
+        api_type = self.api_type_combo.currentText()
+
+        # Show/hide API key fields based on API type
+        if api_type == "gemini":
+            self.gemini_api_key_label.setVisible(True)
+            self.gemini_api_key_input.setVisible(True)
+            self.api_key_label.setText("OpenAI API Key (ignored for Gemini):")
+
+            # Auto-set API base if empty and using Gemini
+            if not self.api_base_input.text():
+                self.api_base_input.setText(GEMINI_BASE_URL)
+                self.api_base_input.setPlaceholderText(GEMINI_BASE_URL)
+
+            # Update store checkbox state
+            self.store_checkbox.setEnabled(False)
+            self.store_checkbox.setChecked(False)
+            self.store_checkbox.setToolTip("Store option not available for Gemini models")
+
+            # Update other Gemini-specific UI elements
+            self.service_tier_combo.setEnabled(False)
+            self.service_tier_combo.setToolTip("Service tier not applicable for Gemini models")
+        else:
+            self.gemini_api_key_label.setVisible(False)
+            self.gemini_api_key_input.setVisible(False)
+            self.api_key_label.setText("OpenAI API Key:")
+
+            # Clear API base if it's set to Gemini URL
+            if self.api_base_input.text() == GEMINI_BASE_URL:
+                self.api_base_input.clear()
+                self.api_base_input.setPlaceholderText("")
+
+            # Re-enable store checkbox
+            self.store_checkbox.setEnabled(True)
+            self.store_checkbox.setToolTip("Store chat completions for later retrieval via API")
+
+            # Re-enable service tier
+            self.service_tier_combo.setEnabled(True)
+            self.service_tier_combo.setToolTip("")
 
     def update_ui_for_model(self):
         """Update UI elements based on selected model"""
@@ -726,6 +781,11 @@ class SettingsDialog(QDialog):
 
         # Set hint on max tokens spinbox
         self.max_tokens.setToolTip(f"Maximum value for this model: {output_limit}")
+
+        # Set appropriate API type for Gemini models
+        if model_id in GEMINI_MODELS:
+            self.api_type_combo.setCurrentText("gemini")
+            self.update_ui_for_api_type()
 
         # Update window title with model name for clarity
         self.setWindowTitle(f"Chat Settings - {model_name}")
@@ -775,6 +835,9 @@ class SettingsDialog(QDialog):
             if key and value:
                 metadata[key] = value
 
+        # Get API type
+        api_type = self.api_type_combo.currentText()
+
         # Build settings dict with conditional parameters
         token_value = self.max_tokens.value()
         settings = {
@@ -788,7 +851,8 @@ class SettingsDialog(QDialog):
             "metadata": metadata,
             "api_key": self.api_key_input.text(),
             "api_base": self.api_base_input.text(),
-            "api_type": self.api_type_combo.currentText()
+            "api_type": api_type,
+            "gemini_api_key": self.gemini_api_key_input.text()  # Add Gemini API key
         }
 
         # Set seed value properly

@@ -97,7 +97,6 @@ class DBMessageNode:
         # Always return an empty list as default instead of None
         return []
 
-
     @reasoning_steps.setter
     def reasoning_steps(self, steps):
         """Set reasoning steps and store in database"""
@@ -412,65 +411,128 @@ class DBConversationTree:
             conn.close()
 
     def add_user_message(self, content, attached_files=None):
-        """Add a user message as child of current node"""
-        conn = self.db_manager.get_connection()
-        cursor = conn.cursor()
+        """Add a user message as child of current node with optimized file handling and error recovery"""
+        max_retries = 3
+        retry_delay = 0.5
+        attempts = 0
 
-        try:
-            node_id = str(QUuid.createUuid())
-            now = datetime.now().isoformat()
+        while attempts < max_retries:
+            conn = None
+            try:
+                # Get a fresh connection each time
+                conn = self.db_manager.get_connection()
 
-            # Insert message
-            cursor.execute(
-                '''
-                INSERT INTO messages (id, conversation_id, parent_id, role, content, timestamp)
-                VALUES (?, ?, ?, 'user', ?, ?)
-                ''',
-                (node_id, self.id, self.current_node_id, content, now)
+                # Create the cursor and begin a transaction for the main message
+                cursor = conn.cursor()
+
+                # Generate ID and timestamp
+                node_id = str(QUuid.createUuid())
+                now = datetime.now().isoformat()
+
+                # Insert message
+                cursor.execute(
+                    '''
+                    INSERT INTO messages (id, conversation_id, parent_id, role, content, timestamp)
+                    VALUES (?, ?, ?, 'user', ?, ?)
+                    ''',
+                    (node_id, self.id, self.current_node_id, content, now)
+                )
+
+                # Update current node and modified time in the same transaction
+                self.current_node_id = node_id
+                self.modified_at = now
+                cursor.execute(
+                    'UPDATE conversations SET current_node_id = ?, modified_at = ? WHERE id = ?',
+                    (node_id, now, self.id)
+                )
+
+                # Commit the transaction for the main message
+                conn.commit()
+
+                # Add file attachments if present - now with proper error handling
+                if attached_files and len(attached_files) > 0:
+                    # Track file attachment progress
+                    success_count = 0
+                    total_files = len(attached_files)
+
+                    # Process files in batches to reduce memory pressure
+                    batch_size = 3
+
+                    for i in range(0, len(attached_files), batch_size):
+                        batch = attached_files[i:i + batch_size]
+
+                        for file_info in batch:
+                            try:
+                                # Determine storage type based on content size
+                                content_size = len(file_info.get('content', ''))
+                                storage_type = 'disk' if content_size > 1024 * 1024 else 'database'
+
+                                # Use the queued file processor to avoid database locks
+                                file_id = self.db_manager.add_file_attachment(
+                                    node_id,
+                                    file_info,
+                                    storage_type=storage_type
+                                )
+
+                                success_count += 1
+                            except Exception as file_error:
+                                # Log error and continue with next file
+                                logger.error(
+                                    f"Error attaching file {file_info.get('file_name', 'unknown')}: {str(file_error)}"
+                                )
+                                continue
+
+                        # Process UI events to keep application responsive
+                        try:
+                            from PyQt6.QtCore import QCoreApplication
+                            QCoreApplication.processEvents()
+                        except ImportError:
+                            pass  # Not in a Qt environment
+
+                    # Log summary of attachment results
+                    logger.info(f"Successfully attached {success_count}/{total_files} files to message {node_id}")
+
+                # Return the new node - use the get_node method which has its own connection handling
+                return self.get_node(node_id)
+
+            except sqlite3.OperationalError as e:
+                # Check if this is a database lock error
+                if "database is locked" in str(e):
+                    attempts += 1
+                    logger.warning(f"Database locked when adding user message - attempt {attempts}/{max_retries}")
+
+                    # Wait before retrying with exponential backoff
+                    import time
+                    import random
+                    retry_wait = retry_delay * (2 ** (attempts - 1)) * (0.5 + random.random())
+                    time.sleep(retry_wait)
+
+                    # Close the connection
+                    if conn:
+                        try:
+                            conn.close()
+                        except:
+                            pass
+                else:
+                    # Other SQLite error - log and re-raise
+                    logger.error(f"SQLite error adding user message: {e}")
+                    if conn:
+                        conn.rollback()
+                    raise
+            except Exception as e:
+                # Other general error
+                logger.error(f"Error adding user message: {e}")
+                if conn:
+                    conn.rollback()
+                raise
+
+        # If we've exhausted retries, raise a more informative error
+        if attempts >= max_retries:
+            logger.error("Exceeded maximum retries when adding user message")
+            raise sqlite3.OperationalError(
+                "Database is locked and could not be accessed after multiple attempts. "
+                "Try again or restart the application."
             )
-
-            # Add file attachments if present
-            if attached_files:
-                for file_info in attached_files:
-                    file_id = str(QUuid.createUuid())
-                    cursor.execute(
-                        '''
-                        INSERT INTO file_attachments 
-                        (id, message_id, file_name, mime_type, content, token_count)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        ''',
-                        (
-                            file_id,
-                            node_id,
-                            file_info['file_name'],
-                            file_info.get('mime_type', 'text/plain'),
-                            file_info['content'],
-                            file_info.get('token_count', 0)
-                        )
-                    )
-
-            # Update current node
-            self.current_node_id = node_id
-
-            # Update conversation modified time
-            self.modified_at = now
-            cursor.execute(
-                'UPDATE conversations SET current_node_id = ?, modified_at = ? WHERE id = ?',
-                (node_id, now, self.id)
-            )
-
-            conn.commit()
-
-            # Return the new node
-            return self.get_node(node_id)
-
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Error adding user message")
-            log_exception(logger, e, "Failed to add user message")
-            raise
-        finally:
-            conn.close()
 
     def add_assistant_response(self, content, model_info=None, parameters=None, token_usage=None, response_id=None):
         """Add an assistant response as child of current node, with Response API support"""
@@ -617,78 +679,131 @@ class DBConversationTree:
             conn.close()
 
     def navigate_to_node(self, node_id):
-        """Change the current active node"""
-        conn = self.db_manager.get_connection()
-        cursor = conn.cursor()
+        """Change the current active node with improved error handling and retry logic"""
+        max_retries = 3
+        retry_delay = 0.1  # initial delay
+        attempts = 0
 
-        try:
-            # Verify the node exists and belongs to this conversation
-            cursor.execute(
-                'SELECT id FROM messages WHERE id = ? AND conversation_id = ?',
-                (node_id, self.id)
-            )
+        while attempts < max_retries:
+            conn = None
+            try:
+                # Get a fresh connection each time
+                conn = self.db_manager.get_connection()
+                cursor = conn.cursor()
 
-            if not cursor.fetchone():
-                logger.warning(f"Node {node_id} not found in conversation {self.id}")
+                # Verify the node exists and belongs to this conversation
+                cursor.execute(
+                    'SELECT id FROM messages WHERE id = ? AND conversation_id = ?',
+                    (node_id, self.id)
+                )
+
+                if not cursor.fetchone():
+                    logger.warning(f"Node {node_id} not found in conversation {self.id}")
+                    return False
+
+                # Store the old node ID
+                old_node_id = self.current_node_id
+
+                # Update current node - needed before getting branch
+                self.current_node_id = node_id
+
+                # Get the current branch for this node - cache results to avoid recursive DB calls
+                current_branch = None
+                try:
+                    current_branch = self.get_current_branch()
+                except Exception as branch_error:
+                    logger.warning(f"Error getting branch: {str(branch_error)}")
+                    # Continue with the node update even if branch retrieval fails
+
+                if current_branch:
+                    # Track branch data for future navigation
+                    try:
+                        # Get the first node of this branch for tracking
+                        # We use the first two nodes to identify a branch uniquely
+                        # (The first node is usually system, but second node identifies the branch)
+                        if len(current_branch) >= 2:
+                            branch_id = current_branch[1].id  # Use the second node
+                        else:
+                            branch_id = current_branch[0].id  # Fallback to first node
+
+                        # Get all node IDs in the current branch
+                        current_node_ids = [node.id for node in current_branch if node is not None]
+
+                        # Check if we've seen a longer version of this branch before
+                        if branch_id in self._longest_branches:
+                            longest_node_ids = self._longest_branches[branch_id]
+
+                            # If the current branch is longer, update our record
+                            if len(current_node_ids) > len(longest_node_ids):
+                                logger.debug(f"Found longer version of branch {branch_id}, updating record from {len(longest_node_ids)} to {len(current_node_ids)} nodes")
+                                self._longest_branches[branch_id] = current_node_ids
+                        else:
+                            # First time seeing this branch, record it
+                            logger.debug(f"First time seeing branch {branch_id}, recording {len(current_node_ids)} nodes")
+                            self._longest_branches[branch_id] = current_node_ids
+
+                        # Debug log
+                        logger.debug(f"Currently viewing branch {branch_id} which has {len(current_node_ids)} visible nodes")
+                        if branch_id in self._longest_branches:
+                            logger.debug(f"Longest version of this branch has {len(self._longest_branches[branch_id])} nodes")
+                    except Exception as branch_tracking_error:
+                        # Just log the error but continue with the node update
+                        logger.warning(f"Error tracking branch data: {str(branch_tracking_error)}")
+
+                # Update in database
+                now = datetime.now().isoformat()
+                self.modified_at = now
+
+                cursor.execute(
+                    'UPDATE conversations SET current_node_id = ?, modified_at = ? WHERE id = ?',
+                    (node_id, now, self.id)
+                )
+
+                conn.commit()
+                return True
+
+            except sqlite3.OperationalError as e:
+                # Handle database lock errors with retry
+                if "database is locked" in str(e) or "cannot operate on a closed database" in str(e):
+                    attempts += 1
+                    logger.warning(f"Database error in navigate_to_node, attempt {attempts}/{max_retries}: {str(e)}")
+
+                    # Wait with exponential backoff before retrying
+                    import time
+                    import random
+                    retry_wait = retry_delay * (2 ** (attempts - 1)) * (0.5 + random.random())
+                    time.sleep(retry_wait)
+
+                    # Make sure the connection is closed
+                    if conn:
+                        try:
+                            conn.close()
+                        except:
+                            pass
+                else:
+                    # If it's not a lock error, just log and return False
+                    logger.error(f"SQLite error in navigate_to_node: {str(e)}")
+                    if conn:
+                        conn.rollback()
+                    return False
+
+            except Exception as e:
+                logger.error(f"Error in navigate_to_node: {str(e)}")
+                if conn:
+                    conn.rollback()
                 return False
 
-            # Store the old node ID
-            old_node_id = self.current_node_id
+            finally:
+                # Always try to close the connection in the finally block
+                if conn:
+                    try:
+                        conn.close()
+                    except:
+                        pass
 
-            # Update current node - needed before getting branch
-            self.current_node_id = node_id
-
-            # Get the current branch for this node
-            current_branch = self.get_current_branch()
-            if current_branch:
-                # Get the first node of this branch for tracking
-                # We use the first two nodes to identify a branch uniquely
-                # (The first node is usually system, but second node identifies the branch)
-                if len(current_branch) >= 2:
-                    branch_id = current_branch[1].id  # Use the second node
-                else:
-                    branch_id = current_branch[0].id  # Fallback to first node
-
-                # Get all node IDs in the current branch
-                current_node_ids = [node.id for node in current_branch if node is not None]
-
-                # Check if we've seen a longer version of this branch before
-                if branch_id in self._longest_branches:
-                    longest_node_ids = self._longest_branches[branch_id]
-
-                    # If the current branch is longer, update our record
-                    if len(current_node_ids) > len(longest_node_ids):
-                        logger.debug(f"Found longer version of branch {branch_id}, updating record from {len(longest_node_ids)} to {len(current_node_ids)} nodes")
-                        self._longest_branches[branch_id] = current_node_ids
-                else:
-                    # First time seeing this branch, record it
-                    logger.debug(f"First time seeing branch {branch_id}, recording {len(current_node_ids)} nodes")
-                    self._longest_branches[branch_id] = current_node_ids
-
-                # Debug log
-                logger.debug(f"Currently viewing branch {branch_id} which has {len(current_node_ids)} visible nodes")
-                if branch_id in self._longest_branches:
-                    logger.debug(f"Longest version of this branch has {len(self._longest_branches[branch_id])} nodes")
-
-            # Update in database
-            now = datetime.now().isoformat()
-            self.modified_at = now
-
-            cursor.execute(
-                'UPDATE conversations SET current_node_id = ?, modified_at = ? WHERE id = ?',
-                (node_id, now, self.id)
-            )
-
-            conn.commit()
-            return True
-        except Exception as e:
-            logger.error(f"Error in navigate_to_node: {str(e)}")
-            if conn:
-                conn.rollback()
-            return False
-        finally:
-            if conn:
-                conn.close()
+        # If we've exhausted retries, log and return False
+        logger.error(f"Failed to navigate to node {node_id} after {max_retries} attempts")
+        return False
 
     def _update_active_branch(self, node_id, current_branch_node_ids):
         """
@@ -759,8 +874,54 @@ class DBConversationTree:
         return False
 
     def get_current_branch(self):
-        """Get the current active conversation branch"""
-        return self.current_node.get_path_to_root()
+        """Get the current active conversation branch with improved error handling"""
+        try:
+            max_retries = 3
+            attempts = 0
+            delay = 0.1  # Initial delay
+
+            while attempts < max_retries:
+                try:
+                    # Try to get the path to root using the current node
+                    if hasattr(self, 'current_node_id') and self.current_node_id:
+                        # Use the database manager to get the current node
+                        current_node = self.db_manager.get_message(self.current_node_id)
+                        if current_node:
+                            return current_node.get_path_to_root()
+                        else:
+                            logger.warning(f"Current node {self.current_node_id} not found")
+                            # Try to fall back to root node
+                            if hasattr(self, 'root_id') and self.root_id:
+                                root_node = self.db_manager.get_message(self.root_id)
+                                if root_node:
+                                    return [root_node]
+
+                    # If we reached here, we couldn't get the branch
+                    return []
+
+                except sqlite3.OperationalError as e:
+                    # Handle database lock or closed errors with retry
+                    if "database is locked" in str(e) or "cannot operate on a closed database" in str(e):
+                        attempts += 1
+                        logger.warning(f"Database error in get_current_branch, attempt {attempts}/{max_retries}: {str(e)}")
+
+                        # Wait with exponential backoff before retrying
+                        import time
+                        import random
+                        retry_wait = delay * (2 ** (attempts - 1)) * (0.5 + random.random())
+                        time.sleep(retry_wait)
+                    else:
+                        # For other SQLite errors, just raise
+                        raise
+
+            # If we've exhausted retries
+            logger.error(f"Failed to get current branch after {max_retries} attempts")
+            return []
+
+        except Exception as e:
+            logger.error(f"Error in get_current_branch: {str(e)}")
+            # Return empty list as fallback
+            return []
 
     def get_current_branch_future(self):
         """

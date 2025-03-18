@@ -131,79 +131,6 @@ def calculate_file_hash(file_path: str) -> str:
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest()
 
-
-def process_large_text_file(file_path: str, model: str, progress_callback: Callable[[int], None] = None) -> Tuple[str, int]:
-    """
-    Process a large text file by reading and counting tokens in chunks
-    to avoid memory issues.
-
-    Args:
-        file_path: Path to the text file
-        model: Model name for token counting
-        progress_callback: Callback for progress updates
-
-    Returns:
-        Tuple of (content, token_count)
-    """
-    # Initialize variables
-    file_size = os.path.getsize(file_path)
-    bytes_processed = 0
-    content_chunks = []
-    token_count = 0
-
-    # Get encoding for token counting
-    try:
-        encoding = tiktoken.encoding_for_model(model)
-    except KeyError:
-        encoding = tiktoken.get_encoding("cl100k_base")
-
-    # Process file in chunks
-    # Use the global chunk_size variable defined at the top of the module
-    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-        while True:
-            chunk = f.read(chunk_size)
-            if not chunk:
-                break
-
-            # Add chunk to content
-            content_chunks.append(chunk)
-
-            # Count tokens
-            tokens = encoding.encode(chunk)
-            token_count += len(tokens)
-
-            # Update progress
-            bytes_processed += len(chunk.encode('utf-8'))
-            progress = min(int((bytes_processed / file_size) * 100), 100)
-            if progress_callback:
-                progress_callback(progress)
-
-    # Join chunks
-    content = ''.join(content_chunks)
-
-    return content, token_count
-
-
-def count_tokens(text: str, model: str = "gpt-4o") -> int:
-    """
-    Count tokens in a text string using tiktoken.
-
-    Args:
-        text: The text to count tokens for
-        model: The model to use for token counting
-
-    Returns:
-        Number of tokens
-    """
-    try:
-        encoding = tiktoken.encoding_for_model(model)
-    except KeyError:
-        # Fall back to cl100k_base (used by GPT-4, GPT-3.5)
-        encoding = tiktoken.get_encoding("cl100k_base")
-
-    return len(encoding.encode(text))
-
-
 def get_file_info(file_path: str, model: str = "gpt-4o") -> Dict:
     """
     Get file information including content and token count.
@@ -434,3 +361,113 @@ class FileCacheManager:
                 os.remove(file_path)
             except Exception as e:
                 print(f"Error removing cached file {file_path}: {e}")
+
+
+def process_large_text_file(file_path: str, model: str, progress_callback: Callable[[int], None] = None) -> Tuple[str, int]:
+    """
+    Process a large text file by reading and counting tokens in chunks
+    to avoid memory issues.
+
+    Args:
+        file_path: Path to the text file
+        model: Model name for token counting
+        progress_callback: Callback for progress updates
+
+    Returns:
+        Tuple of (content, token_count)
+    """
+    # Initialize variables
+    file_size = os.path.getsize(file_path)
+    bytes_processed = 0
+    content_chunks = []
+    token_count = 0
+
+    # For extremely large files, set a maximum size to process
+    max_file_size = 10 * 1024 * 1024  # 10MB
+    if file_size > max_file_size:
+        # For files over 10MB, create a truncated version
+        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read(max_file_size) + "\n\n[...File truncated due to size limits...]"
+
+        # Count tokens in the truncated content
+        try:
+            encoding = tiktoken.encoding_for_model(model)
+        except KeyError:
+            encoding = tiktoken.get_encoding("cl100k_base")
+
+        token_count = len(encoding.encode(content))
+
+        # Update progress
+        if progress_callback:
+            progress_callback(100)  # Mark as complete
+
+        return content, token_count
+
+    # Get encoding for token counting
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        encoding = tiktoken.get_encoding("cl100k_base")
+
+    # Process file in chunks
+    chunk_size = 1024 * 1024  # 1MB chunks
+    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+
+            # Add chunk to content
+            content_chunks.append(chunk)
+
+            # Count tokens
+            tokens = encoding.encode(chunk)
+            token_count += len(tokens)
+
+            # Update progress
+            bytes_processed += len(chunk.encode('utf-8'))
+            progress = min(int((bytes_processed / file_size) * 100), 100)
+            if progress_callback:
+                progress_callback(progress)
+
+    # Join chunks
+    content = ''.join(content_chunks)
+
+    return content, token_count
+
+
+_TOKEN_COUNTING_SETTINGS = {}
+_TOKEN_COUNTING_LOCK = threading.RLock()
+
+
+def count_tokens(text: str, model: str = None) -> int:
+    """
+    Count tokens in a text string using tiktoken with improved caching.
+
+    Args:
+        text: The text to count tokens for
+        model: The model to use for token counting
+
+    Returns:
+        Number of tokens
+    """
+    global _TOKEN_COUNTING_SETTINGS, _TOKEN_COUNTING_LOCK
+
+    # Get model from settings if not provided
+    if model is None:
+        with _TOKEN_COUNTING_LOCK:
+            # Check if we have cached settings already
+            if not _TOKEN_COUNTING_SETTINGS:
+                # Use the direct static method to avoid creating multiple instances
+                from src.services.storage import SettingsManager
+                _TOKEN_COUNTING_SETTINGS = SettingsManager.get_cached_settings()
+
+            model = _TOKEN_COUNTING_SETTINGS.get("model", "gpt-4o")
+
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        # Fall back to cl100k_base (used by GPT-4, GPT-3.5)
+        encoding = tiktoken.get_encoding("cl100k_base")
+
+    return len(encoding.encode(text))

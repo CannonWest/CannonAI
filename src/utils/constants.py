@@ -8,6 +8,9 @@ from typing import Dict, Any
 # Default OpenAI API key
 DEFAULT_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
+# Default Gemini API key
+DEFAULT_GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
 # Application paths
 APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 DATA_DIR = os.path.join(APP_DIR, "data")
@@ -34,8 +37,13 @@ MODELS = {
     "GPT-3.5 Turbo": "gpt-3.5-turbo",
     "GPT-3.5 Turbo Instruct": "gpt-3.5-turbo-instruct",
     "Davinci-002": "davinci-002",
-    "Babbage-002": "babbage-002"
+    "Babbage-002": "babbage-002",
+    # Add Gemini models
+    "Gemini 2.0 Flash": "gemini-2.0-flash",
+    "Gemini 2.0 Flash Experimental": "gemini-2.0-flash-exp",
+    "Gemini 2.0 Flash Thinking": "gemini-2.0-flash-thinking-exp-01-21"
 }
+
 # For those who want specific model versions
 MODEL_SNAPSHOTS = {
     # GPT-4.5 snapshots
@@ -73,6 +81,8 @@ ALL_MODELS = {**MODELS, **MODEL_SNAPSHOTS}
 REASONING_MODELS = ["deepseek-reasoner", "o1", "o3-mini", "o1-2024-12-17", "o1-mini-2024-09-12", "o3-mini-2025-01-31", "o1-preview-2024-09-12", "o1-preview"]
 GPT_MODELS = ["deepseek-chat","gpt-4.5-preview", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo",
               "gpt-4.5-preview-2025-02-27", "gpt-4o-2024-08-06", "gpt-4o-2024-11-20", "gpt-4o-mini-2024-07-18"]
+# Add Gemini model category
+GEMINI_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-2.0-flash-thinking-exp-01-21"]
 
 # Reasoning effort options for o1 and o3 models
 REASONING_EFFORT = ["low", "medium", "high"]
@@ -129,7 +139,12 @@ MODEL_CONTEXT_SIZES = {
     # Claude models (if we want to support them in the future)
     "claude-3-5-sonnet-20240620": 200000,
     "claude-3-opus-20240229": 200000,
-    "claude-3-haiku-20240307": 200000
+    "claude-3-haiku-20240307": 200000,
+
+    # Gemini models
+    "gemini-2.0-flash": 1048576,  # 1M tokens
+    "gemini-2.0-flash-exp": 1048576,
+    "gemini-2.0-flash-thinking-exp-01-21": 1048576
 }
 
 # Default max output tokens
@@ -176,7 +191,12 @@ MODEL_OUTPUT_LIMITS = {
 
     # Base models
     "davinci-002": 16384,
-    "babbage-002": 16384
+    "babbage-002": 16384,
+
+    # Gemini models
+    "gemini-2.0-flash": 8192,
+    "gemini-2.0-flash-exp": 8192,
+    "gemini-2.0-flash-thinking-exp-01-21": 8192
 }
 
 # Default parameters for API calls
@@ -191,7 +211,9 @@ DEFAULT_PARAMS: Dict[str, Any] = {
     "store": True,  # Whether to store responses for later retrieval
     "seed": None,    # For deterministic outputs
     "api_key": DEFAULT_API_KEY,
-    "api_type": "responses",  # Options: "responses" or "chat_completions"
+    "api_type": "responses",  # Options: "responses", "chat_completions", or "gemini"
+    "gemini_api_key": DEFAULT_GEMINI_API_KEY,  # Separate API key for Gemini
+    "api_base": "",  # Will be set to Gemini base URL when using Gemini models
 }
 
 # Theme Colors
@@ -250,7 +272,12 @@ MODEL_PRICING = {
 
     # Base models
     "davinci-002": {"input": 2.00, "output": 2.00},
-    "babbage-002": {"input": 0.40, "output": 0.40}
+    "babbage-002": {"input": 0.40, "output": 0.40},
+
+    # Gemini models (pricing is approximate)
+    "gemini-2.0-flash": {"input": 0.05, "output": 0.10},
+    "gemini-2.0-flash-exp": {"input": 0.05, "output": 0.10},
+    "gemini-2.0-flash-thinking-exp-01-21": {"input": 0.05, "output": 0.10}
 }
 
 MODEL_CONTEXT_SIZES["deepseek-reasoner"] = 64000
@@ -271,3 +298,5 @@ for model, prices in MODEL_PRICING.items():
     if "cached_input" in prices:
         MODEL_PRICE_PER_TOKEN[model]["cached_input"] = prices["cached_input"] / 1_000_000
 
+# Gemini API constants
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"

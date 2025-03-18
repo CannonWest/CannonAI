@@ -2,6 +2,7 @@
 Main window UI for the OpenAI Chat application.
 """
 import json
+import sqlite3
 import time
 from typing import Optional, Dict, Any
 from functools import partial
@@ -41,26 +42,99 @@ class MainWindow(QMainWindow):
         # PyQt6 thread manager
         self.thread_manager = OpenAIThreadManager()
 
-        # Use the new database-backed conversation manager
-        self.conversation_manager = DBConversationManager()
-
-        # Initialize database manager for direct database operations
-        self.db_manager = DatabaseManager()
-
-        # Initialize UI components
+        # Initialize UI components first - this ensures the UI is responsive
+        # even if database operations take time
         self.setup_ui()
-
-        # Debug: Print all conversations in database
-        self.db_manager.debug_print_conversations()
 
         # Set up styling
         self.setup_style()
 
-        # Load saved conversations
-        self.load_conversations()
+        try:
+            # Initialize database manager for direct database operations
+            # This will use the singleton instance
+            self.db_manager = DatabaseManager()
 
-        # Create a default conversation if none exists
-        if not self.conversation_manager.active_conversation:
+            # Perform database health check
+            self.logger.info("Performing database health check during startup")
+            db_healthy = self.db_manager.verify_database_health()
+
+            if not db_healthy:
+                self.logger.warning("Database health check found issues - proceeding with caution")
+                QMessageBox.warning(
+                    self,
+                    "Database Warning",
+                    "Database health check found potential issues. The application will try to recover, but you may want to back up your data."
+                )
+            from src.models.db_conversation_manager import DBConversationManager
+            # Initialize the conversation manager
+            self.conversation_manager = DBConversationManager()
+
+            # Debug: Print all conversations in database - with error handling
+            try:
+                self.db_manager.debug_print_conversations()
+            except Exception as db_error:
+                self.logger.error(f"Error printing conversations: {str(db_error)}")
+                # Continue anyway - this is just diagnostic
+
+            # Load saved conversations with robust error handling
+            try:
+                self.load_conversations()
+                self.logger.info("Successfully loaded conversations")
+            except sqlite3.OperationalError as sql_error:
+                # Handle SQLite operational errors specifically
+                error_msg = str(sql_error)
+                self.logger.error(f"SQLite error loading conversations: {error_msg}")
+
+                if "database is locked" in error_msg:
+                    QMessageBox.warning(
+                        self,
+                        "Database Locked",
+                        "The database appears to be locked by another process. Please close any other instances of the application and try again."
+                    )
+                elif "no such table" in error_msg:
+                    QMessageBox.warning(
+                        self,
+                        "Database Schema Error",
+                        "The database schema appears to be incomplete or corrupted. The application will create a new database."
+                    )
+                    # Try to initialize the database again
+                    self.db_manager.initialize_database()
+                else:
+                    QMessageBox.warning(
+                        self,
+                        "Database Error",
+                        f"Error loading conversations: {error_msg}\n\nA new conversation will be created."
+                    )
+            except Exception as load_error:
+                self.logger.error(f"Error loading conversations: {str(load_error)}")
+                QMessageBox.warning(
+                    self,
+                    "Database Error",
+                    f"Error loading conversations: {str(load_error)}\n\nA new conversation will be created."
+                )
+
+            # Create a default conversation if none exists
+            if not self.conversation_manager.active_conversation:
+                self.create_new_conversation()
+
+        except Exception as e:
+            self.logger.error(f"Error initializing database components: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+
+            # Show error to user
+            QMessageBox.critical(
+                self,
+                "Database Error",
+                f"Error initializing the application database: {str(e)}\n\n"
+                "The application may not function correctly."
+            )
+
+            # Create a minimal conversation manager to prevent crashes
+            from src.models.db_conversation_manager import DBConversationManager
+            self.conversation_manager = DBConversationManager()
+
+            # Create a default conversation
             self.create_new_conversation()
 
     def setup_ui(self):
@@ -457,7 +531,7 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(index)
 
     def send_message(self, tab, message):
-        """Send a user message and get a response"""
+        """Send a user message and get a response with improved file handling"""
         try:
             # First, make sure we're not already processing a message
             if hasattr(tab, '_processing_message') and tab._processing_message:
@@ -477,15 +551,26 @@ class MainWindow(QMainWindow):
             print(f"DEBUG: Sending message: '{message[:30]}...' with {len(attached_files) if attached_files else 0} attachments")
 
             try:
+                # Show file count in UI
+                if attached_files and len(attached_files) > 0:
+                    tab.start_loading_indicator()
+                    tab.chat_display.insertHtml(f"<br><span style='color: #FFB86C;'>Processing {len(attached_files)} attachments...</span><br>")
+
                 # Add the user message
                 conversation.add_user_message(message, attached_files=attached_files)
 
                 # Update the UI to show the new user message
                 tab.update_ui()
 
-                # The loading indicator will be started in _start_message_processing
                 # Start message processing - this will handle the API call
                 self._start_message_processing(tab, conversation.get_current_messages())
+            except MemoryError:
+                # Handle out of memory errors specifically
+                self.logger.error("Memory error while processing attachments")
+                self.handle_error("Out of memory error: Too many files or files too large. Try reducing the number or size of attachments.")
+
+                # Make sure to reset processing flag on error
+                tab._processing_message = False
             except Exception as e:
                 self.logger.error(f"Error sending message: {str(e)}")
                 self.handle_error(f"Error sending message: {str(e)}")
@@ -520,35 +605,39 @@ class MainWindow(QMainWindow):
 
     def _start_message_processing(self, tab, messages):
         """
-        Start processing a message request with robust error handling.
-
-        Args:
-            tab: The tab containing the conversation
-            messages: Messages to send to the API
+        Start processing a message request with robust error handling and connection safety.
         """
-        # Safety check
-        if not tab or not messages:
-            print("ERROR: Invalid tab or messages in _start_message_processing")
-            return
+        # Safety check with better error logging
+        if not tab:
+            self.logger.error("Invalid tab in _start_message_processing (tab is None)")
+            return False
+
+        if not messages:
+            self.logger.error("No messages provided in _start_message_processing")
+            if tab:
+                if hasattr(tab, 'stop_loading_indicator') and getattr(tab, '_loading_active', False):
+                    tab.stop_loading_indicator()
+                setattr(tab, '_processing_message', False)
+            return False
 
         # Check if tab is already processing a message
         if hasattr(tab, '_processing_message') and tab._processing_message:
-            print("WARNING: Tab is already processing a message, cancelling previous request")
+            self.logger.warning("Tab is already processing a message, cancelling previous request")
             try:
                 if hasattr(tab, '_active_thread_id'):
                     thread_id = tab._active_thread_id
-                    print(f"DEBUG: Cancelling previous worker thread: {thread_id}")
+                    self.logger.debug(f"Cancelling previous worker thread: {thread_id}")
                     self.thread_manager.cancel_worker(thread_id)
 
                     # Force cleanup loading indicators
-                    if hasattr(tab, 'stop_loading_indicator') and tab._loading_active:
-                        print("DEBUG: Cleaning up previous loading indicator")
+                    if hasattr(tab, 'stop_loading_indicator') and getattr(tab, '_loading_active', False):
+                        self.logger.debug("Cleaning up previous loading indicator")
                         tab.stop_loading_indicator()
 
                     # Reset processing state to allow new processing
                     tab._processing_message = False
             except Exception as e:
-                print(f"Error cancelling previous worker: {str(e)}")
+                self.logger.error(f"Error cancelling previous worker: {str(e)}")
 
         try:
             # Clear any existing chain of thought steps
@@ -562,14 +651,25 @@ class MainWindow(QMainWindow):
             # Mark the tab as processing a message
             tab._processing_message = True
 
-            # Make a copy of messages to prevent potential memory issues
-            messages_copy = list(messages)
+            # Make a deep copy of messages to prevent potential memory issues
+            import copy
+            messages_copy = copy.deepcopy(messages)
+
+            # Copy settings to avoid any shared state issues
+            settings_copy = None
+            if hasattr(self, 'settings') and self.settings:
+                settings_copy = self.settings.copy()
+            else:
+                # Fallback to default settings if not available
+                from src.utils.constants import DEFAULT_PARAMS
+                settings_copy = DEFAULT_PARAMS.copy()
+                self.logger.warning("Using default settings as settings not available")
 
             # Create worker and thread using the manager
             try:
                 thread_id, worker = self.thread_manager.create_worker(
                     messages_copy,
-                    self.settings.copy()  # Use a copy of settings to avoid shared state issues
+                    settings_copy
                 )
 
                 # Store thread_id with the tab for potential cancellation
@@ -580,13 +680,13 @@ class MainWindow(QMainWindow):
 
                 # Disconnect any existing connections to prevent signal conflicts
                 try:
-                    self._disconnect_worker_signals(tab)
+                    if hasattr(self, '_disconnect_worker_signals'):
+                        self._disconnect_worker_signals(tab)
                 except Exception as e:
-                    print(f"Error disconnecting signals: {str(e)}")
-                    # Continue anyway
+                    self.logger.warning(f"Error disconnecting signals: {str(e)}")
 
                 # Connect signals using direct methods instead of lambdas to reduce memory usage
-                streaming_mode = self.settings.get("stream", True)
+                streaming_mode = settings_copy.get("stream", True)
                 if streaming_mode:
                     worker.chunk_received.connect(self._create_chunk_handler(tab))
                     worker.message_received.connect(self._create_streaming_finalizer(tab))
@@ -606,23 +706,30 @@ class MainWindow(QMainWindow):
                 # Start the worker thread
                 self.thread_manager.start_worker(thread_id)
 
-                print(f"Started message processing with thread ID: {thread_id}")
+                self.logger.info(f"Started message processing with thread ID: {thread_id}")
                 return True
             except Exception as worker_error:
-                print(f"ERROR creating worker: {str(worker_error)}")
+                self.logger.error(f"ERROR creating worker: {str(worker_error)}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+
                 if hasattr(tab, 'stop_loading_indicator'):
                     tab.stop_loading_indicator()
+
                 tab._processing_message = False
                 return False
         except Exception as e:
-            print(f"CRITICAL ERROR in _start_message_processing: {str(e)}")
+            self.logger.error(f"CRITICAL ERROR in _start_message_processing: {str(e)}")
             import traceback
-            traceback.print_exc()
+            self.logger.error(traceback.format_exc())
 
             # Clean up
             if hasattr(tab, 'stop_loading_indicator'):
                 tab.stop_loading_indicator()
-            tab._processing_message = False
+
+            if hasattr(tab, '_processing_message'):
+                tab._processing_message = False
+
             return False
 
     def handle_assistant_response(self, tab, content, response_id=None, role="assistant"):
@@ -1372,18 +1479,42 @@ class MainWindow(QMainWindow):
                 "You must have at least one conversation open."
             )
 
-
     def closeEvent(self, event):
-        """Handle application close event"""
+        """Handle application close event with proper cleanup"""
+        # Log start of close process
+        self.logger.info("Application close initiated")
+
         # Cancel all active API calls
         self.thread_manager.cancel_all()
+        self.logger.debug("Cancelled all active API threads")
 
         # Save all conversations
-        self.conversation_manager.save_all()
+        try:
+            self.conversation_manager.save_all()
+            self.logger.info("Saved all conversations")
+        except Exception as e:
+            self.logger.error(f"Error saving conversations during close: {e}")
+
+        # Ensure all file attachments are cleaned up
+        try:
+            for i in range(self.tabs.count()):
+                tab = self.tabs.widget(i)
+                if hasattr(tab, 'clear_attachments'):
+                    tab.clear_attachments()
+            self.logger.debug("Cleared all file attachments")
+        except Exception as e:
+            self.logger.error(f"Error clearing attachments during close: {e}")
+
+        # Final garbage collection to free memory before closing
+        try:
+            import gc
+            gc.collect()
+        except Exception as e:
+            self.logger.error(f"Error during final garbage collection: {e}")
 
         # Accept the close event
+        self.logger.info("Application close completed successfully")
         event.accept()
-
 
     def _disconnect_worker_signals(self, tab):
         """Disconnect all signals from the worker to prevent conflicts"""
