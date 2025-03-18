@@ -1691,11 +1691,6 @@ class ConversationBranchTab(QWidget):
             error_message
         )
 
-    """
-    This fix replaces the QQueue reference with Python's collections.deque
-    for the directory file processing queue.
-    """
-
     def on_attach_directory(self):
         """Open directory dialog to attach all files in a directory with enhanced progress tracking"""
         from PyQt6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog

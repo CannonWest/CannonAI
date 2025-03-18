@@ -41,3 +41,4 @@ openai_chat.log
 .env.local
 test.py
 data/database/conversations.db
+/.codebuddy
