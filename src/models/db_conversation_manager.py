@@ -1,6 +1,5 @@
-# src/models/db_conversation_manager.py
 """
-Database-backed conversation manager for improved scalability.
+Database-backed conversation manager for improved scalability and persistence.
 """
 
 import os
@@ -10,11 +9,11 @@ from datetime import datetime
 
 from PyQt6.QtCore import QUuid
 
-from src.utils.logging_utils import get_logger, log_exception
+from src.utils.logging_utils import get_logger
 from src.models.db_manager import DatabaseManager
 from src.models.db_conversation import DBConversationTree
 
-# Get a logger for this module
+# Configure logger for this module
 logger = get_logger(__name__)
 
 
@@ -25,9 +24,8 @@ class DBConversationManager:
 
     def __init__(self):
         self.db_manager = DatabaseManager()
-        self.conversations = {}  # Cache for open conversations
+        self.conversations: Dict[str, DBConversationTree] = {}  # Cache for open conversations
         self.active_conversation_id = None
-        self.logger = get_logger(f"{__name__}.DBConversationManager")
 
     @property
     def active_conversation(self):
@@ -37,7 +35,7 @@ class DBConversationManager:
         return None
 
     def set_active_conversation(self, conversation_id):
-        """Set the active conversation"""
+        """Set the active conversation by ID"""
         if conversation_id in self.conversations:
             self.active_conversation_id = conversation_id
             return True
@@ -46,46 +44,84 @@ class DBConversationManager:
         conn = self.db_manager.get_connection()
         cursor = conn.cursor()
 
-        try:
-            cursor.execute(
-                'SELECT id FROM conversations WHERE id = ?',
-                (conversation_id,)
+        cursor.execute(
+            'SELECT id FROM conversations WHERE id = ?',
+            (conversation_id,)
+        )
+
+        if cursor.fetchone():
+            # Load the conversation
+            self.conversations[conversation_id] = DBConversationTree(
+                self.db_manager,
+                id=conversation_id
             )
-
-            if cursor.fetchone():
-                # Load the conversation
-                self.conversations[conversation_id] = DBConversationTree(
-                    self.db_manager,
-                    id=conversation_id
-                )
-                self.active_conversation_id = conversation_id
-                return True
-        except Exception as e:
-            logger.error(f"Error setting active conversation {conversation_id}")
-            log_exception(logger, e, f"Failed to set active conversation {conversation_id}")
-        finally:
-            conn.close()
-
+            self.active_conversation_id = conversation_id
+            return True
+        conn.close()
+        logger.warning(f"Conversation {conversation_id} not found")
         return False
 
     def create_conversation(self, name="New Conversation", system_message="You are a helpful assistant."):
         """Create a new conversation"""
         try:
-            conversation = DBConversationTree(
-                self.db_manager,
-                name=name,
-                system_message=system_message
-            )
+            max_attempts = 5
+            for attempt in range(max_attempts):
+                new_id = str(QUuid.createUuid())
+                # Check if the conversation already exists
+                if new_id in self.conversations:
+                    logger.warning(f"Conversation with ID {new_id} already exists. Generating a new ID.")
+                    continue
 
-            self.conversations[conversation.id] = conversation
-            self.active_conversation_id = conversation.id
+                try:
+                    conversation = self._create_conversation_in_db(new_id, name, system_message)
+                    if conversation and conversation.id:
+                        self.conversations[conversation.id] = conversation
+                        self.set_active_conversation(conversation.id)
+                        logger.info(f"Created new conversation: {name} (ID: {str(conversation.id)})")
+                        return conversation
+                except ValueError as ve:
+                    logger.warning(f"Attempt {attempt + 1}: Failed to create conversation - {str(ve)}")
+                    continue
 
-            self.logger.info(f"Created new conversation: {name} (ID: {conversation.id})")
-            return conversation
+            logger.error(f"Failed to create conversation after {max_attempts} attempts")
+            return None
         except Exception as e:
-            self.logger.error("Error creating new conversation")
-            log_exception(self.logger, e, "Failed to create new conversation")
-            raise
+            logger.exception("Failed to create new conversation")
+            return None
+
+    def _create_conversation_in_db(self, new_id, name, system_message):
+        """Create a new conversation in the database"""
+        conn = self.db_manager.get_connection()
+        cursor = conn.cursor()
+        try:
+            # First, create the root system message
+            root_id = str(QUuid.createUuid())
+            now = datetime.now().isoformat()
+            cursor.execute(
+                '''
+                INSERT INTO messages (id, conversation_id, parent_id, role, content, timestamp)
+                VALUES (?, ?, NULL, 'system', ?, ?)
+                ''',
+                (root_id, new_id, system_message, now)
+            )
+            
+            # Insert the new conversation into the database
+            cursor.execute(
+                '''
+                INSERT INTO conversations (id, name, created_at, modified_at, current_node_id, system_message)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ''',
+                (new_id, name, now, now, root_id, system_message)
+            )
+            conn.commit()
+            return DBConversationTree(self.db_manager, id=new_id)
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            raise ValueError(f"Failed to create conversation in database: {str(e)}")
+        finally:
+            if conn:
+                conn.close()
 
     def get_conversation_list(self):
         """Get a list of all conversations"""
@@ -93,18 +129,14 @@ class DBConversationManager:
         cursor = conn.cursor()
 
         try:
-            cursor.execute(
-                '''
+            cursor.execute('''
                 SELECT id, name, created_at, modified_at
                 FROM conversations
                 ORDER BY modified_at DESC
-                '''
-            )
-
+            ''')
             return [dict(row) for row in cursor.fetchall()]
         except Exception as e:
-            self.logger.error("Error getting conversation list")
-            log_exception(self.logger, e, "Failed to get conversation list")
+            logger.exception("Failed to get conversation list")
             return []
         finally:
             conn.close()
@@ -114,60 +146,41 @@ class DBConversationManager:
         if conversation_id in self.conversations:
             return self.conversations[conversation_id]
 
-        try:
-            conversation = DBConversationTree(
-                self.db_manager,
-                id=conversation_id
-            )
-
+        conversation = DBConversationTree(self.db_manager, id=conversation_id)
+        if conversation:
             self.conversations[conversation_id] = conversation
-
-            # If this is our first conversation, make it active
             if not self.active_conversation_id:
-                self.active_conversation_id = conversation_id
-
-            self.logger.info(f"Loaded conversation: {conversation.name} (ID: {conversation_id})")
+                self.active_conversation_id = str(conversation_id)
+            logger.info(f"Loaded conversation: {conversation.name} (ID: {conversation_id})")
             return conversation
-        except Exception as e:
-            self.logger.error(f"Error loading conversation {conversation_id}")
-            log_exception(self.logger, e, f"Failed to load conversation {conversation_id}")
-            return None
-
-    # src/models/db_conversation_manager.py
+        logger.warning(f"Failed to load conversation {conversation_id}")
+        return None
 
     def load_all(self):
         """Load conversation list from database"""
-        # We don't actually load all conversations into memory
-        # Just get the list of available conversations
         conversation_list = self.get_conversation_list()
 
         if not conversation_list:
-            self.logger.info("No conversations found in database")
+            logger.info("No conversations found in database")
             return
 
-        # Log how many conversations were found
-        self.logger.info(f"Found {len(conversation_list)} conversations in database")
+        logger.info(f"Found {len(conversation_list)} conversations in database")
 
-        # Load all conversations into memory
         for conv_info in conversation_list:
             conv_id = conv_info['id']
-            # Skip if already loaded
             if conv_id not in self.conversations:
                 self.load_conversation(conv_id)
-                self.logger.info(f"Loaded conversation: {conv_info['name']} (ID: {conv_id})")
+                logger.debug(f"Loaded conversation: {conv_info['name']} (ID: {conv_id})")
 
-        # Set first conversation as active if none is active
         if not self.active_conversation_id and conversation_list:
             try:
                 first_conversation_id = conversation_list[0]['id']
                 if first_conversation_id not in self.conversations:
                     self.load_conversation(first_conversation_id)
                 self.active_conversation_id = first_conversation_id
-                self.logger.info(f"Set active conversation to: {first_conversation_id}")
+                logger.info(f"Set active conversation to: {first_conversation_id}")
             except (IndexError, KeyError) as e:
-                self.logger.warning(f"Failed to set active conversation: {e}")
-                # Continue without throwing error
-                pass
+                logger.warning(f"Failed to set active conversation: {e}")
 
     def delete_conversation(self, conversation_id):
         """Delete a conversation"""
@@ -175,51 +188,38 @@ class DBConversationManager:
         cursor = conn.cursor()
 
         try:
-            # Due to CASCADE constraints, this will delete all related records
-            cursor.execute(
-                'DELETE FROM conversations WHERE id = ?',
-                (conversation_id,)
-            )
+            cursor.execute('DELETE FROM conversations WHERE id = ?', (conversation_id,))
 
-            # Remove from cache if present
             if conversation_id in self.conversations:
                 del self.conversations[conversation_id]
 
-            # If we deleted the active conversation, select a new one
             if conversation_id == self.active_conversation_id:
                 self.active_conversation_id = None
-
-                # Get first available conversation
                 conversation_list = self.get_conversation_list()
                 if conversation_list:
                     first_id = conversation_list[0]['id']
                     self.load_conversation(first_id)
 
             conn.commit()
-            self.logger.info(f"Deleted conversation: {conversation_id}")
+            logger.info(f"Deleted conversation: {conversation_id}")
             return True
         except Exception as e:
             conn.rollback()
-            self.logger.error(f"Error deleting conversation {conversation_id}")
-            log_exception(self.logger, e, f"Failed to delete conversation {conversation_id}")
+            logger.exception(f"Failed to delete conversation {conversation_id}")
             return False
         finally:
             conn.close()
 
     def save_conversation(self, conversation_id):
         """Save a conversation (no-op for database backend)"""
-        # All changes are immediately saved to the database
-        # This method exists for compatibility
         if conversation_id in self.conversations:
-            self.logger.debug(f"Save operation called for conversation {conversation_id} (no-op in DB mode)")
+            logger.debug(f"Save operation called for conversation {conversation_id} (no-op in DB mode)")
             return True
         return False
 
     def save_all(self):
         """Save all conversations (no-op for database backend)"""
-        # All changes are immediately saved to the database
-        # This method exists for compatibility
-        self.logger.debug("Save all operation called (no-op in DB mode)")
+        logger.debug("Save all operation called (no-op in DB mode)")
         return True
 
     def search_conversations(self, search_term, conversation_id=None, role_filter=None):
@@ -237,7 +237,6 @@ class DBConversationManager:
             '''
             params = [f'%{search_term}%']
 
-            # Add filters if provided
             if conversation_id:
                 query += ' AND m.conversation_id = ?'
                 params.append(conversation_id)
@@ -248,22 +247,16 @@ class DBConversationManager:
 
             cursor.execute(query, params)
 
-            results = []
-            for row in cursor.fetchall():
-                results.append({
-                    'id': row['id'],
-                    'conversation_id': row['conversation_id'],
-                    'conversation_name': row['conversation_name'],
-                    'role': row['role'],
-                    'content': row['content'],
-                    'timestamp': row['timestamp']
-                })
-
-            return results
+            return [{
+                'id': row['id'],
+                'conversation_id': row['conversation_id'],
+                'conversation_name': row['conversation_name'],
+                'role': row['role'],
+                'content': row['content'],
+                'timestamp': row['timestamp']
+            } for row in cursor.fetchall()]
         except Exception as e:
-            self.logger.error(f"Error searching conversations")
-            log_exception(self.logger, e, "Failed to search conversations")
+            logger.exception("Failed to search conversations")
             return []
         finally:
             conn.close()
-

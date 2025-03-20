@@ -5,10 +5,11 @@ import json
 import time
 from typing import Optional, Dict, Any
 from functools import partial
+from datetime import datetime
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QTabWidget, QMessageBox, QFileDialog, QMenu
+    QTabWidget, QMessageBox, QFileDialog, QMenu, QInputDialog
 )
 from PyQt6.QtCore import Qt, QSettings, QUuid
 from PyQt6.QtGui import QFont, QIcon, QColor, QPalette, QAction, QTextCursor
@@ -308,7 +309,6 @@ class MainWindow(QMainWindow):
         conversation = tab.conversation_tree
 
         # Ask for a new name using an input dialog instead of file dialog
-        from PyQt6.QtWidgets import QInputDialog
         new_name, ok = QInputDialog.getText(
             self,
             "Rename Conversation",
@@ -435,11 +435,25 @@ class MainWindow(QMainWindow):
         # Create a new conversation
         conversation = self.conversation_manager.create_conversation()
 
-        # Create a tab for the conversation
-        self.add_conversation_tab(conversation)
+        if conversation:
+            # Create a tab for the conversation
+            self.add_conversation_tab(conversation)
+            logger.info(f"New conversation created: {conversation.name} (ID: {conversation.id})")
+        else:
+            error_msg = "Failed to create a new conversation. Please try again or restart the application."
+            logger.error(error_msg)
+            QMessageBox.critical(self, "Error", error_msg)
 
     def add_conversation_tab(self, conversation):
         """Add a tab for a conversation"""
+        if not conversation:
+            logger.error("Attempted to add tab for invalid conversation")
+            return
+
+        if not hasattr(conversation, 'id') or not conversation.id:
+            logger.error(f"Invalid conversation object: {conversation}")
+            return
+
         # Create the tab widget
         tab = ConversationBranchTab(conversation)
 

@@ -1,10 +1,7 @@
-"""
-Conversation UI components for the OpenAI Chat application.
-"""
+"""Conversation UI components for the OpenAI Chat application."""
 import os
-from typing import Dict, List, Optional, Any, Callable
+from typing import List, Optional
 from functools import partial
-
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
     QTreeWidget, QTreeWidgetItem, QSplitter, QMessageBox, QDialogButtonBox, QFileDialog, QDialog, QScrollArea
@@ -21,26 +18,20 @@ from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
-
 class ConversationBranchTab(QWidget):
-    """
-    Widget representing a conversation branch tab with retry functionality
-    """
-    send_message = pyqtSignal(str)  # Signal to send a new message
-    retry_request = pyqtSignal()  # Signal to retry the current response
-    branch_changed = pyqtSignal()  # Signal that the active branch has changed
-    file_attached = pyqtSignal(str)  # Signal emitted when a file is attached
+    """Widget representing a conversation branch tab with retry functionality."""
+
+    send_message = pyqtSignal(str)
+    retry_request = pyqtSignal()
+    branch_changed = pyqtSignal()
+    file_attached = pyqtSignal(str)
 
     def __init__(self, conversation_tree: Optional[DBConversationTree] = None, parent=None):
         super().__init__(parent)
         self.conversation_tree = conversation_tree
-        self.layout = QVBoxLayout(self)
-        self.logger = get_logger(f"{__name__}.MainWindow")
-
-        # Initialize state variables to prevent NoneType errors
-        self._is_streaming = False
-        self._chunk_counter = 0
-        self._extracting_reasoning = False
+        self._init_state_variables()
+        self._init_ui()
+        self._setup_connections()
 
         # Loading indicator variables
         self._loading_timer = QTimer(self)
@@ -49,16 +40,27 @@ class ConversationBranchTab(QWidget):
         self._loading_state = 0
         self._loading_active = False
 
+    def _init_state_variables(self):
+        """Initialize state variables to prevent NoneType errors."""
+        self._is_streaming = False
+        self._chunk_counter = 0
+        self._extracting_reasoning = False
+        self._ui_update_pending = False
+        self._updating_ui = False
+        self._streaming_started = False
+        self._has_loading_text = False
+        self._message_cache = {}
+        self._last_branch_ids = set()
+        self.current_attachments = []
+        self.reasoning_steps = []
+
+    def _init_ui(self):
+        """Initialize the user interface components."""
+        self.layout = QVBoxLayout(self)
+
         # Enable drag and drop
         self.setAcceptDrops(True)
 
-        # Initialize empty attachments list
-        self.current_attachments = []
-
-        # NEW: Store reasoning steps
-        self.reasoning_steps = []
-
-        # Branch navigation bar
         self.branch_nav = BranchNavBar()
         self.branch_nav.node_selected.connect(self.navigate_to_node)
 
@@ -71,7 +73,6 @@ class ConversationBranchTab(QWidget):
 
         self.layout.addWidget(self.scroll_area)
 
-        # Chat display area
         self.chat_display = QTextEdit()
         self.chat_display.setReadOnly(True)
         self.chat_display.setAcceptRichText(True)
@@ -79,7 +80,43 @@ class ConversationBranchTab(QWidget):
             f"background-color: {DARK_MODE['background']}; color: {DARK_MODE['foreground']};"
         )
 
-        # Token usage display
+        self._init_token_usage_display()
+        self._init_advanced_info_section()
+        self._init_model_info_display()
+        self._init_file_attachments_display()
+        self._init_input_area()
+        self._init_graphical_view()
+
+        # Split view for conversation and branch tree
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Main conversation container
+        self.conversation_container = QWidget()
+        self.conversation_layout = QVBoxLayout(self.conversation_container)
+
+        self.conversation_layout.addWidget(self.chat_display, 4)
+        self.conversation_layout.addWidget(self.usage_container, 0)
+        self.conversation_layout.addWidget(self.info_container, 1)
+        self.conversation_layout.addWidget(self.attachments_container, 0)
+        self.conversation_layout.addWidget(self.input_container, 0)
+        self.conversation_layout.addWidget(self.model_info_container, 0)
+
+        # Add widgets to splitter
+        self.splitter.addWidget(self.conversation_container)
+        self.splitter.addWidget(self.tree_container)
+
+        # Set initial sizes (75% conversation, 25% tree)
+        self.splitter.setSizes([750, 250])
+
+        # Add splitter to main layout
+        self.layout.addWidget(self.splitter)
+
+        # Update the UI with the initial conversation
+        if self.conversation_tree:
+            self.update_ui()
+
+    def _init_token_usage_display(self):
+        """Initialize the token usage display."""
         self.usage_container = QWidget()
         self.usage_layout = QHBoxLayout(self.usage_container)
         self.usage_layout.setContentsMargins(5, 2, 5, 2)
@@ -93,7 +130,8 @@ class ConversationBranchTab(QWidget):
         self.usage_layout.addStretch()
         self.usage_layout.addWidget(self.model_label)
 
-        # Advanced info section (collapsible)
+    def _init_advanced_info_section(self):
+        """Initialize the advanced info section (collapsible)."""
         self.info_container = QWidget()
         self.info_layout = QVBoxLayout(self.info_container)
         self.info_header = QWidget()
@@ -116,33 +154,31 @@ class ConversationBranchTab(QWidget):
         self.info_layout.addWidget(self.info_header)
         self.info_layout.addWidget(self.info_content)
 
-        # Model information display
+    def _init_model_info_display(self):
+        """Initialize the model information display."""
         self.model_info_container = QWidget()
         self.model_info_layout = QHBoxLayout(self.model_info_container)
         self.model_info_layout.setContentsMargins(5, 2, 5, 2)
 
         self.model_name_label = QLabel("Model: -")
-        self.model_name_label.setStyleSheet(f"color: {DARK_MODE['accent']};")
-
         self.model_pricing_label = QLabel("Pricing: -")
-        self.model_pricing_label.setStyleSheet(f"color: {DARK_MODE['accent']};")
-
         self.model_token_limit_label = QLabel("Limits: -")
-        self.model_token_limit_label.setStyleSheet(f"color: {DARK_MODE['accent']};")
 
-        self.model_info_layout.addWidget(self.model_name_label)
-        self.model_info_layout.addStretch()
-        self.model_info_layout.addWidget(self.model_pricing_label)
-        self.model_info_layout.addStretch()
-        self.model_info_layout.addWidget(self.model_token_limit_label)
+        for label in [self.model_name_label, self.model_pricing_label, self.model_token_limit_label]:
+            label.setStyleSheet(f"color: {DARK_MODE['accent']};")
+            self.model_info_layout.addWidget(label)
+            if label != self.model_token_limit_label:
+                self.model_info_layout.addStretch()
 
-        # File attachments display area
+    def _init_file_attachments_display(self):
+        """Initialize the file attachments display area."""
         self.attachments_container = QWidget()
         self.attachments_layout = QHBoxLayout(self.attachments_container)
         self.attachments_layout.setContentsMargins(5, 2, 5, 2)
         self.attachments_container.setVisible(False)  # Hidden by default
 
-        # Input area with retry button
+    def _init_input_area(self):
+        """Initialize the input area with retry button."""
         self.input_container = QWidget()
         self.input_layout = QHBoxLayout(self.input_container)
         self.input_layout.setContentsMargins(0, 0, 0, 0)
@@ -158,41 +194,26 @@ class ConversationBranchTab(QWidget):
         self.button_layout = QVBoxLayout(self.button_container)
         self.button_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.send_button = QPushButton("Send")
-        self.send_button.setStyleSheet(
-            f"background-color: {DARK_MODE['accent']}; color: {DARK_MODE['foreground']};"
-        )
-        self.send_button.clicked.connect(self.on_send)
+        buttons = [
+            ("Send", self.on_send, DARK_MODE['accent']),
+            ("Retry", self.on_retry, DARK_MODE['highlight']),
+            ("📎", self.on_attach_file, DARK_MODE['highlight']),
+            ("📁", self.on_attach_directory, DARK_MODE['highlight'])
+        ]
 
-        self.retry_button = QPushButton("Retry")
-        self.retry_button.setStyleSheet(
-            f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
-        )
-        self.retry_button.clicked.connect(self.on_retry)
-
-        self.attach_button = QPushButton("📎")
-        self.attach_button.setToolTip("Attach file")
-        self.attach_button.setStyleSheet(
-            f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
-        )
-        self.attach_button.clicked.connect(self.on_attach_file)
-
-        self.attach_dir_button = QPushButton("📁")
-        self.attach_dir_button.setToolTip("Attach directory")
-        self.attach_dir_button.setStyleSheet(
-            f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
-        )
-        self.attach_dir_button.clicked.connect(self.on_attach_directory)
-
-        self.button_layout.addWidget(self.send_button)
-        self.button_layout.addWidget(self.retry_button)
-        self.button_layout.addWidget(self.attach_button)
-        self.button_layout.addWidget(self.attach_dir_button)
+        for text, callback, bg_color in buttons:
+            button = QPushButton(text)
+            button.setStyleSheet(f"background-color: {bg_color}; color: {DARK_MODE['foreground']};")
+            button.clicked.connect(callback)
+            if text in ["📎", "📁"]:
+                button.setToolTip("Attach file" if text == "📎" else "Attach directory")
+            self.button_layout.addWidget(button)
 
         self.input_layout.addWidget(self.text_input, 5)
         self.input_layout.addWidget(self.button_container, 1)
 
-        # Graphical view for branch navigation
+    def _init_graphical_view(self):
+        """Initialize the graphical view for branch navigation."""
         self.tree_container = QWidget()
         self.tree_layout = QVBoxLayout(self.tree_container)
         self.tree_layout.setContentsMargins(0, 0, 0, 0)
@@ -200,7 +221,6 @@ class ConversationBranchTab(QWidget):
         self.tree_label = QLabel("Conversation Graph")
         self.tree_label.setStyleSheet(f"font-weight: bold; color: {DARK_MODE['foreground']};")
 
-        # Replace tree view with graphical view
         self.graph_view = ConversationGraphView()
         self.graph_view.node_selected.connect(self.navigate_to_node)
         self.graph_view.setStyleSheet(f"background-color: {DARK_MODE['highlight']};")
@@ -208,71 +228,37 @@ class ConversationBranchTab(QWidget):
         self.tree_layout.addWidget(self.tree_label)
         self.tree_layout.addWidget(self.graph_view)
 
-        # Add zoom controls
+        self._init_zoom_controls()
+
+    def _init_zoom_controls(self):
+        """Initialize zoom controls for the graphical view."""
         self.zoom_container = QWidget()
         self.zoom_layout = QHBoxLayout(self.zoom_container)
         self.zoom_layout.setContentsMargins(0, 5, 0, 5)
 
-        self.zoom_in_btn = QPushButton("+")
-        self.zoom_in_btn.setFixedWidth(30)
-        self.zoom_in_btn.setToolTip("Zoom In")
-        self.zoom_in_btn.clicked.connect(lambda: self.graph_view.scale(1.2, 1.2))
+        zoom_buttons = [
+            ("-", "Zoom Out", lambda: self.graph_view.scale(0.8, 0.8)),
+            ("Fit", "Fit View", lambda: self.graph_view.fitInView(
+                self.graph_view._scene.sceneRect(),
+                Qt.AspectRatioMode.KeepAspectRatio
+            )),
+            ("+", "Zoom In", lambda: self.graph_view.scale(1.2, 1.2))
+        ]
 
-        self.zoom_out_btn = QPushButton("-")
-        self.zoom_out_btn.setFixedWidth(30)
-        self.zoom_out_btn.setToolTip("Zoom Out")
-        self.zoom_out_btn.clicked.connect(lambda: self.graph_view.scale(0.8, 0.8))
-
-        self.fit_btn = QPushButton("Fit")
-        self.fit_btn.setToolTip("Fit View")
-        self.fit_btn.clicked.connect(lambda: self.graph_view.fitInView(
-            self.graph_view._scene.sceneRect(),
-            Qt.AspectRatioMode.KeepAspectRatio
-        ))
-
-        self.zoom_layout.addWidget(self.zoom_out_btn)
-        self.zoom_layout.addWidget(self.fit_btn)
-        self.zoom_layout.addWidget(self.zoom_in_btn)
+        for text, tooltip, callback in zoom_buttons:
+            btn = QPushButton(text)
+            btn.setToolTip(tooltip)
+            btn.clicked.connect(callback)
+            if text in ["+", "-"]:
+                btn.setFixedWidth(30)
+            self.zoom_layout.addWidget(btn)
 
         self.tree_layout.addWidget(self.zoom_container)
 
-        # Split view for conversation and branch tree
-        self.splitter = QSplitter(Qt.Orientation.Horizontal)
-
-        # Main conversation container
-        self.conversation_container = QWidget()
-        self.conversation_layout = QVBoxLayout(self.conversation_container)
-
-        self.conversation_layout.addWidget(self.chat_display, 4)
-        self.conversation_layout.addWidget(self.usage_container, 0)
-        self.conversation_layout.addWidget(self.info_container, 1)
-        self.conversation_layout.addWidget(self.attachments_container, 0)
-        self.conversation_layout.addWidget(self.input_container, 0)
-        self.conversation_layout.addWidget(self.model_info_container, 0)  # Add model info container
-
-        # Add widgets to splitter
-        self.splitter.addWidget(self.conversation_container)
-        self.splitter.addWidget(self.tree_container)
-
-        # Set initial sizes (75% conversation, 25% tree)
-        self.splitter.setSizes([750, 250])
-
-        # Add splitter to main layout
-        self.layout.addWidget(self.splitter)
-
-        # Add state tracking for deferred UI updates
-        self._ui_update_pending = False
-        self._is_streaming = False
-        self._updating_ui = False
-        self._streaming_started = False
-        self._has_loading_text = False
-
-        self._message_cache = {}  # node_id -> rendered html
-        self._last_branch_ids = set()  # Track which messages were last displayed
-
-        # Update the UI with the initial conversation
-        if self.conversation_tree:
-            self.update_ui()
+    def _setup_connections(self):
+        """Set up signal connections."""
+        # Add any additional signal connections here
+        pass
 
     def set_conversation_tree(self, conversation_tree: DBConversationTree):
         """Set the conversation tree and update the UI"""
@@ -425,7 +411,7 @@ class ConversationBranchTab(QWidget):
             # Use cached HTML
             html_content = self._message_cache[cache_key]
             self.chat_display.insertHtml(html_content)
-            self.chat_display.insertPlainText("\n\n")  # Add spacing
+            self.chat_display.insertPlainText("\n")  # Add spacing
             return
 
         # Determine message style based on role
@@ -486,53 +472,6 @@ class ConversationBranchTab(QWidget):
         # Return empty string to avoid displaying any reasoning
         print(f"DEBUG: Reasoning rendering disabled for node {node.id}, role: {node.role}")
         return ""
-        """
-        # Check for reasoning tokens or reasoning steps
-        reasoning_tokens = 0
-        if node.token_usage and "completion_tokens_details" in node.token_usage:
-            details = node.token_usage["completion_tokens_details"]
-            reasoning_tokens = details.get("reasoning_tokens", 0)
-
-        # Print debug info about this node and its reasoning data
-        print(f"DEBUG: Rendering reasoning for node {node.id}, role: {node.role}")
-        print(f"DEBUG: Model info: {node.model_info}")
-        print(f"DEBUG: Token usage: {node.token_usage}")
-        print(f"DEBUG: Reasoning tokens: {reasoning_tokens}")
-
-        # Determine if this is a reasoning-capable model
-        is_reasoning_model = False
-        model_name = ""
-        if node.model_info and "model" in node.model_info:
-            model_name = node.model_info["model"]
-            from src.utils import REASONING_MODELS
-            is_reasoning_model = (
-                    model_name in REASONING_MODELS or
-                    "o3" in model_name or
-                    "o1" in model_name or
-                    "deepseek-reasoner" in model_name
-            )
-
-        print(f"DEBUG: Model name: {model_name}, is_reasoning_model: {is_reasoning_model}")
-
-        # Try to extract reasoning steps from all possible sources
-        node_reasoning = None
-
-        # First try the standard attribute
-        if hasattr(node, 'reasoning_steps'):
-            node_reasoning = node.reasoning_steps
-            print(f"DEBUG: Found reasoning_steps attribute with {len(node_reasoning) if node_reasoning else 0} steps")
-
-        # If no reasoning found but this is a reasoning model, we need to show something
-        should_show_reasoning = (
-                (node_reasoning and len(node_reasoning) > 0) or  # Has reasoning steps
-                reasoning_tokens > 0 or  # Has reasoning tokens
-                is_reasoning_model  # Is a reasoning-capable model
-        )
-
-        if not should_show_reasoning:
-            print("DEBUG: No reasoning indicators found for this node")
-            return ""
-        """
 
     def _render_attachments(self, attachments):
         """Render file attachments HTML"""
@@ -564,13 +503,13 @@ class ConversationBranchTab(QWidget):
         try:
             # Add debug logging
             print(f"DEBUG: Received streaming chunk in update_chat_streaming: '{chunk[:20]}...' (length: {len(chunk)})")
-            self.logger.debug(f"Processing chunk in update_chat_streaming: {chunk[:20]}...")
+            logger.debug(f"Processing chunk in update_chat_streaming: {chunk[:20]}...")
 
             # Safety check for extremely large chunks that could cause memory issues
             if len(chunk) > 10000:  # 10KB limit for a single chunk
                 chunk = chunk[:10000] + "... [CHUNK TRUNCATED - TOO LARGE]"
                 print("WARNING: Chunk size exceeded limits - truncated")
-                self.logger.warning(f"Chunk size exceeded limits - truncated to 10KB")
+                logger.warning(f"Chunk size exceeded limits - truncated to 10KB")
 
             # Set streaming mode flag
             self._is_streaming = True
@@ -647,8 +586,6 @@ class ConversationBranchTab(QWidget):
                     self.chat_display.setTextCursor(cursor)
 
                     # Insert the prefix
-                    self.chat_display.insertHtml(f'<span style="color: {DARK_MODE["assistant_message"]};">{prefix}</span>')
-                    print(f"DEBUG: Added assistant prefix: {prefix}")
                 except Exception as prefix_error:
                     print(f"Error adding assistant prefix: {str(prefix_error)}")
                     # Continue even if prefix insertion fails
@@ -670,7 +607,7 @@ class ConversationBranchTab(QWidget):
                 self.chat_display.setTextCursor(cursor)
 
                 # Insert the chunk as plain text
-                self.chat_display.insertPlainText(chunk)
+                # self.chat_display.insertPlainText(chunk)
 
                 # Ensure visible to keep scrolling with new content
                 self.chat_display.ensureCursorVisible()
@@ -1061,9 +998,6 @@ class ConversationBranchTab(QWidget):
         except Exception as e:
             print(f"Error in add_cot_step: {str(e)}")
 
-        except Exception as e:
-            print(f"Error in add_cot_step: {str(e)}")
-
     def clear_cot(self):
         """Clear the chain of thought steps"""
         self.reasoning_steps = []
@@ -1220,118 +1154,6 @@ class ConversationBranchTab(QWidget):
         from PyQt6.QtCore import QTimer
         self.update_chat_display()
         QTimer.singleShot(300, lambda: self.update_ui())
-
-        """
-        try:
-            # Stop loading indicator if it's still active
-            if hasattr(self, '_loading_active') and self._loading_active:
-                self.stop_loading_indicator()
-
-            # Log steps being set for debugging
-            print(f"DEBUG: Setting reasoning steps. Steps type: {type(steps)}, o3-mini?: {'o3' in self.model_label.text() if hasattr(self, 'model_label') else 'unknown'}")
-
-            # Ensure steps is a valid list
-            if steps is None:
-                steps = []
-
-            print(f"Received {len(steps)} reasoning steps from worker")
-
-            # Log details of the first few steps for debugging
-            if steps and len(steps) > 0:
-                print(f"First step info: {steps[0]}")
-
-                # Check if steps have expected structure
-                if not isinstance(steps[0], dict) or not all(key in steps[0] for key in ["name", "content"]):
-                    print("WARNING: Reasoning steps don't have expected structure")
-
-                    # Try to fix structure if possible
-                    fixed_steps = []
-                    for i, step in enumerate(steps):
-                        if isinstance(step, str):
-                            fixed_steps.append({
-                                "name": f"Reasoning Step {i + 1}",
-                                "content": step
-                            })
-                        elif isinstance(step, dict):
-                            # Ensure it has required keys
-                            fixed_step = {
-                                "name": step.get("name", step.get("step", f"Reasoning Step {i + 1}")),
-                                "content": step.get("content", str(step))
-                            }
-                            fixed_steps.append(fixed_step)
-
-                    if fixed_steps:
-                        print(f"Fixed {len(fixed_steps)} steps to correct structure")
-                        steps = fixed_steps
-
-            # Store the complete set of steps
-            self.reasoning_steps = steps
-
-            # If we have a current node that's an assistant, store the steps with it
-            if self.conversation_tree and self.conversation_tree.current_node:
-                node = self.conversation_tree.current_node
-                if node.role == "assistant":
-                    print(f"DEBUG: Storing {len(steps)} reasoning steps with node {node.id}")
-
-                    # Create database-backed storage for reasoning steps
-                    conn = None
-                    try:
-                        # Get a database connection
-                        from src.models.db_manager import DatabaseManager
-                        db_manager = DatabaseManager()
-                        conn = db_manager.get_connection()
-                        cursor = conn.cursor()
-
-                        # Delete any existing reasoning steps metadata
-                        cursor.execute(
-                            'DELETE FROM message_metadata WHERE message_id = ? AND metadata_type = ?',
-                            (node.id, 'reasoning_steps')
-                        )
-
-                        # Store reasoning steps as metadata
-                        import json
-                        cursor.execute(
-                            '''
-                            INSERT INTO message_metadata (message_id, metadata_type, metadata_value)
-                            VALUES (?, ?, ?)
-                            ''',
-                            (node.id, 'reasoning_steps', json.dumps(steps))
-                        )
-
-                        conn.commit()
-                        print(f"DEBUG: Saved reasoning steps to database for node {node.id}")
-                    except Exception as e:
-                        print(f"ERROR storing reasoning steps in database: {str(e)}")
-                        if conn:
-                            conn.rollback()
-                    finally:
-                        if conn:
-                            conn.close()
-
-                    try:
-                        # Also store in-memory for immediate use
-                        setattr(node, 'reasoning_steps', steps)
-                    except Exception as e:
-                        print(f"ERROR setting reasoning_steps on node: {str(e)}")
-
-                    # Reset all state flags - VERY IMPORTANT for stability
-                    self._is_streaming = False
-                    self._chunk_counter = 0
-                    self._extracting_reasoning = False
-
-                    # Use extra safety - update UI with delay to avoid recursion
-                    from PyQt6.QtCore import QTimer
-
-                    # Immediate chat display update to show content
-                    self.update_chat_display()
-
-                    # Schedule a full UI update
-                    QTimer.singleShot(300, lambda: self.update_ui())
-        except Exception as e:
-            print(f"Error in set_reasoning_steps: {str(e)}")
-            import traceback
-            traceback.print_exc()
-        """
 
     def log_loading_state(self):
         """Log the current state of the loading indicator for debugging"""
@@ -1546,11 +1368,6 @@ class ConversationBranchTab(QWidget):
             # Try to recover by stopping the timer
             self._loading_timer.stop()
             self._loading_active = False
-
-    """
-    Changes to ConversationBranchTab for optimized file attachment handling.
-    Only the relevant methods are shown - the rest of the file remains unchanged.
-    """
 
     def on_attach_file(self):
         """Open file dialog to attach files with enhanced handling for large files"""

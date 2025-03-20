@@ -1,183 +1,49 @@
-# src/models/db_conversation.py
 """
-Database-backed conversation models for improved scalability.
+Database-backed conversation models for improved scalability and persistence.
 """
 
-import os
 import json
-import sqlite3
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple
-
+from typing import Dict, List, Optional
 from PyQt6.QtCore import QUuid
 
+from src.utils.constants import DEFAULT_SYSTEM_MESSAGE
 from src.utils.logging_utils import get_logger, log_exception
-from src.models.db_manager import DatabaseManager
+from src.models.db_types import DBMessageNode
+from src.models.db_manager import DatabaseManager  # Lazy import to avoid circular dependency
 
 # Get a logger for this module
 logger = get_logger(__name__)
 
 
-class DBMessageNode:
-    """
-    Represents a single message in a conversation
-    with database-backed storage
-    """
-
-    def __init__(
-            self,
-            id: str,
-            conversation_id: str,
-            role: str,
-            content: str,
-            parent_id: Optional[str] = None,
-            timestamp: Optional[str] = None,
-            model_info: Dict = None,
-            parameters: Dict = None,
-            token_usage: Dict = None,
-            attached_files: List[Dict] = None,
-            response_id: Optional[str] = None  # New: store OpenAI Response ID
-    ):
-        self._reasoning_steps = None
-        self.id = id
-        self.conversation_id = conversation_id
-        self.role = role
-        self.content = content
-        self.parent_id = parent_id
-        self.timestamp = timestamp or datetime.now().isoformat()
-
-        # Store Response API data
-        self.response_id = response_id
-
-        # For assistant messages only
-        self.model_info = model_info or {}
-        self.parameters = parameters or {}
-        self.token_usage = token_usage or {}
-
-        # For attached files
-        self.attached_files = attached_files or []
-
-        # Children will be loaded on demand
-        self._children = None
-        self._db_manager = None
-
-    @property
-    def children(self):
-        """Lazy-load children when requested"""
-        if self._children is None and self._db_manager:
-            self._children = self._db_manager.get_node_children(self.id)
-        return self._children or []
-
-    @property
-    def parent(self):
-        """Lazy-load parent when requested for compatibility with UI code"""
-        if self.parent_id and self._db_manager:
-            return self._db_manager.get_message(self.parent_id)
-        return None
-
-    @property
-    def reasoning_steps(self):
-        """Get reasoning steps if they exist"""
-        # Note: Reasoning steps are currently not supported by the OpenAI API
-        # This property is kept for future compatibility when reasoning becomes available
-        if hasattr(self, '_reasoning_steps') and self._reasoning_steps is not None:
-            return self._reasoning_steps
-
-        # Try to load from database if we have a manager
-        if self._db_manager:
-            try:
-                # Get metadata info including reasoning steps
-                _, _, _, steps = self._db_manager.get_node_metadata(self.id)
-                if steps:
-                    self._reasoning_steps = steps
-                    return steps
-            except Exception as e:
-                print(f"Error retrieving reasoning steps: {str(e)}")
-
-        # Always return an empty list as default instead of None
-        return []
-
-
-    @reasoning_steps.setter
-    def reasoning_steps(self, steps):
-        """Set reasoning steps and store in database"""
-        self._reasoning_steps = steps
-
-    def add_child(self, child_node):
-        """Add a child node to this node (compatibility method)"""
-        # This is just for in-memory operation during a session
-        # Actual database changes should be done through the DBConversationTree
-        if self._children is None:
-            self._children = []
-        self._children.append(child_node)
-        return child_node
-
-    def get_path_to_root(self):
-        """Return list of nodes from root to this node"""
-        if not self._db_manager:
-            return [self]
-        return self._db_manager.get_path_to_root(self.id)
-
-    def get_messages_to_root(self):
-        """Return list of message dicts from root to this node for API calls"""
-        messages = []
-        for node in self.get_path_to_root():
-            if node.role in ['system', 'user', 'assistant', 'developer']:
-                message = {
-                    "role": node.role,
-                    "content": node.content
-                }
-
-                # Include attached files if present
-                if node.attached_files:
-                    message["attached_files"] = node.attached_files
-
-                messages.append(message)
-        return messages
-
-    def to_dict(self):
-        """Serialize node to dictionary (for compatibility)"""
-        return {
-            "id": self.id,
-            "role": self.role,
-            "content": self.content,
-            "timestamp": self.timestamp,
-            "model_info": self.model_info,
-            "parameters": self.parameters,
-            "token_usage": self.token_usage,
-            "attached_files": self.attached_files,
-            "children": [child.to_dict() for child in self.children]
-        }
-
-
 class DBConversationTree:
     """
-    Represents a conversation tree with database-backed storage
+    Represents a conversation tree with database-backed storage.
     """
 
     def __init__(
             self,
             db_manager: DatabaseManager,
-            id: str = None,
+            id: Optional[str] = None,
             name: str = "New Conversation",
-            system_message: str = "You are a helpful assistant."
+            system_message: str = DEFAULT_SYSTEM_MESSAGE
     ):
-        # Store the longest branch we've seen for each branch ID (key is first node ID)
-        self._longest_branches = {}
+        self._longest_branches: Dict[str, List[str]] = {}  # Store longest branch for each branch ID
         self.db_manager = db_manager
+        self.id: str
+        self.name: str
+        self.created_at: str
+        self.modified_at: str
+        self.current_node_id: str
+        self.root_id: str
+        self.system_message: str
 
         # If ID is provided, load existing conversation
         if id:
             self._load_conversation(id)
-        else:
-            # Create new conversation
-            self.id = str(QUuid.createUuid())
-            self.name = name
-            self.created_at = datetime.now().isoformat()
-            self.modified_at = self.created_at
-
-            # Create root system message
-            self._create_new_conversation(system_message)
+            if not hasattr(self, 'id'):
+                raise ValueError(f"Conversation with ID {id} not found")
+        # Note: We've removed the else clause as new conversations are now created in the database first
 
     def update_name(self, new_name):
         """Update the conversation name in the database"""
@@ -232,6 +98,7 @@ class DBConversationTree:
             self.created_at = conversation['created_at']
             self.modified_at = conversation['modified_at']
             self.current_node_id = conversation['current_node_id']
+            self.system_message = conversation['system_message']
 
             print(f"DEBUG: Loaded conversation '{self.name}' with ID {self.id}")
 
@@ -243,7 +110,7 @@ class DBConversationTree:
             root_result = cursor.fetchone()
 
             if not root_result:
-                raise ValueError(f"Root node for conversation {self.id} not found")
+                self._create_root_node(cursor, self.system_message)
 
             self.root_id = root_result['id']
 
@@ -254,7 +121,27 @@ class DBConversationTree:
         finally:
             conn.close()
 
-    def _create_new_conversation(self, system_message):
+    def _create_root_node(self, cursor, system_message):
+        """Create a root node for the conversation if it doesn't exist"""
+        root_id = str(QUuid.createUuid())
+        now = datetime.now().isoformat()
+
+        cursor.execute(
+            '''
+            INSERT INTO messages (id, conversation_id, parent_id, role, content, timestamp)
+            VALUES (?, ?, NULL, 'system', ?, ?)
+            ''',
+            (root_id, self.id, system_message, now)
+        )
+
+        cursor.execute(
+            '''
+            UPDATE conversations SET current_node_id = ? WHERE id = ?
+            ''',
+            (root_id, self.id)
+        )
+
+    def _create_new_conversation(self, name: str, system_message: str):
         """Create a new conversation in the database"""
         conn = self.db_manager.get_connection()
         cursor = conn.cursor()
@@ -280,7 +167,7 @@ class DBConversationTree:
                 (id, name, created_at, modified_at, current_node_id, system_message)
                 VALUES (?, ?, ?, ?, ?, ?)
                 ''',
-                (self.id, self.name, self.created_at, self.modified_at, root_id, system_message)
+                (self.id, name, now, now, root_id, system_message)
             )
 
             conn.commit()
@@ -302,27 +189,32 @@ class DBConversationTree:
         """Get the root node"""
         return self.get_node(self.root_id)
 
-    # Add a setter for testing purposes
     @root.setter
     def root(self, value):
-        """Setter for root (used in testing)"""
-        # This doesn't change the actual root_id but allows tests to mock the root property
+        """
+        Setter for root (used in testing).
+        This doesn't change the actual root_id but allows tests to mock the root property.
+        """
         self._root_for_testing = value
 
     @property
     def current_node(self):
         """Get the current node"""
-        return self.get_node(self.current_node_id)
+        return self.get_node(self.current_node_id) if self.current_node_id else None
 
-    # Add a setter for testing purposes
     @current_node.setter
     def current_node(self, value):
-        """Setter for current_node (used in testing)"""
-        # This doesn't change the actual current_node_id but allows tests to mock the current_node property
+        """
+        Setter for current_node (used in testing).
+        This doesn't change the actual current_node_id but allows tests to mock the current_node property.
+        """
         self._current_node_for_testing = value
 
     def get_node(self, node_id):
         """Get a node by ID, with support for test mocks"""
+        if not node_id:
+            return None
+
         # For testing - return the mocked object if it exists and the IDs match
         if hasattr(self, '_root_for_testing') and self.root_id == node_id:
             return self._root_for_testing
@@ -384,9 +276,9 @@ class DBConversationTree:
                     'token_count': row['token_count']
                 })
 
-            # Create the node - now passing response_id from the database
+            # Create the node with response_id from the database
             node = DBMessageNode(
-                id=message['id'],
+                id=str(message['id']),
                 conversation_id=message['conversation_id'],
                 role=message['role'],
                 content=message['content'],
@@ -396,7 +288,7 @@ class DBConversationTree:
                 parameters=parameters,
                 token_usage=token_usage,
                 attached_files=attached_files,
-                response_id=message['response_id']  # Add response_id parameter
+                response_id=message['response_id']
             )
 
             # Set database manager for lazy loading children
@@ -412,7 +304,7 @@ class DBConversationTree:
             conn.close()
 
     def add_user_message(self, content, attached_files=None):
-        """Add a user message as child of current node"""
+        """Add a user message as a child of the current node"""
         conn = self.db_manager.get_connection()
         cursor = conn.cursor()
 
@@ -473,7 +365,7 @@ class DBConversationTree:
             conn.close()
 
     def add_assistant_response(self, content, model_info=None, parameters=None, token_usage=None, response_id=None):
-        """Add an assistant response as child of current node, with Response API support"""
+        """Add an assistant response as a child of the current node, with Response API support"""
         conn = self.db_manager.get_connection()
         cursor = conn.cursor()
 
@@ -545,7 +437,7 @@ class DBConversationTree:
             conn.close()
 
     def add_system_response(self, content, model_info=None, parameters=None, token_usage=None, response_id=None):
-        """Add an assistant response as child of current node, with Response API support"""
+        """Add a system response as a child of the current node, with Response API support"""
         conn = self.db_manager.get_connection()
         cursor = conn.cursor()
 
@@ -632,7 +524,7 @@ class DBConversationTree:
                 logger.warning(f"Node {node_id} not found in conversation {self.id}")
                 return False
 
-            # Store the old node ID
+            # Store the old node ID (unused, consider removing)
             old_node_id = self.current_node_id
 
             # Update current node - needed before getting branch
@@ -692,13 +584,12 @@ class DBConversationTree:
 
     def _update_active_branch(self, node_id, current_branch_node_ids):
         """
-        Update the active branch based on node navigation
+        Update the active branch based on node navigation.
 
         This identifies which branch we're on when navigating to a specific node,
         looking for the most specific branch that contains this node.
         """
         try:
-            # Add detailed logging
             logger.debug(f"Updating active branch for node {node_id}")
             logger.debug(f"Current branch has {len(current_branch_node_ids)} nodes")
             logger.debug(f"We have {len(self._branch_paths)} branches tracked")
@@ -749,7 +640,7 @@ class DBConversationTree:
     def retry_current_response(self):
         """
         Switch focus to the parent (user message) of the current node
-        to allow generating an alternative response
+        to allow generating an alternative response.
         """
         current = self.current_node
 
@@ -759,12 +650,12 @@ class DBConversationTree:
         return False
 
     def get_current_branch(self):
-        """Get the current active conversation branch"""
+        """Get the current active conversation branch."""
         return self.current_node.get_path_to_root()
 
     def get_current_branch_future(self):
         """
-        Get the current branch including future nodes from our stored longest version
+        Get the current branch including future nodes from our stored longest version.
         """
         # Get the current branch we're viewing
         current_branch = self.get_current_branch()
@@ -773,15 +664,15 @@ class DBConversationTree:
             return current_branch
 
         # Get the current node ID
-        current_id = self.current_node_id
+        current_id = str(self.current_node_id)
         logger.debug(f"get_current_branch_future called, current node: {current_id}")
 
         # Identify the branch we're on using the second message
         branch_id = None
         if len(current_branch) >= 2:
-            branch_id = current_branch[1].id
+            branch_id = str(current_branch[1].id)
         else:
-            branch_id = current_branch[0].id
+            branch_id = str(current_branch[0].id)
 
         logger.debug(f"Current branch identified as {branch_id}")
 
@@ -824,11 +715,11 @@ class DBConversationTree:
         return full_branch
 
     def get_current_messages(self):
-        """Get message list for API calls based on current branch"""
+        """Get message list for API calls based on current branch."""
         return self.current_node.get_messages_to_root()
 
     def to_dict(self):
-        """Serialize tree to dictionary (for compatibility with old format)"""
+        """Serialize tree to dictionary (for compatibility with old format)."""
         return {
             "id": self.id,
             "name": self.name,
@@ -837,3 +728,31 @@ class DBConversationTree:
             "current_node_id": self.current_node_id,
             "root": self.root.to_dict()
         }
+
+    def delete(self):
+        """Delete the conversation and all associated messages from the database."""
+        conn = self.db_manager.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # Delete all messages associated with this conversation
+            cursor.execute('DELETE FROM messages WHERE conversation_id = ?', (self.id,))
+
+            # Delete all metadata associated with messages in this conversation
+            cursor.execute('DELETE FROM message_metadata WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = ?)', (self.id,))
+
+            # Delete all file attachments associated with messages in this conversation
+            cursor.execute('DELETE FROM file_attachments WHERE message_id IN (SELECT id FROM messages WHERE conversation_id = ?)', (self.id,))
+
+            # Delete the conversation itself
+            cursor.execute('DELETE FROM conversations WHERE id = ?', (self.id,))
+
+            conn.commit()
+            logger.info(f"Deleted conversation {self.id} and all associated data")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error deleting conversation {self.id}")
+            log_exception(logger, e, f"Failed to delete conversation {self.id}")
+            raise
+        finally:
+            conn.close()

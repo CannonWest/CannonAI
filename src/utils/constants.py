@@ -271,3 +271,6 @@ for model, prices in MODEL_PRICING.items():
     if "cached_input" in prices:
         MODEL_PRICE_PER_TOKEN[model]["cached_input"] = prices["cached_input"] / 1_000_000
 
+
+def DEFAULT_SYSTEM_MESSAGE():
+    return "You are a helpful assistant."
