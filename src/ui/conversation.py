@@ -468,7 +468,7 @@ class ConversationBranchTab(QWidget):
 
         # Insert into display
         self.chat_display.insertHtml(full_html)
-        self.chat_display.insertPlainText("\n\n")  # Add spacing
+        self.chat_display.insertPlainText("\n")  # Add spacing
 
     def _render_reasoning_steps(self, node):
         """Render reasoning steps for an assistant message with comprehensive model support"""
@@ -512,89 +512,29 @@ class ConversationBranchTab(QWidget):
                 chunk = chunk[:10000] + "... [CHUNK TRUNCATED - TOO LARGE]"
                 self.logger.warning(f"Chunk size exceeded limits - truncated to 10KB")
 
-            # Set streaming mode flag
-            self._is_streaming = True
-            self._ui_update_pending = True
+            # Initialize streaming content if not already done
+            if not hasattr(self, '_streaming_content'):
+                self._streaming_content = ""
+                self._is_streaming = True
+                self._ui_update_pending = True
 
-            # Handle first chunk differently - remove loading indicator and add assistant prefix
-            self._handle_first_chunk(chunk)
+            # Append chunk to streaming content
+            self._streaming_content += chunk
 
-            # Insert the chunk text
-            self._insert_chunk_text(chunk)
+            # Clear existing content and display streaming content
+            cursor = self.chat_display.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock, QTextCursor.MoveMode.KeepAnchor)
+            cursor.removeSelectedText()
+            self.chat_display.insertPlainText(self._streaming_content)
+
+            # Ensure visible to keep scrolling with new content
+            self.chat_display.ensureCursorVisible()
 
         except Exception as e:
             self.logger.error(f"Error in update_chat_streaming: {str(e)}")
             import traceback
             self.logger.error(traceback.format_exc())
-
-    def _handle_first_chunk(self, chunk):
-        """Handle the first chunk of a streaming response"""
-        if not self._streaming_started:
-            self._streaming_started = True
-            self.logger.debug("First chunk detected - initializing streaming display")
-
-            # Clear any previous streaming content
-            self._total_streamed_content = ""
-
-            # Remove any loading indicator text if present
-            if self._has_loading_text:
-                self.logger.debug("Removing loading indicator text")
-                try:
-                    cursor = self.chat_display.textCursor()
-                    cursor.movePosition(QTextCursor.MoveOperation.End)
-                    cursor.movePosition(QTextCursor.MoveOperation.Up, QTextCursor.MoveMode.KeepAnchor, 1)
-                    cursor.removeSelectedText()
-                    self._has_loading_text = False
-                except Exception as cursor_error:
-                    self.logger.error(f"Error removing loading text: {str(cursor_error)}")
-
-            # Add assistant prefix for first message
-            try:
-                # Get current model if available
-                model_name = ""
-                if self.conversation_tree and self.conversation_tree.current_node:
-                    node = self.conversation_tree.current_node
-                    if hasattr(node, 'model_info') and isinstance(node.model_info, dict) and 'model' in node.model_info:
-                        model_name = node.model_info['model']
-
-                # Add assistant prefix with model if available
-                if model_name:
-                    prefix = f"\n\n🤖 Assistant ({model_name}): "
-                else:
-                    prefix = "\n\n🤖 Assistant: "
-
-                # Get cursor position at the end
-                cursor = self.chat_display.textCursor()
-                cursor.movePosition(QTextCursor.MoveOperation.End)
-                self.chat_display.setTextCursor(cursor)
-
-                # Insert the prefix
-                self.chat_display.insertPlainText(prefix)
-            except Exception as prefix_error:
-                self.logger.error(f"Error adding assistant prefix: {str(prefix_error)}")
-
-    def _insert_chunk_text(self, chunk):
-        """Insert the chunk text into the chat display"""
-        try:
-            # Get cursor position at the end
-            cursor = self.chat_display.textCursor()
-            cursor.movePosition(QTextCursor.MoveOperation.End)
-            self.chat_display.setTextCursor(cursor)
-
-            # Insert the chunk as plain text
-            self.chat_display.insertPlainText(chunk)
-
-            # Ensure visible to keep scrolling with new content
-            self.chat_display.ensureCursorVisible()
-            self.logger.debug(f"Inserted chunk text (length: {len(chunk)})")
-        except Exception as text_error:
-            self.logger.error(f"Error inserting text: {str(text_error)}")
-            # Try an alternative method if the first fails
-            try:
-                self.chat_display.append(chunk)
-                self.logger.debug("Used append fallback method")
-            except Exception as append_error:
-                self.logger.error(f"Error using append fallback: {str(append_error)}")
 
     def complete_streaming_update(self):
         """Perform a full UI update after streaming is complete with improved cleanup and ordering fixes"""
@@ -602,6 +542,16 @@ class ConversationBranchTab(QWidget):
 
         # Reset streaming flag first
         self._is_streaming = False
+
+        # Clear the streaming content
+        if hasattr(self, '_streaming_content'):
+            del self._streaming_content
+
+        # Clear the streaming content from the display
+        cursor = self.chat_display.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock, QTextCursor.MoveMode.KeepAnchor)
+        cursor.removeSelectedText()
 
         # Make sure we're not in the middle of an update
         if hasattr(self, '_updating_display') and self._updating_display:
@@ -639,7 +589,7 @@ class ConversationBranchTab(QWidget):
             cursor = self.chat_display.textCursor()
             cursor.movePosition(QTextCursor.MoveOperation.End)
             self.chat_display.setTextCursor(cursor)
-            self.chat_display.insertPlainText("\n\n")  # Add spacing after completed message
+            self.chat_display.insertPlainText("\n")  # Add spacing after completed message
             self.logger.debug("Added final spacing after message")
         except Exception as e:
             self.logger.error(f"Error adding final spacing: {str(e)}")
