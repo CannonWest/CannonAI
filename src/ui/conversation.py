@@ -18,6 +18,7 @@ from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
+
 class ConversationBranchTab(QWidget):
     """Widget representing a conversation branch tab with retry functionality."""
 
@@ -28,6 +29,7 @@ class ConversationBranchTab(QWidget):
 
     def __init__(self, conversation_tree: Optional[DBConversationTree] = None, parent=None):
         super().__init__(parent)
+        self.logger = logger
         self.conversation_tree = conversation_tree
         self._init_state_variables()
         self._init_ui()
@@ -39,6 +41,7 @@ class ConversationBranchTab(QWidget):
         self._loading_timer.setInterval(500)  # Update every 500ms
         self._loading_state = 0
         self._loading_active = False
+        self.retry_button = None  # Initialize retry_button attribute
 
     def _init_state_variables(self):
         """Initialize state variables to prevent NoneType errors."""
@@ -53,6 +56,7 @@ class ConversationBranchTab(QWidget):
         self._last_branch_ids = set()
         self.current_attachments = []
         self.reasoning_steps = []
+        self._current_assistant_buffer = ""  # Buffer for assistant response
 
     def _init_ui(self):
         """Initialize the user interface components."""
@@ -205,8 +209,8 @@ class ConversationBranchTab(QWidget):
             button = QPushButton(text)
             button.setStyleSheet(f"background-color: {bg_color}; color: {DARK_MODE['foreground']};")
             button.clicked.connect(callback)
-            if text in ["📎", "📁"]:
-                button.setToolTip("Attach file" if text == "📎" else "Attach directory")
+            if text == "Retry":
+                self.retry_button = button  # Save the retry button reference
             self.button_layout.addWidget(button)
 
         self.input_layout.addWidget(self.text_input, 5)
@@ -433,7 +437,7 @@ class ConversationBranchTab(QWidget):
         else:
             color = DARK_MODE["foreground"]
             prefix = f"{node.role}: "
-
+        prefix = "\n" + prefix
         # Start building HTML content
         html_parts = []
 
@@ -501,163 +505,126 @@ class ConversationBranchTab(QWidget):
     def update_chat_streaming(self, chunk):
         """Update the chat display during streaming with improved reliability and ordering"""
         try:
-            # Add debug logging
-            print(f"DEBUG: Received streaming chunk in update_chat_streaming: '{chunk[:20]}...' (length: {len(chunk)})")
-            logger.debug(f"Processing chunk in update_chat_streaming: {chunk[:20]}...")
+            self.logger.debug(f"Received streaming chunk: '{chunk[:20]}...' (length: {len(chunk)})")
 
             # Safety check for extremely large chunks that could cause memory issues
             if len(chunk) > 10000:  # 10KB limit for a single chunk
                 chunk = chunk[:10000] + "... [CHUNK TRUNCATED - TOO LARGE]"
-                print("WARNING: Chunk size exceeded limits - truncated")
-                logger.warning(f"Chunk size exceeded limits - truncated to 10KB")
+                self.logger.warning(f"Chunk size exceeded limits - truncated to 10KB")
 
             # Set streaming mode flag
             self._is_streaming = True
             self._ui_update_pending = True
 
             # Handle first chunk differently - remove loading indicator and add assistant prefix
-            if not hasattr(self, '_streaming_started') or not self._streaming_started:
-                self._streaming_started = True
-                print("DEBUG: First chunk detected - initializing streaming display")
-
-                # Clear any previous streaming content
-                if hasattr(self, '_total_streamed_content'):
-                    self._total_streamed_content = ""
-
-                # Make sure we're not in the middle of a conflicting operation
-                if hasattr(self, '_updating_display') and self._updating_display:
-                    print("WARNING: Display update in progress - potential conflict")
-                    self._updating_display = False
-
-                # Remove any loading indicator text if present
-                if hasattr(self, '_has_loading_text') and self._has_loading_text:
-                    print("DEBUG: Removing loading indicator text")
-                    try:
-                        cursor = self.chat_display.textCursor()
-                        cursor.movePosition(QTextCursor.MoveOperation.End)
-                        cursor.movePosition(QTextCursor.MoveOperation.Up, QTextCursor.MoveMode.KeepAnchor, 1)
-                        cursor.removeSelectedText()
-                        self._has_loading_text = False
-                    except Exception as cursor_error:
-                        print(f"Error removing loading text: {str(cursor_error)}")
-                        # Just continue if cursor operations fail
-
-                    # Check for any remaining loading text that might not have been removed
-                    current_text = self.chat_display.toPlainText()
-                    if current_text.strip().endswith("Waiting for response.") or \
-                            current_text.strip().endswith("Waiting for response..") or \
-                            current_text.strip().endswith("Waiting for response..."):
-                        try:
-                            cursor = self.chat_display.textCursor()
-                            cursor.movePosition(QTextCursor.MoveOperation.End)
-                            # Select more text to ensure we get the whole loading indicator
-                            cursor.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor, 30)
-                            selected_text = cursor.selectedText()
-                            if "Waiting for response" in selected_text:
-                                # Only remove the part that contains the loading indicator
-                                indicator_pos = selected_text.find("Waiting for response")
-                                if indicator_pos >= 0:
-                                    cursor.movePosition(QTextCursor.MoveOperation.End)
-                                    cursor.movePosition(QTextCursor.MoveOperation.Left, QTextCursor.MoveMode.KeepAnchor,
-                                                        len(selected_text) - indicator_pos)
-                                    cursor.removeSelectedText()
-                                    print("DEBUG: Removed additional loading indicator text")
-                        except Exception as e:
-                            print(f"Error removing additional loading text: {str(e)}")
-
-                # Add assistant prefix for first message
-                try:
-                    # Get current model if available
-                    model_name = ""
-                    if self.conversation_tree and self.conversation_tree.current_node:
-                        node = self.conversation_tree.current_node
-                        if hasattr(node, 'model_info') and isinstance(node.model_info, dict) and 'model' in node.model_info:
-                            model_name = node.model_info['model']
-
-                    # Add assistant prefix with model if available
-                    if model_name:
-                        prefix = f"\n\n🤖 Assistant ({model_name}): "
-                    else:
-                        prefix = "\n\n🤖 Assistant: "
-
-                    # Get cursor position at the end
-                    cursor = self.chat_display.textCursor()
-                    cursor.movePosition(QTextCursor.MoveOperation.End)
-                    self.chat_display.setTextCursor(cursor)
-
-                    # Insert the prefix
-                except Exception as prefix_error:
-                    print(f"Error adding assistant prefix: {str(prefix_error)}")
-                    # Continue even if prefix insertion fails
-
-            # Initialize or update the accumulated streaming content
-            if not hasattr(self, '_total_streamed_content'):
-                self._total_streamed_content = chunk
-            else:
-                self._total_streamed_content += chunk
-
-            # Set a flag to indicate we're updating the display
-            self._updating_display = True
+            self._handle_first_chunk(chunk)
 
             # Insert the chunk text
+            self._insert_chunk_text(chunk)
+
+        except Exception as e:
+            self.logger.error(f"Error in update_chat_streaming: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+
+    def _handle_first_chunk(self, chunk):
+        """Handle the first chunk of a streaming response"""
+        if not self._streaming_started:
+            self._streaming_started = True
+            self.logger.debug("First chunk detected - initializing streaming display")
+
+            # Clear any previous streaming content
+            self._total_streamed_content = ""
+
+            # Remove any loading indicator text if present
+            if self._has_loading_text:
+                self.logger.debug("Removing loading indicator text")
+                try:
+                    cursor = self.chat_display.textCursor()
+                    cursor.movePosition(QTextCursor.MoveOperation.End)
+                    cursor.movePosition(QTextCursor.MoveOperation.Up, QTextCursor.MoveMode.KeepAnchor, 1)
+                    cursor.removeSelectedText()
+                    self._has_loading_text = False
+                except Exception as cursor_error:
+                    self.logger.error(f"Error removing loading text: {str(cursor_error)}")
+
+            # Add assistant prefix for first message
             try:
+                # Get current model if available
+                model_name = ""
+                if self.conversation_tree and self.conversation_tree.current_node:
+                    node = self.conversation_tree.current_node
+                    if hasattr(node, 'model_info') and isinstance(node.model_info, dict) and 'model' in node.model_info:
+                        model_name = node.model_info['model']
+
+                # Add assistant prefix with model if available
+                if model_name:
+                    prefix = f"\n\n🤖 Assistant ({model_name}): "
+                else:
+                    prefix = "\n\n🤖 Assistant: "
+
                 # Get cursor position at the end
                 cursor = self.chat_display.textCursor()
                 cursor.movePosition(QTextCursor.MoveOperation.End)
                 self.chat_display.setTextCursor(cursor)
 
-                # Insert the chunk as plain text
-                # self.chat_display.insertPlainText(chunk)
+                # Insert the prefix
+                self.chat_display.insertPlainText(prefix)
+            except Exception as prefix_error:
+                self.logger.error(f"Error adding assistant prefix: {str(prefix_error)}")
 
-                # Ensure visible to keep scrolling with new content
-                self.chat_display.ensureCursorVisible()
-                print(f"DEBUG: Inserted chunk text (length: {len(chunk)})")
-            except Exception as text_error:
-                print(f"Error inserting text: {str(text_error)}")
-                # Try an alternative method if the first fails
-                try:
-                    self.chat_display.append(chunk)
-                    print("DEBUG: Used append fallback method")
-                except Exception as append_error:
-                    print(f"Error using append fallback: {str(append_error)}")
-            finally:
-                # Clear the updating flag
-                self._updating_display = False
-        except Exception as e:
-            print(f"Error in update_chat_streaming: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return None
+    def _insert_chunk_text(self, chunk):
+        """Insert the chunk text into the chat display"""
+        try:
+            # Get cursor position at the end
+            cursor = self.chat_display.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            self.chat_display.setTextCursor(cursor)
+
+            # Insert the chunk as plain text
+            self.chat_display.insertPlainText(chunk)
+
+            # Ensure visible to keep scrolling with new content
+            self.chat_display.ensureCursorVisible()
+            self.logger.debug(f"Inserted chunk text (length: {len(chunk)})")
+        except Exception as text_error:
+            self.logger.error(f"Error inserting text: {str(text_error)}")
+            # Try an alternative method if the first fails
+            try:
+                self.chat_display.append(chunk)
+                self.logger.debug("Used append fallback method")
+            except Exception as append_error:
+                self.logger.error(f"Error using append fallback: {str(append_error)}")
 
     def complete_streaming_update(self):
         """Perform a full UI update after streaming is complete with improved cleanup and ordering fixes"""
-        print("DEBUG: Completing streaming update")
+        self.logger.debug("Completing streaming update")
 
         # Reset streaming flag first
         self._is_streaming = False
 
         # Make sure we're not in the middle of an update
         if hasattr(self, '_updating_display') and self._updating_display:
-            print("WARNING: Display update still in progress - waiting")
+            self.logger.warning("Display update still in progress - waiting")
             import time
             time.sleep(0.1)  # Brief pause to allow any ongoing operations to complete
             self._updating_display = False
 
         # Force stop loading indicator if it's still active
         if hasattr(self, '_loading_active') and self._loading_active:
-            print("DEBUG: Stopping any active loading indicator")
+            self.logger.debug("Stopping any active loading indicator")
             self.stop_loading_indicator()
         else:
-            print("DEBUG: Loading indicator not active during completion")
+            self.logger.debug("Loading indicator not active during completion")
 
         # Double-check loading indicator timer is stopped
         if hasattr(self, '_loading_timer') and self._loading_timer.isActive():
-            print("DEBUG: Forcibly stopping loading timer")
+            self.logger.debug("Forcibly stopping loading timer")
             self._loading_timer.stop()
 
         # Ensure any loading text is removed
         if hasattr(self, '_has_loading_text') and self._has_loading_text:
-            print("DEBUG: Cleaning up loading text indicator")
+            self.logger.debug("Cleaning up loading text indicator")
             try:
                 cursor = self.chat_display.textCursor()
                 cursor.movePosition(QTextCursor.MoveOperation.End)
@@ -665,47 +632,7 @@ class ConversationBranchTab(QWidget):
                 cursor.removeSelectedText()
                 self._has_loading_text = False
             except Exception as cursor_error:
-                print(f"Error removing loading text: {str(cursor_error)}")
-
-        # Double check message integrity using the accumulated content
-        if hasattr(self, '_total_streamed_content') and self._total_streamed_content:
-            # Get the conversation tree and current node
-            if self.conversation_tree and self.conversation_tree.current_node:
-                current_node = self.conversation_tree.current_node
-
-                # Check if the content matches what we've accumulated
-                try:
-                    db_content = current_node.content
-                    streamed_content = self._total_streamed_content
-
-                    if db_content != streamed_content:
-                        print(f"WARNING: Content mismatch - DB: {len(db_content)} chars, Streamed: {len(streamed_content)} chars")
-
-                        # Update the database with the streamed content for consistency
-                        from src.models.db_manager import DatabaseManager
-                        conn = None
-                        try:
-                            db_manager = DatabaseManager()
-                            conn = db_manager.get_connection()
-                            cursor = conn.cursor()
-
-                            cursor.execute(
-                                'UPDATE messages SET content = ? WHERE id = ?',
-                                (streamed_content, current_node.id)
-                            )
-                            # Also update in-memory content
-                            current_node.content = streamed_content
-                            conn.commit()
-                            print("DEBUG: Updated node content from streamed content")
-                        except Exception as db_error:
-                            print(f"Error updating content from streamed content: {str(db_error)}")
-                            if conn:
-                                conn.rollback()
-                        finally:
-                            if conn:
-                                conn.close()
-                except Exception as e:
-                    print(f"Error checking content integrity: {str(e)}")
+                self.logger.error(f"Error removing loading text: {str(cursor_error)}")
 
         # Finalize and add extra newlines for clean separation between messages
         try:
@@ -713,16 +640,16 @@ class ConversationBranchTab(QWidget):
             cursor.movePosition(QTextCursor.MoveOperation.End)
             self.chat_display.setTextCursor(cursor)
             self.chat_display.insertPlainText("\n\n")  # Add spacing after completed message
-            print("DEBUG: Added final spacing after message")
+            self.logger.debug("Added final spacing after message")
         except Exception as e:
-            print(f"Error adding final spacing: {str(e)}")
+            self.logger.error(f"Error adding final spacing: {str(e)}")
 
         # Force a full chat display update to ensure content is complete
         try:
-            print("DEBUG: Forcing full chat display update")
+            self.logger.debug("Forcing full chat display update")
             self.update_chat_display()
         except Exception as display_error:
-            print(f"Error updating chat display: {str(display_error)}")
+            self.logger.error(f"Error updating chat display: {str(display_error)}")
 
         # Reset streaming state variables
         if hasattr(self, '_streaming_started'):
@@ -734,7 +661,7 @@ class ConversationBranchTab(QWidget):
 
         # Only update if we have pending updates
         if hasattr(self, '_ui_update_pending') and self._ui_update_pending:
-            print("DEBUG: Scheduling deferred complete update")
+            self.logger.debug("Scheduling deferred complete update")
             # Ensure we wait a short moment to allow any in-progress
             # operations to complete first (important for stability)
             from PyQt6.QtCore import QTimer
@@ -763,10 +690,10 @@ class ConversationBranchTab(QWidget):
             self._ui_update_pending = False
 
             # Log that we completed a deferred update for debugging
-            print("Completed deferred UI update after streaming")
+            self.logger.debug("Completed deferred UI update after streaming")
 
         except Exception as e:
-            print(f"Error in complete_streaming_update: {str(e)}")
+            self.logger.error(f"Error in complete_streaming_update: {str(e)}")
 
     def clear_message_cache(self):
         """Clear the message rendering cache"""
@@ -780,6 +707,12 @@ class ConversationBranchTab(QWidget):
 
     def update_retry_button(self):
         """Enable/disable retry button based on current node"""
+        if self.retry_button is None:
+            # Create retry button if it doesn't exist
+            self.retry_button = QPushButton("Retry")
+            self.retry_button.clicked.connect(self.on_retry)
+            self.button_layout.addWidget(self.retry_button)
+
         if not self.conversation_tree:
             self.retry_button.setEnabled(False)
             return
@@ -822,11 +755,11 @@ class ConversationBranchTab(QWidget):
                     from src.services.api import OpenAIThreadManager
                     thread_manager = OpenAIThreadManager()
                     thread_manager.cancel_worker(self._active_thread_id)
-                    print(f"Cancelled thread: {self._active_thread_id}")
+                    self.logger.debug(f"Cancelled thread: {self._active_thread_id}")
 
                     # Make sure to stop the loading indicator
                     if hasattr(self, '_loading_active') and self._loading_active:
-                        print("DEBUG: Stopping loading indicator after cancellation")
+                        self.logger.debug("Stopping loading indicator after cancellation")
                         self.stop_loading_indicator()
 
                     # Reset processing state
@@ -834,14 +767,14 @@ class ConversationBranchTab(QWidget):
 
             # Check if conversation tree is valid
             if not self.conversation_tree:
-                print("ERROR: No conversation tree available")
+                self.logger.error("No conversation tree available")
                 return
 
             # Get message text with safety checks
             try:
                 message = self.text_input.toPlainText().strip()
             except Exception as text_error:
-                print(f"Error getting message text: {str(text_error)}")
+                self.logger.error(f"Error getting message text: {str(text_error)}")
                 message = ""
 
             # Check if message is too long (prevent memory issues)
@@ -891,7 +824,7 @@ class ConversationBranchTab(QWidget):
                         }
                         attachments_copy.append(clean_attachment)
             except Exception as attach_error:
-                print(f"Error processing attachments: {str(attach_error)}")
+                self.logger.error(f"Error processing attachments: {str(attach_error)}")
                 attachments_copy = None
 
             # Final check for empty message
@@ -902,7 +835,7 @@ class ConversationBranchTab(QWidget):
             try:
                 self.text_input.clear()
             except Exception as clear_error:
-                print(f"Error clearing input field: {str(clear_error)}")
+                self.logger.error(f"Error clearing input field: {str(clear_error)}")
                 # Continue anyway
 
             # Store attachments for use in the main window's send_message method
@@ -910,10 +843,10 @@ class ConversationBranchTab(QWidget):
 
             # Emit signal to send message
             try:
-                print(f"DEBUG: Emitting send_message signal with: '{message[:30]}...'")
+                self.logger.debug(f"Emitting send_message signal with: '{message[:30]}...'")
                 self.send_message.emit(message)
             except Exception as emit_error:
-                print(f"Error emitting send message signal: {str(emit_error)}")
+                self.logger.error(f"Error emitting send message signal: {str(emit_error)}")
                 # Try to recover from emission error
                 if hasattr(self, '_loading_active') and self._loading_active:
                     self.stop_loading_indicator()
@@ -930,11 +863,11 @@ class ConversationBranchTab(QWidget):
             try:
                 self.clear_attachments()
             except Exception as clear_attach_error:
-                print(f"Error clearing attachments: {str(clear_attach_error)}")
+                self.logger.error(f"Error clearing attachments: {str(clear_attach_error)}")
                 # Continue anyway
 
         except Exception as e:
-            print(f"Critical error in on_send: {str(e)}")
+            self.logger.error(f"Critical error in on_send: {str(e)}")
             import traceback
             traceback.print_exc()
 
@@ -989,14 +922,14 @@ class ConversationBranchTab(QWidget):
                     setattr(node, 'reasoning_steps', self.reasoning_steps)
 
                     # Just log the step - no UI update during streaming
-                    print(f"Added CoT step: {step_name}")
+                    self.logger.debug(f"Added CoT step: {step_name}")
 
                     # Skip UI update completely during streaming
                     if getattr(self, '_is_streaming', False):
                         return
 
         except Exception as e:
-            print(f"Error in add_cot_step: {str(e)}")
+            self.logger.error(f"Error in add_cot_step: {str(e)}")
 
     def clear_cot(self):
         """Clear the chain of thought steps"""
@@ -1035,7 +968,7 @@ class ConversationBranchTab(QWidget):
                             # Add each file with its relative path
                             self.add_attachment(individual_file_path, relative_path)
                         except Exception as e:
-                            print(f"Error attaching file {relative_path}: {str(e)}")
+                            self.logger.error(f"Error attaching file {relative_path}: {str(e)}")
             else:
                 # It's a regular file, handle normally
                 self.add_attachment(file_path)
@@ -1140,7 +1073,7 @@ class ConversationBranchTab(QWidget):
         """Store reasoning steps for the current response with improved debugging and handling"""
         # Currently disabled as OpenAI API doesn't support reasoning steps
         # Method kept for future use when the API supports this feature
-        print(f"Received reasoning steps (currently disabled): {len(steps) if steps else 0} steps")
+        self.logger.debug(f"Received reasoning steps (currently disabled): {len(steps) if steps else 0} steps")
 
         # Still reset streaming state for proper UI updates
         if hasattr(self, '_is_streaming'):
@@ -1162,8 +1095,8 @@ class ConversationBranchTab(QWidget):
         loading_state = getattr(self, '_loading_state', -1)
         is_streaming = getattr(self, '_is_streaming', False)
 
-        print(f"LOADING DEBUG: active={loading_active}, has_text={has_loading_text}, " +
-              f"state={loading_state}, streaming={is_streaming}")
+        self.logger.debug(f"LOADING DEBUG: active={loading_active}, has_text={has_loading_text}, " +
+                          f"state={loading_state}, streaming={is_streaming}")
 
     def _format_code_block(self, match):
         """Format code blocks with syntax highlighting"""
@@ -1191,12 +1124,12 @@ class ConversationBranchTab(QWidget):
                     "deepseek-reasoner" in model_name
             )
 
-            print(f"DEBUG: Updating info for model {model_name}, is_reasoning_model: {is_reasoning_model}")
+            self.logger.debug(f"Updating info for model {model_name}, is_reasoning_model: {is_reasoning_model}")
 
             # Extract and display token usage with detailed logging
             if current_node.token_usage:
                 usage = current_node.token_usage
-                print(f"DEBUG: Token usage data: {usage}")
+                self.logger.debug(f"Token usage data: {usage}")
 
                 prompt_tokens = usage.get("prompt_tokens", 0)
                 completion_tokens = usage.get("completion_tokens", 0)
@@ -1208,18 +1141,18 @@ class ConversationBranchTab(QWidget):
 
                 if "completion_tokens_details" in usage:
                     details = usage["completion_tokens_details"]
-                    print(f"DEBUG: Completion token details: {details}")
+                    self.logger.debug(f"Completion token details: {details}")
                     reasoning_tokens = details.get("reasoning_tokens", 0)
                     has_reasoning_details = True
 
                 # Build token display based on available information
                 if has_reasoning_details and reasoning_tokens > 0:
                     self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens} ({reasoning_tokens} reasoning)")
-                    print(f"DEBUG: Showing {reasoning_tokens} reasoning tokens")
+                    self.logger.debug(f"Showing {reasoning_tokens} reasoning tokens")
                 elif is_reasoning_model:
                     # For reasoning models that don't report reasoning tokens
                     self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens} (reasoning enabled)")
-                    print(f"DEBUG: Showing reasoning-enabled label for model {model_name}")
+                    self.logger.debug(f"Showing reasoning-enabled label for model {model_name}")
                 else:
                     self.token_label.setText(f"Tokens: {completion_tokens} / {total_tokens}")
             else:
@@ -1228,11 +1161,11 @@ class ConversationBranchTab(QWidget):
                     self.token_label.setText("Tokens: - / - (reasoning enabled)")
                 else:
                     self.token_label.setText("Tokens: - / -")
-                print(f"No token usage for assistant node ID: {current_node.id}")
+                self.logger.debug(f"No token usage for assistant node ID: {current_node.id}")
 
     def start_loading_indicator(self):
         """Start the loading indicator with improved state tracking"""
-        print("DEBUG: Starting loading indicator")
+        self.logger.debug("Starting loading indicator")
         self._loading_state = 0
         self._loading_active = True
         self._has_loading_text = False
@@ -1246,29 +1179,29 @@ class ConversationBranchTab(QWidget):
 
         # Show initial state immediately
         self._update_loading_indicator()
-        print("DEBUG: Loading indicator initialized")
+        self.logger.debug("Loading indicator initialized")
 
     def stop_loading_indicator(self):
         """Stop the loading indicator and ensure it's removed from display"""
-        print("DEBUG: Stopping loading indicator")
+        self.logger.debug("Stopping loading indicator")
 
         # Check if already inactive
         if not hasattr(self, '_loading_active') or not self._loading_active:
-            print("DEBUG: Loading indicator already inactive")
+            self.logger.debug("Loading indicator already inactive")
             # Regardless, make sure state is cleaned up
             self._loading_active = False
 
             # Still try to remove any loading text if present
             if hasattr(self, '_has_loading_text') and self._has_loading_text:
-                print("DEBUG: Loading text still present despite inactive indicator")
+                self.logger.debug("Loading text still present despite inactive indicator")
 
         # Stop the timer first - do this unconditionally
         if hasattr(self, '_loading_timer'):
             if self._loading_timer.isActive():
-                print("DEBUG: Stopping active loading timer")
+                self.logger.debug("Stopping active loading timer")
                 self._loading_timer.stop()
             else:
-                print("DEBUG: Loading timer already stopped")
+                self.logger.debug("Loading timer already stopped")
 
         # Always update state flags
         self._loading_active = False
@@ -1276,7 +1209,7 @@ class ConversationBranchTab(QWidget):
         # Always attempt to remove the loading text for consistency
         if hasattr(self, '_has_loading_text') and self._has_loading_text:
             try:
-                print("DEBUG: Removing loading indicator text")
+                self.logger.debug("Removing loading indicator text")
                 cursor = self.chat_display.textCursor()
                 cursor.movePosition(QTextCursor.MoveOperation.End)
 
@@ -1289,9 +1222,9 @@ class ConversationBranchTab(QWidget):
                 # Only remove if we actually moved (means there was a line to select)
                 if cursor.position() < end_position:
                     cursor.removeSelectedText()
-                    print("DEBUG: Loading text removed successfully")
+                    self.logger.debug("Loading text removed successfully")
                 else:
-                    print("DEBUG: No text to remove at cursor position")
+                    self.logger.debug("No text to remove at cursor position")
 
                 self._has_loading_text = False
 
@@ -1302,13 +1235,13 @@ class ConversationBranchTab(QWidget):
                 # Make sure any changes are visible
                 self.chat_display.ensureCursorVisible()
             except Exception as e:
-                print(f"ERROR: Failed to remove loading indicator text: {str(e)}")
+                self.logger.error(f"ERROR: Failed to remove loading indicator text: {str(e)}")
                 import traceback
                 traceback.print_exc()
                 # Even if we fail to remove it, mark it as gone to prevent duplicate attempts
                 self._has_loading_text = False
         else:
-            print("DEBUG: No loading text to remove")
+            self.logger.debug("No loading text to remove")
 
     def _update_loading_indicator(self):
         """Update the loading indicator text with improved reliability"""
@@ -1318,7 +1251,7 @@ class ConversationBranchTab(QWidget):
 
         # Don't update if streaming has started
         if hasattr(self, '_streaming_started') and self._streaming_started:
-            print("DEBUG: Loading indicator update skipped - streaming has started")
+            self.logger.debug("Loading indicator update skipped - streaming has started")
             self._loading_timer.stop()
             return
 
@@ -1335,7 +1268,7 @@ class ConversationBranchTab(QWidget):
 
         # Log every third cycle
         if self._loading_state == 0:
-            print(f"DEBUG: Updating loading indicator: {loading_text}")
+            self.logger.debug(f"Updating loading indicator: {loading_text}")
 
         try:
             # Find the last message in the chat display
@@ -1356,7 +1289,7 @@ class ConversationBranchTab(QWidget):
                 # Add loading text for the first time
                 self.chat_display.append("\n" + loading_text)  # Add extra newline before first loading indicator
                 self._has_loading_text = True
-                print("DEBUG: Added initial loading text")
+                self.logger.debug("Added initial loading text")
 
             # Reset text color to normal
             self.chat_display.setTextColor(QColor(DARK_MODE["foreground"]))
@@ -1364,7 +1297,7 @@ class ConversationBranchTab(QWidget):
             # Make sure the loading text is visible
             self.chat_display.ensureCursorVisible()
         except Exception as e:
-            print(f"ERROR updating loading indicator: {str(e)}")
+            self.logger.error(f"ERROR updating loading indicator: {str(e)}")
             # Try to recover by stopping the timer
             self._loading_timer.stop()
             self._loading_active = False
@@ -1645,7 +1578,7 @@ class ConversationBranchTab(QWidget):
         # Function to handle file error
         def handle_file_error(error, file_path):
             # Just log the error, don't show message box for each file
-            print(f"Error processing {file_path}: {error}")
+            self.logger.error(f"Error processing {file_path}: {error}")
 
         # Function to handle thread completion
         def handle_thread_finished(thread, worker):
@@ -1952,11 +1885,11 @@ class ConversationBranchTab(QWidget):
                     for token in tokens:
                         decoded = encoding.decode([token])
                         # Replace special chars for HTML display
-                        decoded = decoded.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "↵").replace(" ", "·")
+                        decoded = decoded.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n","↵").replace(" ", "·")
                         token_html += f'<span class="token" title="Token ID: {token}">{decoded}</span>'
                     token_html += "</p>"
                 else:
-                    # For smaller files, show token visualization
+                    # For smaller files,
                     tokens = encoding.encode(content)
                     if len(tokens) > token_max:
                         token_html += f"<p>Showing first {token_max:,} of {len(tokens):,} tokens:</p><p>"
@@ -1964,12 +1897,12 @@ class ConversationBranchTab(QWidget):
                     else:
                         token_html += f"<p>Total tokens: {len(tokens):,}</p><p>"
 
-                    for token in tokens:
-                        decoded = encoding.decode([token])
-                        # Replace special chars for HTML display
-                        decoded = decoded.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "↵").replace(" ", "·")
-                        token_html += f'<span class="token" title="Token ID: {token}">{decoded}</span>'
-                    token_html += "</p>"
+                for token in tokens:
+                    decoded = encoding.decode([token])
+                    # Replace special chars for HTML display
+                    decoded = decoded.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "↵").replace(" ", "·")
+                    token_html += f'<span class="token" title="Token ID: {token}">{decoded}</span>'
+                token_html += "</p>"
 
                 token_view.setHtml(token_html)
                 token_view.setStyleSheet(
@@ -1977,9 +1910,9 @@ class ConversationBranchTab(QWidget):
                 )
                 content_tab.addTab(token_view, "Token View")
             except Exception as e:
-                print(f"Error creating token visualization: {e}")
+                self.logger.error(f"Error creating token visualization: {e}")
         except Exception as e:
-            print(f"Error creating token tab: {e}")
+            self.logger.error(f"Error creating token tab: {e}")
 
         layout.addWidget(content_tab)
 

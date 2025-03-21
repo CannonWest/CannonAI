@@ -6,13 +6,16 @@ This module handles SQLite database connections and operations.
 import os
 import sqlite3
 import json
+import threading
 import hashlib
 from datetime import datetime
+from contextlib import contextmanager
 from typing import Dict, List, Any, Optional, Tuple
+from cachetools import TTLCache, cached
 
 from PyQt6.QtCore import QUuid
 
-from src.utils.constants import DATABASE_DIR, DATABASE_FILE
+from src.utils.constants import DATABASE_DIR, DATABASE_FILE, CACHE_SIZE, CACHE_TTL
 from src.utils.logging_utils import get_logger, log_exception
 from src.utils.file_utils import FileCacheManager
 from src.models.db_types import DBMessageNode
@@ -23,23 +26,54 @@ class DatabaseManager:
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or DATABASE_FILE
         self.logger = logger
-        self.file_cache_manager = FileCacheManager()
-        os.makedirs(DATABASE_DIR, exist_ok=True)
-        self.initialize_database()
+        self.connection = None
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        self._initialize_database()
+    
+    def get_node(self, node_id):
+        """Get a node by ID"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM messages WHERE id = ?', (node_id,))
+            message = cursor.fetchone()
+            if message:
+                return self._create_node_from_db_row(message)
+            else:
+                return None
 
-    def get_connection(self) -> sqlite3.Connection:
-        """Get a database connection with row factory for dictionary access"""
-        conn = sqlite3.connect(self.db_path)
+    @contextmanager
+    def get_connection(self):
+        """Get a database connection for the current thread"""
+        if self.connection is None:
+            self.connection = self._create_connection()
+        
+        try:
+            yield self.connection
+        except Exception as e:
+            self.logger.error(f"Database error: {str(e)}")
+            self.connection.rollback()
+            raise
+
+    def close_connection(self):
+        """Close the database connection"""
+        if self.connection:
+            self.connection.close()
+            self.connection = None
+
+    def _create_connection(self):
+        """Create a new database connection"""
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
 
+    @cached(cache=TTLCache(maxsize=CACHE_SIZE, ttl=CACHE_TTL))
     def get_path_to_root(self, node_id: str) -> List['DBMessageNode']:
-        """Get the path from a node to the root"""
+        """Get the path from a node to the root (now cached)"""
         if not node_id:
             self.logger.error("Attempted to get path to root with None node_id")
             return []
 
-        with self.get_connection() as conn:
+        with self.get_connection() as conn:  # Use the context manager
             cursor = conn.cursor()
             path = []
             current_id = node_id
@@ -63,8 +97,9 @@ class DatabaseManager:
 
         return [node for node in path if node is not None]
 
+    @cached(cache=TTLCache(maxsize=CACHE_SIZE, ttl=CACHE_TTL))
     def get_node_children(self, node_id: str) -> List['DBMessageNode']:
-        """Get children of a node"""
+        """Get children of a node (now cached)"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM messages WHERE parent_id = ?', (node_id,))
@@ -170,10 +205,10 @@ class DatabaseManager:
             cursor.execute('SELECT * FROM file_attachments WHERE message_id = ?', (node_id,))
             return [dict(row) for row in cursor.fetchall()]
 
-    def initialize_database(self):
-        """Create database tables if they don't exist with safe migration for existing DBs"""
+    def _initialize_database(self):
+        """Create database tables if they don't exist"""
         self.logger.debug(f"Initializing database at {self.db_path}")
-
+        
         with self.get_connection() as conn:
             cursor = conn.cursor()
 
@@ -271,7 +306,12 @@ class DatabaseManager:
                     CREATE INDEX IF NOT EXISTS idx_file_contents_file_id ON file_contents(file_id);
                 ''')
 
-        self.logger.info("Database schema initialized/migrated successfully")
+            self.logger.info("Database schema initialized successfully")
+            # Log database structure
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            tables = cursor.fetchall()
+            self.logger.info(f"Database tables: {[table[0] for table in tables]}")
+            # Log any migrations performed here
 
     def _add_missing_columns(self, cursor):
         """Add missing columns to file_attachments table"""

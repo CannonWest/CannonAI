@@ -58,19 +58,22 @@ class OpenAIThreadManager:
     def cancel_worker(self, thread_id):
         """Cancel an active worker with improved cleanup"""
         if thread_id in self.active_threads:
+            self.logger.info(f"Attempting to cancel worker: {thread_id}")
             thread, worker = self.active_threads[thread_id]
 
             # Mark worker for cancellation
             worker.cancel()
+            self.logger.debug(f"Worker {thread_id} marked for cancellation")
 
             # Set a timeout for the thread to finish gracefully
             if thread.isRunning():
                 if not thread.wait(3000):  # 3 second timeout
-                    self.logger.warning(f"Thread {thread_id} did not finish in time, forcing quit")
+                    self.logger.warning(f"Thread {thread_id} did not finish in time, forcing termination")
                     thread.terminate()  # Force termination as last resort
 
             # Clean up references immediately
             self._cleanup_thread(thread_id)
+            self.logger.info(f"Worker {thread_id} cancelled and cleaned up")
             return True
         return False
 
@@ -452,6 +455,7 @@ class OpenAIAPIWorker(QObject):
 
                     # Log detailed event information for debugging
                     event_type = getattr(event, 'type', None)
+                    #KEEP THIS FOR THE FUTURE
                     self.logger.debug(f"Processing event type: {event_type}")
 
                     if not event_type:

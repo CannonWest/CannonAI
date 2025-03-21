@@ -45,8 +45,8 @@ DEFAULT_LOGGING_CONFIG = {
             'formatter': 'detailed',
             'class': 'logging.handlers.RotatingFileHandler',
             'filename': DEFAULT_LOG_FILE,
-            'maxBytes': 52428800,  # 50MB
-            'backupCount': 10,
+            'maxBytes': 10485760,  # 10MB
+            'backupCount': 5,
             'encoding': 'utf8',
         },
     },

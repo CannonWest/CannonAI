@@ -271,6 +271,10 @@ for model, prices in MODEL_PRICING.items():
     if "cached_input" in prices:
         MODEL_PRICE_PER_TOKEN[model]["cached_input"] = prices["cached_input"] / 1_000_000
 
+# Cache settings
+CACHE_SIZE = 1000  # Maximum number of items to store in the cache
+CACHE_TTL = 300  # Time-to-live for cached items in seconds (5 minutes)
+
 
 def DEFAULT_SYSTEM_MESSAGE():
     return "You are a helpful assistant."
