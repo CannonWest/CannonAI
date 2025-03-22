@@ -209,6 +209,7 @@ class ConversationBranchTab(QWidget):
             button = QPushButton(text)
             button.setStyleSheet(f"background-color: {bg_color}; color: {DARK_MODE['foreground']};")
             button.clicked.connect(callback)
+            button.setVisible(text != "Retry")  # Initially hide the retry button
             if text == "Retry":
                 self.retry_button = button  # Save the retry button reference
             self.button_layout.addWidget(button)
@@ -437,7 +438,7 @@ class ConversationBranchTab(QWidget):
         else:
             color = DARK_MODE["foreground"]
             prefix = f"{node.role}: "
-        prefix = "\n" + prefix
+        prefix = "\n\n" + prefix
         # Start building HTML content
         html_parts = []
 
@@ -468,7 +469,7 @@ class ConversationBranchTab(QWidget):
 
         # Insert into display
         self.chat_display.insertHtml(full_html)
-        self.chat_display.insertPlainText("\n")  # Add spacing
+        self.chat_display.insertPlainText("\n\n")  # Add spacing
 
     def _render_reasoning_steps(self, node):
         """Render reasoning steps for an assistant message with comprehensive model support"""
@@ -658,19 +659,18 @@ class ConversationBranchTab(QWidget):
     def update_retry_button(self):
         """Enable/disable retry button based on current node"""
         if self.retry_button is None:
-            # Create retry button if it doesn't exist
-            self.retry_button = QPushButton("Retry")
-            self.retry_button.clicked.connect(self.on_retry)
-            self.button_layout.addWidget(self.retry_button)
+            self.logger.error("Retry button not initialized")
+            return
 
         if not self.conversation_tree:
+            self.retry_button.setVisible(False)
             self.retry_button.setEnabled(False)
             return
 
-        # Enable retry if current node is an assistant message
         current_node = self.conversation_tree.current_node
         can_retry = current_node.role == "assistant" and current_node.parent and current_node.parent.role == "user"
         self.retry_button.setEnabled(can_retry)
+        self.retry_button.setVisible(True)
 
     def navigate_to_node(self, node_id):
         """Navigate to a specific node in the conversation"""
@@ -835,12 +835,33 @@ class ConversationBranchTab(QWidget):
     def on_retry(self):
         """Handle retry button click"""
         if not self.conversation_tree:
+            self.logger.error("No conversation tree available")
             return
 
-        # Check if retry is possible
-        if self.conversation_tree.retry_current_response():
-            self.update_ui()
-            self.retry_request.emit()
+        current_node = self.conversation_tree.current_node
+        
+        if current_node.role == "system" and not current_node.parent:
+            self.logger.warning("Cannot retry from root system node")
+            return
+        
+        if current_node.role == "assistant":
+            # Navigate to the parent user node
+            if not self.conversation_tree.navigate_to_node(current_node.parent_id):
+                self.logger.error("Failed to navigate to parent user node")
+                return
+            current_node = self.conversation_tree.current_node
+        
+        # At this point, we should be on a user node
+        if current_node.role != "user":
+            self.logger.error(f"Unexpected node role for retry: {current_node.role}")
+            return
+        
+        # Create a new branch with the same user message
+        new_node = self.conversation_tree.add_user_message(current_node.content)
+        
+        # Update UI and emit retry request
+        self.update_ui()
+        self.retry_request.emit()
 
     def toggle_info(self):
         """Toggle the visibility of the response details content"""
@@ -1856,7 +1877,7 @@ class ConversationBranchTab(QWidget):
 
                 token_view.setHtml(token_html)
                 token_view.setStyleSheet(
-                    f"background-color: {DARK_MODE['highlight']}; color: {DARK_MODE['foreground']};"
+                    f"background-color: {DARK_MODE['highlight']};                    color: {DARK_MODE['foreground']};"
                 )
                 content_tab.addTab(token_view, "Token View")
             except Exception as e:

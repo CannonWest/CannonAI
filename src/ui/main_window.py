@@ -438,6 +438,9 @@ class MainWindow(QMainWindow):
         if conversation:
             # Create a tab for the conversation
             self.add_conversation_tab(conversation)
+            # Update the graph view for the new conversation
+            tab = self.tabs.currentWidget()
+            tab.graph_view.update_tree(conversation)
             logger.info(f"New conversation created: {conversation.name} (ID: {conversation.id})")
         else:
             error_msg = "Failed to create a new conversation. Please try again or restart the application."
@@ -706,6 +709,10 @@ class MainWindow(QMainWindow):
             # Update the UI
             self.logger.debug("Updating UI after adding assistant response")
             tab.update_ui()
+            
+            # Update the graph view
+            if hasattr(tab, 'graph_view'):
+                tab.graph_view.update_tree(conversation)
 
             # Save the conversation
             self.logger.debug(f"Saving conversation: {conversation.id}")
@@ -786,7 +793,7 @@ class MainWindow(QMainWindow):
     def _flush_buffer_to_database(self, tab, conversation, is_first_chunk):
         """Write accumulated buffer to the database with improved reliability"""
         buffer_size = len(tab._chunk_buffer)
-        self.logger.debug(f"Flushing buffer to database, size: {buffer_size}")
+        # self.logger.debug(f"Flushing buffer to database, size: {buffer_size}")
         if buffer_size == 0:
             return
 
@@ -815,7 +822,7 @@ class MainWindow(QMainWindow):
                 # Reset buffer after successful commit
                 tab._chunk_buffer = ""
                 tab._chunk_counter = 0
-                self.logger.debug(f"Buffer reset (cleared {buffer_size} characters)")
+                # self.logger.debug(f"Buffer reset (cleared {buffer_size} characters)")
 
             except Exception as e:
                 self.logger.error(f"Database error in _flush_buffer_to_database: {str(e)}")
@@ -1254,8 +1261,8 @@ class MainWindow(QMainWindow):
         def _handle_chunk(chunk):
             try:
                 # Log the chunk for debugging
-                print(f"DEBUG: Chunk handler received: {chunk[:20]}... (length: {len(chunk)})")
-                self.logger.debug(f"Chunk handler received: {chunk[:20]}... (length: {len(chunk)})")
+                # print(f"DEBUG: Chunk handler received: {chunk[:20]}... (length: {len(chunk)})")
+                # self.logger.debug(f"Chunk handler received: {chunk[:20]}... (length: {len(chunk)})")
 
                 # Get the conversation
                 conversation = tab.conversation_tree

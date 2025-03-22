@@ -455,8 +455,9 @@ class OpenAIAPIWorker(QObject):
 
                     # Log detailed event information for debugging
                     event_type = getattr(event, 'type', None)
-                    #KEEP THIS FOR THE FUTURE
-                    self.logger.debug(f"Processing event type: {event_type}")
+                    if event_type != "response.output_text.delta":
+                        # Log typing events
+                        self.logger.debug(f"Processing event type: {event_type}")
 
                     if not event_type:
                         self.logger.debug(f"Event without type: {event}")

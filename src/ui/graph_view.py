@@ -3,6 +3,7 @@
 from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsItem, QGraphicsRectItem, QGraphicsTextItem
 from PyQt6.QtGui import QPainter, QPen, QBrush, QColor
 from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
+import time
 
 
 class NodeItem(QGraphicsRectItem):
@@ -77,6 +78,7 @@ class ConversationGraphView(QGraphicsView):
         self.setInteractive(True)  # optional: for item interaction
 
         self.scale_factor = 1.0  # track current zoom
+        self._last_update_time = 0  # Add this line to track the last update time
 
         # Enable scene mouse events
         self._scene.mouseReleaseEvent = self._handle_scene_mouse_release
@@ -106,12 +108,20 @@ class ConversationGraphView(QGraphicsView):
     def update_tree(self, conversation_tree):
         """Clear and rebuild the scene based on the conversation tree data"""
         # Skip update if we're marked as busy to prevent layout thrashing
+        current_time = time.time()
         if hasattr(self, '_update_in_progress') and self._update_in_progress:
+            # If it's been more than 2 seconds since the last update, force an update
+            if current_time - self._last_update_time > 2:
+                self._update_in_progress = False
+            else:
+                return
             return
 
         # Skip if we're in the middle of a layout operation
         if hasattr(self, '_layout_in_progress') and self._layout_in_progress:
             return
+
+        self._last_update_time = current_time  # Update the last update time
 
         try:
             self._update_in_progress = True
