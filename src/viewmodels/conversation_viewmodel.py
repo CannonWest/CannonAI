@@ -311,3 +311,35 @@ class ConversationViewModel(QObject):
         except Exception as e:
             self.errorOccurred.emit(f"Error searching conversations: {str(e)}")
             return []
+
+    @pyqtSlot(str, str, result=str)
+    def duplicate_conversation(self, conversation_id: str, new_name: str = None) -> str:
+        """
+        Duplicate a conversation, making it the active conversation
+
+        Args:
+            conversation_id: ID of the conversation to duplicate
+            new_name: Optional new name for the duplicate, defaults to "<original_name> (Copy)"
+
+        Returns:
+            The ID of the new conversation, or None if duplication failed
+        """
+        try:
+            # Duplicate the conversation using the service
+            new_conversation = self.conversation_service.duplicate_conversation(conversation_id, new_name)
+
+            if new_conversation:
+                # Make the new conversation active
+                self.current_conversation_id = new_conversation.id
+
+                # Load the conversation to update the UI
+                self.load_conversation(new_conversation.id)
+
+                return new_conversation.id
+            else:
+                self.errorOccurred.emit(f"Failed to duplicate conversation")
+                return None
+        except Exception as e:
+            self.errorOccurred.emit(f"Error duplicating conversation: {str(e)}")
+            return None
+

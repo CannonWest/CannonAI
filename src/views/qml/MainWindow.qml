@@ -781,8 +781,8 @@ ApplicationWindow {
         const sourceId = conversationsModel.get(conversationList.currentIndex).id
         const sourceName = conversationsModel.get(conversationList.currentIndex).name
 
-        // This would call a method to duplicate the conversation
-        // conversationViewModel.duplicate_conversation(sourceId, sourceName + " (Copy)")
+        // Call the ViewModel method to duplicate the conversation
+        conversationViewModel.duplicate_conversation(sourceId, sourceName + " (Copy)")
     }
 
     function processAttachments(fileUrls) {

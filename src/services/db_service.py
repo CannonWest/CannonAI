@@ -5,6 +5,8 @@ from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime
 import uuid
 
+from src.models import FileAttachment
+
 Base = declarative_base()
 
 
@@ -93,6 +95,121 @@ class ConversationService:
             s.delete(c)
             s.commit()
             return True
+        finally:
+            s.close()
+
+    def duplicate_conversation(self, conversation_id, new_name=None):
+        """
+        Duplicate a conversation, including all messages and file attachments
+
+        Args:
+            conversation_id: ID of the conversation to duplicate
+            new_name: Name for the new conversation, defaults to "<original_name> (Copy)"
+
+        Returns:
+            The new conversation, or None if the source conversation is not found
+        """
+        s = self.get_session()
+        try:
+            # Get the source conversation
+            source_conv = s.query(Conversation).filter(Conversation.id == conversation_id).first()
+            if not source_conv:
+                return None
+
+            # Set the new name
+            if new_name is None:
+                new_name = f"{source_conv.name} (Copy)"
+
+            # Create a new conversation with the same system message
+            new_conv = Conversation(
+                id=str(uuid.uuid4()),
+                name=new_name,
+                system_message=source_conv.system_message
+            )
+            s.add(new_conv)
+            s.flush()  # Flush to get the new conversation ID
+
+            # Get all messages from the source conversation
+            source_messages = s.query(Message).filter(Message.conversation_id == conversation_id).all()
+
+            # Create a mapping of old message IDs to new message IDs
+            id_mapping = {}
+
+            # First pass: create all new messages without parent IDs
+            for source_msg in source_messages:
+                new_msg = Message(
+                    id=str(uuid.uuid4()),
+                    conversation_id=new_conv.id,
+                    role=source_msg.role,
+                    content=source_msg.content,
+                    timestamp=datetime.now,
+                    response_id=source_msg.response_id,
+                    model_info=source_msg.model_info,
+                    parameters=source_msg.parameters,
+                    token_usage=source_msg.token_usage
+                )
+                s.add(new_msg)
+
+                # Remember the mapping
+                id_mapping[source_msg.id] = new_msg.id
+
+                # Set the current node for the system message
+                if source_msg.role == "system":
+                    new_conv.current_node_id = new_msg.id
+
+            # Flush to get all new message IDs
+            s.flush()
+
+            # Second pass: set parent IDs using the mapping
+            for source_msg in source_messages:
+                if source_msg.parent_id:
+                    new_msg_id = id_mapping.get(source_msg.id)
+                    new_parent_id = id_mapping.get(source_msg.parent_id)
+
+                    if new_msg_id and new_parent_id:
+                        new_msg = s.query(Message).filter(Message.id == new_msg_id).first()
+                        if new_msg:
+                            new_msg.parent_id = new_parent_id
+
+            # Third pass: copy file attachments for each message
+            for source_msg in source_messages:
+                # Get file attachments for this message
+                attachments = s.query(FileAttachment).filter(FileAttachment.message_id == source_msg.id).all()
+
+                if attachments:
+                    new_msg_id = id_mapping.get(source_msg.id)
+
+                    for attachment in attachments:
+                        # Create a new file attachment
+                        new_attachment = FileAttachment(
+                            id=str(uuid.uuid4()),
+                            message_id=new_msg_id,
+                            file_name=attachment.file_name,
+                            display_name=attachment.display_name,
+                            mime_type=attachment.mime_type,
+                            token_count=attachment.token_count,
+                            file_size=attachment.file_size,
+                            file_hash=attachment.file_hash,
+                            storage_type=attachment.storage_type,
+                            content_preview=attachment.content_preview,
+                            storage_path=attachment.storage_path,
+                            content=attachment.content
+                        )
+                        s.add(new_attachment)
+
+            # If the source conversation has a current node, set the equivalent in the new conversation
+            if source_conv.current_node_id and source_conv.current_node_id in id_mapping:
+                new_conv.current_node_id = id_mapping[source_conv.current_node_id]
+
+            # Commit the changes
+            s.commit()
+
+            # Return the new conversation
+            return new_conv
+        except Exception as e:
+            s.rollback()
+            print(f"Error duplicating conversation: {str(e)}")
+            return None
         finally:
             s.close()
 
