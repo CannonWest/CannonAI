@@ -3,7 +3,8 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
-import QtQuick.Dialogs 1.3
+// Replace the old Qt5 dialogs import with Qt6 compatible one
+import QtQuick.Dialogs
 
 Dialog {
     id: settingsDialog

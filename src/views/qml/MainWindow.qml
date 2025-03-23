@@ -3,8 +3,8 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
-import QtQuick.Dialogs 1.3
-import QtGraphicalEffects 1.15
+// Replace the old Qt5 dialogs import with Qt6 compatible ones
+import QtQuick.Dialogs
 
 // Import custom components
 import "./components"
@@ -547,12 +547,13 @@ ApplicationWindow {
         }
     }
 
-    // Dialogs
+    // Dialogs - Updated for Qt6 compatibility
     FileDialog {
         id: fileDialog
         title: "Attach File"
-        selectMultiple: true
-        onAccepted: processAttachments(fileUrls)
+        // Multi-selection property in Qt6
+        fileMode: FileDialog.OpenFiles
+        onAccepted: processAttachments(selectedFiles)
     }
 
     Dialog {

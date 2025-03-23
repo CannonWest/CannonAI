@@ -5,7 +5,7 @@ import os
 from typing import Dict, Any, List, Optional
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtQml import QQmlApplicationEngine
-from PyQt6.QtCore import QUrl, QObject, pyqtSlot, QTimer
+from PyQt6.QtCore import QUrl, QObject, pyqtSlot, QTimer, QCoreApplication
 
 # Import logging utilities first to set up logging early
 from src.utils.logging_utils import configure_logging, get_logger
@@ -374,6 +374,9 @@ class Application(QObject):
     def initialize_qml_engine(self):
         """Initialize the QML engine with proper import paths and error handling"""
         try:
+            # Set environment variable for QML style
+            os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
+
             # Create the QML engine
             self.engine = QQmlApplicationEngine()
 
