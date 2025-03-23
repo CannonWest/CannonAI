@@ -13,17 +13,18 @@ from src.services.api_service import ApiService
 class ReactiveConversationViewModel(ReactiveViewModel):
     """ViewModel for managing conversation interactions using reactive programming"""
 
-    # Signal definitions (same as traditional ViewModel)
-    conversationLoaded = pyqtSignal(object)
-    messageAdded = pyqtSignal(object)
-    messageUpdated = pyqtSignal(object)
-    messageBranchChanged = pyqtSignal(list)
-    messageStreamChunk = pyqtSignal(str)
-    messagingComplete = pyqtSignal()
-    errorOccurred = pyqtSignal(str)
-    loadingStateChanged = pyqtSignal(bool)
-    tokenUsageUpdated = pyqtSignal(dict)
-    reasoningStepsChanged = pyqtSignal(list)
+    # Signal definitions (these must match what QML expects)
+    conversationLoaded = pyqtSignal(object)  # Emitted when a conversation is loaded
+    messageAdded = pyqtSignal(object)  # Emitted when a message is added
+    messageUpdated = pyqtSignal(object)  # Emitted when a message is updated
+    messageBranchChanged = pyqtSignal(list)  # Emitted when navigation changes the current branch
+    messageStreamChunk = pyqtSignal(str)  # Emitted for each chunk during streaming
+    messagingComplete = pyqtSignal()  # Emitted when a messaging operation is complete
+    errorOccurred = pyqtSignal(str)  # Emitted when an error occurs
+    loadingStateChanged = pyqtSignal(bool)  # Emitted when loading state changes
+    tokenUsageUpdated = pyqtSignal(dict)  # Emitted when token usage information is updated
+    reasoningStepsChanged = pyqtSignal(list)  # Emitted when reasoning steps are available
+
 
     def __init__(self):
         super().__init__()

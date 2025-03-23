@@ -235,6 +235,32 @@ class QmlBridge(QObject):
                 return file_url[7:]
         return file_url
 
+    @pyqtSlot(str, str, str)
+    def debug_object(self, object_name, property_name, context=""):
+        """Debug a QML object property"""
+        try:
+            obj = self.get_qml_object(object_name)
+            if not obj:
+                self.logger.warning(f"DEBUG: QML object not found: {object_name} (context: {context})")
+                return "Object not found"
+
+            # Get the property
+            if not property_name:
+                # Just check if object exists
+                self.logger.debug(f"DEBUG: QML object exists: {object_name} (context: {context})")
+                return "Object exists"
+
+            value = obj.property(property_name)
+            if value is None:
+                self.logger.warning(f"DEBUG: Property not found: {property_name} on {object_name} (context: {context})")
+                return "Property not found"
+
+            self.logger.debug(f"DEBUG: {object_name}.{property_name} = {value} (context: {context})")
+            return str(value)
+        except Exception as e:
+            self.logger.error(f"DEBUG ERROR: {str(e)} (context: {context})")
+            return f"Error: {str(e)}"
+
     @pyqtSlot(int, result=str)
     def format_file_size(self, size: int) -> str:
         """

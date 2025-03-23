@@ -176,7 +176,7 @@ class Application(QObject):
             self.settings_vm = SettingsViewModel()
             self.logger.info("Created ViewModels")
 
-            # Initialize settings ViewModel with API service
+            # Initialize settings ViewModel with API service if needed
             if hasattr(self.settings_vm, 'initialize'):
                 self.settings_vm.initialize(self.api_service)
                 self.logger.info("Initialized SettingsViewModel with ApiService")
@@ -186,7 +186,7 @@ class Application(QObject):
             self.conversation_vm.conversation_service = self.db_service
             self.logger.info("Connected ViewModel to services")
 
-            # Register ViewModels with QML
+            # Register ViewModels with QML - these lines are critical
             self.qml_bridge.register_context_property("conversationViewModel", self.conversation_vm)
             self.qml_bridge.register_context_property("settingsViewModel", self.settings_vm)
             self.logger.info("Registered ViewModels with QML")
@@ -383,6 +383,9 @@ class Application(QObject):
             # Connect error handlers
             self.engine.objectCreated.connect(self._on_object_created)
             self.engine.warnings.connect(self._on_qml_warning)
+
+            # Enable QML debugging
+            self.engine.rootContext().setContextProperty("DEBUG_MODE", True)
 
             # Set import paths for QML
             qml_dir = os.path.join(os.path.dirname(__file__), "views", "qml")

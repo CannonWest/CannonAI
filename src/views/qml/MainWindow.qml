@@ -11,6 +11,7 @@ import "./components" as Components
 
 ApplicationWindow {
     id: mainWindow
+    objectName: "mainWindow"  // Add this line
     visible: true
     width: 1200
     height: 800
@@ -613,7 +614,7 @@ ApplicationWindow {
             padding: 16
         }
     }
-    
+
     Dialog {
         id: renameDialog
         title: "Rename Conversation"
@@ -873,9 +874,12 @@ ApplicationWindow {
     }
 
     // Connect to ViewModel signals
+    // Replace the current Connections block in MainWindow.qml
     Connections {
         target: conversationViewModel
+        enabled: conversationViewModel !== null && typeof conversationViewModel !== "undefined"
 
+        // Use the proper naming format for signals in Qt6
         function onConversationLoaded(conversation) {
             // Update conversations list if needed
             let found = false
@@ -975,24 +979,75 @@ ApplicationWindow {
         }
     }
 
+    property Timer debugTimer: Timer
+    {
+        interval: 500
+        repeat: true
+        running: true
+        onTriggered: {
+            if (typeof conversationViewModel !== "undefined" && conversationViewModel) {
+                console.log("DEBUG: conversationViewModel is now available");
+                debugTimer.running = false;
+            } else {
+                console.log("DEBUG: conversationViewModel is still undefined");
+            }
+        }
+    }
+
+    // Log property changes
+    onConversationViewModelChanged: {
+        console.log("DEBUG: conversationViewModel property changed:",
+            conversationViewModel ? "defined" : "undefined");
+    }
+
     // On application startup
     Component.onCompleted: {
-        // Load all conversations
-        let conversations = conversationViewModel.get_all_conversations()
+        // Check if conversationViewModel is defined before using it
+        if (typeof conversationViewModel !== "undefined" && conversationViewModel) {
+            // Load all conversations
+            try {
+                let conversations = conversationViewModel.get_all_conversations();
 
-        // Clear and rebuild model
-        conversationsModel.clear()
-        for (let i = 0; i < conversations.length; i++) {
-            conversationsModel.append(conversations[i])
-        }
+                // Clear and rebuild model
+                conversationsModel.clear();
+                if (conversations && conversations.length > 0) {
+                    for (let i = 0; i < conversations.length; i++) {
+                        conversationsModel.append(conversations[i]);
+                    }
 
-        // Load first conversation if available
-        if (conversationsModel.count > 0) {
-            conversationList.currentIndex = 0
-            conversationViewModel.load_conversation(conversationsModel.get(0).id)
+                    // Load first conversation if available
+                    if (conversationsModel.count > 0) {
+                        conversationList.currentIndex = 0;
+                        conversationViewModel.load_conversation(conversationsModel.get(0).id);
+                    }
+                } else {
+                    // Create a new conversation if none exists
+                    conversationViewModel.create_new_conversation("New Conversation");
+                }
+            } catch (e) {
+                console.error("Error loading conversations:", e);
+                // Create a new conversation as fallback
+                conversationViewModel.create_new_conversation("New Conversation");
+            }
         } else {
-            // Create a new conversation if none exists
-            conversationViewModel.create_new_conversation("New Conversation")
+            console.warn("conversationViewModel is not defined yet. Will initialize later.");
+            // You may want to set up a Timer to retry initialization after a delay
+            initTimer.start();
+        }
+    }
+
+    // Add this Timer to the ApplicationWindow to handle delayed initialization
+    Timer {
+        id: initTimer
+        interval: 500
+        repeat: false
+        onTriggered: {
+            if (typeof conversationViewModel !== "undefined" && conversationViewModel) {
+                console.log("Initializing conversation after delay");
+                conversationViewModel.create_new_conversation("New Conversation");
+            } else {
+                console.warn("conversationViewModel still not available after delay");
+            }
         }
     }
 }
