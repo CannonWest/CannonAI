@@ -6,6 +6,5 @@ from src.models.orm_models import (
     Base,
     Conversation,
     Message,
-    FileAttachment,
-    DatabaseManager
+    FileAttachment
 )
