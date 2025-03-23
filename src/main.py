@@ -58,14 +58,8 @@ class Application(QObject):
         # Initialize services
         self.initialize_services()
 
-        # Initialize QML engine with error connections
-        self.engine = QQmlApplicationEngine()
-        self.engine.objectCreated.connect(self._on_object_created)
-        self.engine.warnings.connect(self._on_qml_warning)
-
-        # Initialize bridge with enhanced error handling
-        self.qml_bridge = QmlBridge(self.engine)
-        self.qml_bridge.errorOccurred.connect(self._on_bridge_error)
+        # Initialize QML engine with proper setup
+        self.initialize_qml_engine()
 
         # Create and register ViewModels
         self.initialize_viewmodels()
@@ -89,36 +83,51 @@ class Application(QObject):
             self.logger.error(f"Failed to create QML object for {url.toString()}")
 
             # Get a list of all QML errors
-            qml_errors = self.engine.errors() if hasattr(self.engine, 'errors') else []
-            if qml_errors:
-                for i, error in enumerate(qml_errors):
-                    if hasattr(error, 'line') and hasattr(error, 'column') and hasattr(error, 'description'):
-                        error_msg = f"QML Error {i + 1}: Line {error.line()}, Column {error.column()}: {error.description()}"
-                    else:
-                        error_msg = f"QML Error {i + 1}: {error}"
-                    self.logger.error(error_msg)
+            if hasattr(self.engine, 'errors'):
+                qml_errors = self.engine.errors()
+                if qml_errors:
+                    for i, error in enumerate(qml_errors):
+                        try:
+                            if hasattr(error, 'toString'):
+                                error_msg = f"QML Error {i + 1}: {error.toString()}"
+                            elif hasattr(error, 'line') and hasattr(error, 'column') and hasattr(error, 'description'):
+                                error_msg = f"QML Error {i + 1}: Line {error.line()}, Column {error.column()}: {error.description()}"
+                            else:
+                                error_msg = f"QML Error {i + 1}: {error}"
+                            self.logger.error(error_msg)
+                        except Exception as e:
+                            self.logger.error(f"Error extracting QML error details: {e}")
+                            self.logger.error(f"Original error: {error}")
 
-            # Safe check for root objects before trying to access them
-            root_objects = self.engine.rootObjects()
-            if root_objects:
-                # Only try to find error dialog if we have root objects
-                error = root_objects[0].findChild(QObject, "errorDialog")
-                if error:
-                    error.setProperty("text", f"Error loading QML file: {url.toString()}")
-                    self.qml_bridge.call_qml_method("errorDialog", "open")
-
-            sys.exit(-1)
+                sys.exit(-1)
 
     def _on_qml_warning(self, warning):
         """Handle QML warnings with improved detail extraction"""
         try:
-            # Extract more detail from the QML warning
-            if hasattr(warning, "toString"):
-                detail = warning.toString()
-            elif hasattr(warning, "description"):
-                detail = warning.description()
+            # Determine the type of warning
+            if isinstance(warning, list):
+                # Handle list of warnings
+                details = []
+                for w in warning:
+                    if hasattr(w, "toString"):
+                        details.append(w.toString())
+                    elif hasattr(w, "description"):
+                        details.append(w.description())
+                    elif hasattr(w, "message"):
+                        details.append(w.message())
+                    else:
+                        details.append(str(w))
+                detail = "\n".join(details)
             else:
-                detail = str(warning)
+                # Handle single warning
+                if hasattr(warning, "toString"):
+                    detail = warning.toString()
+                elif hasattr(warning, "description"):
+                    detail = warning.description()
+                elif hasattr(warning, "message"):
+                    detail = warning.message()
+                else:
+                    detail = str(warning)
 
             # Log the detailed warning
             self.logger.warning(f"QML Warning detail: {detail}")
@@ -361,6 +370,32 @@ class Application(QObject):
     def _handle_qml_error(self, error_message):
         """Handle error from QML"""
         self.logger.error(f"Error from QML: {error_message}")
+
+    def initialize_qml_engine(self):
+        """Initialize the QML engine with proper import paths and error handling"""
+        try:
+            # Create the QML engine
+            self.engine = QQmlApplicationEngine()
+
+            # Connect error handlers
+            self.engine.objectCreated.connect(self._on_object_created)
+            self.engine.warnings.connect(self._on_qml_warning)
+
+            # Set import paths for QML
+            qml_dir = os.path.join(os.path.dirname(__file__), "views", "qml")
+            self.engine.addImportPath(qml_dir)
+
+            # Log the import paths to verify
+            self.logger.info(f"Adding QML import path: {qml_dir}")
+
+            # Create and initialize the bridge
+            self.qml_bridge = QmlBridge(self.engine)
+            self.qml_bridge.errorOccurred.connect(self._on_bridge_error)
+
+            self.logger.info("QML engine initialized successfully")
+        except Exception as e:
+            self.logger.critical(f"Error initializing QML engine: {e}", exc_info=True)
+            raise
 
     def run(self):
         """Run the application with enhanced error handling"""
