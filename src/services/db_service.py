@@ -37,7 +37,7 @@ class Message(Base):
 
 
 class ConversationService:
-    def __init__(self, db_path='sqlite:///data/conversations.db'):
+    def __init__(self, db_path='sqlite:///data/database/conversations.db'):
         self.engine = create_engine(db_path)
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
