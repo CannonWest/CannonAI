@@ -41,7 +41,6 @@ class ConversationBranchTab(QWidget):
         self._loading_timer.setInterval(500)  # Update every 500ms
         self._loading_state = 0
         self._loading_active = False
-        self.retry_button = None  # Initialize retry_button attribute
 
     def _init_state_variables(self):
         """Initialize state variables to prevent NoneType errors."""
@@ -209,7 +208,6 @@ class ConversationBranchTab(QWidget):
             button = QPushButton(text)
             button.setStyleSheet(f"background-color: {bg_color}; color: {DARK_MODE['foreground']};")
             button.clicked.connect(callback)
-            button.setVisible(text != "Retry")  # Initially hide the retry button
             if text == "Retry":
                 self.retry_button = button  # Save the retry button reference
             self.button_layout.addWidget(button)
@@ -669,7 +667,7 @@ class ConversationBranchTab(QWidget):
 
         current_node = self.conversation_tree.current_node
         can_retry = current_node.role == "assistant" and current_node.parent and current_node.parent.role == "user"
-        self.retry_button.setEnabled(can_retry)
+        self.retry_button.setEnabled(True)
         self.retry_button.setVisible(True)
 
     def navigate_to_node(self, node_id):

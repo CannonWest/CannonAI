@@ -459,6 +459,9 @@ class MainWindow(QMainWindow):
 
         # Create the tab widget
         tab = ConversationBranchTab(conversation)
+        
+        # Update the graph view for the new conversation
+        tab.graph_view.update_tree(conversation)
 
         # Connect signals
         tab.send_message.connect(lambda message: self.send_message(tab, message))
@@ -509,6 +512,9 @@ class MainWindow(QMainWindow):
 
                 # Start message processing - this will handle the API call
                 self._start_message_processing(tab, conversation.get_current_messages())
+                
+                # Update the graph view
+                tab.graph_view.update_tree(conversation)
             except Exception as e:
                 self.logger.error(f"Error sending message: {str(e)}")
                 self.handle_error(f"Error sending message: {str(e)}")
@@ -711,8 +717,7 @@ class MainWindow(QMainWindow):
             tab.update_ui()
             
             # Update the graph view
-            if hasattr(tab, 'graph_view'):
-                tab.graph_view.update_tree(conversation)
+            tab.graph_view.update_tree(conversation)
 
             # Save the conversation
             self.logger.debug(f"Saving conversation: {conversation.id}")
@@ -1156,6 +1161,9 @@ class MainWindow(QMainWindow):
         """Save a specific conversation"""
         self.conversation_manager.save_conversation(conversation_id)
 
+        # Update graph view for the saved conversation
+        self._update_graph_view_for_conversation(conversation_id)
+
     def save_conversations(self):
         """Save all conversations"""
         self.conversation_manager.save_all()
@@ -1169,12 +1177,23 @@ class MainWindow(QMainWindow):
         # Add tabs for each conversation
         for conversation_id, conversation in self.conversation_manager.conversations.items():
             self.add_conversation_tab(conversation)
-            # Ensure the tab title is set to the conversation name
-            index = self.tabs.count() - 1  # Get the index of the tab we just added
-            if index >= 0:
-                # Make sure we're using the actual name from the database
-                self.tabs.setTabText(index, conversation.name)
-                print(f"DEBUG: Set tab {index} title to '{conversation.name}'")
+
+        # Update graph views for all loaded conversations
+        self._update_all_graph_views()
+
+    def _update_graph_view_for_conversation(self, conversation_id):
+        """Update the graph view for a specific conversation"""
+        for i in range(self.tabs.count()):
+            tab = self.tabs.widget(i)
+            if tab.conversation_tree.id == conversation_id:
+                tab.graph_view.update_tree(tab.conversation_tree)
+                break
+
+    def _update_all_graph_views(self):
+        """Update graph views for all open conversations"""
+        for i in range(self.tabs.count()):
+            tab = self.tabs.widget(i)
+            tab.graph_view.update_tree(tab.conversation_tree)
 
     def show_about(self):
         """Show the 'about' dialog"""

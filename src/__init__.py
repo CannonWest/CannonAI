@@ -1,5 +1,3 @@
 """
-OpenAI Chat Application main package.
+Views package for the OpenAI Chat application.
 """
-
-__version__ = "1.0.0"

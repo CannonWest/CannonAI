@@ -1,10 +1,12 @@
 # src/ui/graph_view.py
 
+import time
+from src.utils.logging_utils import get_logger
 from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsItem, QGraphicsRectItem, QGraphicsTextItem
 from PyQt6.QtGui import QPainter, QPen, QBrush, QColor
 from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
-import time
 
+logger = get_logger(__name__)
 
 class NodeItem(QGraphicsRectItem):
     """Custom graphics item representing a conversation node"""
@@ -76,7 +78,6 @@ class ConversationGraphView(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)  # optional: pan by dragging
         self.setInteractive(True)  # optional: for item interaction
-
         self.scale_factor = 1.0  # track current zoom
         self._last_update_time = 0  # Add this line to track the last update time
 
@@ -107,24 +108,18 @@ class ConversationGraphView(QGraphicsView):
 
     def update_tree(self, conversation_tree):
         """Clear and rebuild the scene based on the conversation tree data"""
-        # Skip update if we're marked as busy to prevent layout thrashing
-        current_time = time.time()
-        if hasattr(self, '_update_in_progress') and self._update_in_progress:
-            # If it's been more than 2 seconds since the last update, force an update
-            if current_time - self._last_update_time > 2:
-                self._update_in_progress = False
-            else:
-                return
-            return
-
-        # Skip if we're in the middle of a layout operation
-        if hasattr(self, '_layout_in_progress') and self._layout_in_progress:
-            return
-
-        self._last_update_time = current_time  # Update the last update time
-
+        start_time = time.time()
         try:
+            # Skip update if we're marked as busy to prevent layout thrashing
+            if hasattr(self, '_update_in_progress') and self._update_in_progress:
+                if start_time - self._last_update_time > 2:
+                    self._update_in_progress = False
+                else:
+                    logger.debug("Skipping update due to in-progress flag")
+                    return
+
             self._update_in_progress = True
+            self._last_update_time = start_time
 
             self._scene.clear()
             self.node_items = {}
@@ -132,46 +127,30 @@ class ConversationGraphView(QGraphicsView):
             if not conversation_tree:
                 return
 
-            # Safety check - avoid processing extremely large trees
-            try:
-                # Get the current branch for highlighting
-                current_branch = conversation_tree.get_current_branch()
-                if not current_branch:
-                    print("Warning: Empty branch returned from get_current_branch()")
-                    return
+            # Get the current branch for highlighting
+            current_branch = conversation_tree.get_current_branch()
+            if not current_branch:
+                logger.warning("Empty branch returned from get_current_branch()")
+                return
 
-                self.current_branch_ids = {node.id for node in current_branch if node is not None}
+            self.current_branch_ids = {node.id for node in current_branch if node is not None}
 
-                # Start layout from the root node
-                root_node = conversation_tree.root
-                if not root_node:
-                    print("Warning: No root node in conversation tree")
-                    return
+            # Start layout from the root node
+            root_node = conversation_tree.root
+            if not root_node:
+                logger.warning("No root node in conversation tree")
+                return
 
-                # Set a layout in progress flag to prevent recursion
-                self._layout_in_progress = True
-                self._layout_subtree(root_node, x=0, y=0, level=0)
-                self._layout_in_progress = False
+            self._layout_subtree(root_node, x=0, y=0, level=0)
 
-                # Use try/except for view operations that might fail
-                try:
-                    # Fit the view to show all content
-                    self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-
-                    # Set a reasonable scene rect with some padding
-                    sceneRect = self._scene.itemsBoundingRect()
-                    sceneRect.adjust(-100, -100, 100, 100)  # Add some padding
-                    self._scene.setSceneRect(sceneRect)
-                except Exception as view_error:
-                    print(f"Error updating graph view layout: {str(view_error)}")
-            except Exception as branch_error:
-                print(f"Error getting conversation branch: {str(branch_error)}")
-
+            # Fit the view to show all content
+            self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
         except Exception as e:
-            print(f"Critical error in graph view update: {str(e)}")
+            logger.error(f"Error updating graph view: {str(e)}")
         finally:
             self._update_in_progress = False
-            self._layout_in_progress = False
+            end_time = time.time()
+            logger.debug(f"Graph view update took {end_time - start_time:.2f} seconds")
 
     def _layout_subtree(self, node, x, y, level, max_depth=0):
         """
@@ -270,7 +249,7 @@ class ConversationGraphView(QGraphicsView):
             # Return the rectangle area, in case parent needs it
             return QRectF(x, y, node_width, node_height)
         except Exception as e:
-            print(f"Error in _layout_subtree: {str(e)}")
+            logger.error(f"Error in _layout_subtree: {str(e)}")
             return QRectF(x, y, 200, 80)
 
     #
@@ -286,3 +265,17 @@ class ConversationGraphView(QGraphicsView):
             self.scale_factor *= factor
         else:
             super().wheelEvent(event)
+
+    def zoom_in(self):
+        """Zoom in on the graph"""
+        self.scale(1.2, 1.2)
+        self.scale_factor *= 1.2
+
+    def zoom_out(self):
+        """Zoom out on the graph"""
+        self.scale(0.8, 0.8)
+        self.scale_factor *= 0.8
+
+    def fit_in_view(self):
+        """Fit the entire graph in the view"""
+        self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
