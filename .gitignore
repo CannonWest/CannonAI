@@ -42,3 +42,4 @@ openai_chat.log
 test.py
 data/database/conversations.db
 /.codebuddy
+/deprec/
