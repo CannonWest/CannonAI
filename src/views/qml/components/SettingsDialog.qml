@@ -3,7 +3,6 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
-// Replace the old Qt5 dialogs import with Qt6 compatible one
 import QtQuick.Dialogs
 
 Dialog {
@@ -15,6 +14,14 @@ Dialog {
 
     // Properties to store current settings
     property var currentSettings: ({})
+
+    // Properties to store model information
+    property var mainModels: []
+    property var modelSnapshots: []
+    property var currentModelInfo: {}
+    property bool isCurrentModelReasoning: false
+    property var reasoningEfforts: ["low", "medium", "high"]
+    property var responseFormats: ["text", "json_object"]
 
     // Signals
     signal settingsSaved(var settings)
@@ -111,6 +118,7 @@ Dialog {
                             id: apiTypeCombo
                             Layout.fillWidth: true
                             model: ["responses", "chat_completions"]
+                            textRole: "text" // This is critical for ComboBox to display text properly
                             currentIndex: model.indexOf(currentSettings.api_type || "responses")
 
                             background: Rectangle {
@@ -208,27 +216,9 @@ Dialog {
                         ComboBox {
                             id: modelCombo
                             Layout.fillWidth: true
-                            model: ListModel {
-                                id: mainModelsModel
-                                ListElement {
-                                    text: "GPT-4o"; value: "gpt-4o"
-                                }
-                                ListElement {
-                                    text: "GPT-4o Mini"; value: "gpt-4o-mini"
-                                }
-                                ListElement {
-                                    text: "GPT-4 Turbo"; value: "gpt-4-turbo"
-                                }
-                                ListElement {
-                                    text: "GPT-3.5 Turbo"; value: "gpt-3.5-turbo"
-                                }
-                                ListElement {
-                                    text: "DeepSeek R1"; value: "deepseek-reasoner"
-                                }
-                                ListElement {
-                                    text: "DeepSeek V3"; value: "deepseek-chat"
-                                }
-                            }
+                            model: mainModels
+                            textRole: "text" // Critical for displaying the model name
+                            valueRole: "value" // Use for getting the model id
 
                             background: Rectangle {
                                 color: highlightColor
@@ -249,13 +239,10 @@ Dialog {
                                 radius: 4
                             }
 
-                            Component.onCompleted: {
-                                // Set current index based on settings
-                                for (let i = 0; i < mainModelsModel.count; i++) {
-                                    if (mainModelsModel.get(i).value === currentSettings.model) {
-                                        modelCombo.currentIndex = i
-                                        break
-                                    }
+                            onCurrentIndexChanged: {
+                                if (currentIndex >= 0) {
+                                    const modelId = model[currentIndex].value
+                                    updateModelInfo(modelId)
                                 }
                             }
                         }
@@ -264,27 +251,9 @@ Dialog {
                         ComboBox {
                             id: snapshotCombo
                             Layout.fillWidth: true
-                            model: ListModel {
-                                id: snapshotsModel
-                                ListElement {
-                                    text: "GPT-4.5 Turbo (2025-02-27)"; value: "gpt-4.5-preview-2025-02-27"
-                                }
-                                ListElement {
-                                    text: "GPT-4o (2024-08-06)"; value: "gpt-4o-2024-08-06"
-                                }
-                                ListElement {
-                                    text: "GPT-4o (2024-11-20)"; value: "gpt-4o-2024-11-20"
-                                }
-                                ListElement {
-                                    text: "GPT-4o (2024-05-13)"; value: "gpt-4o-2024-05-13"
-                                }
-                                ListElement {
-                                    text: "o1 (2024-12-17)"; value: "o1-2024-12-17"
-                                }
-                                ListElement {
-                                    text: "o3-mini (2025-01-31)"; value: "o3-mini-2025-01-31"
-                                }
-                            }
+                            model: modelSnapshots
+                            textRole: "text" // Critical for displaying the model name
+                            valueRole: "value" // Use for getting the model id
 
                             background: Rectangle {
                                 color: highlightColor
@@ -305,15 +274,10 @@ Dialog {
                                 radius: 4
                             }
 
-                            Component.onCompleted: {
-                                // Set current index based on settings
-                                for (let i = 0; i < snapshotsModel.count; i++) {
-                                    if (snapshotsModel.get(i).value === currentSettings.model) {
-                                        snapshotCombo.currentIndex = i
-                                        // Also switch to this tab since this is the selected model
-                                        modelTabBar.currentIndex = 1
-                                        break
-                                    }
+                            onCurrentIndexChanged: {
+                                if (currentIndex >= 0) {
+                                    const modelId = model[currentIndex].value
+                                    updateModelInfo(modelId)
                                 }
                             }
                         }
@@ -321,7 +285,16 @@ Dialog {
 
                     Label {
                         id: modelInfoLabel
-                        text: "Context: 128K tokens | Max output: 4K tokens"
+                        text: "Context: 0 tokens | Max output: 0 tokens"
+                        color: assistantMessageColor
+                        font.italic: true
+                        Layout.fillWidth: true
+                    }
+
+                    // Pricing information
+                    Label {
+                        id: pricingInfoLabel
+                        text: "Pricing: Input: $0.00 | Output: $0.00 per 1M tokens"
                         color: assistantMessageColor
                         font.italic: true
                         Layout.fillWidth: true
@@ -392,9 +365,12 @@ Dialog {
                         Slider {
                             id: maxTokensSlider
                             from: 256
-                            to: 16384
+                            to: currentModelInfo.output_limit || 16384
                             stepSize: 256
-                            value: currentSettings.max_tokens || 1024
+                            value: currentSettings.max_output_tokens ||
+                                   currentSettings.max_tokens ||
+                                   currentSettings.max_completion_tokens ||
+                                   1024
                             Layout.fillWidth: true
                         }
 
@@ -403,6 +379,29 @@ Dialog {
                             color: foregroundColor
                             Layout.preferredWidth: 50
                             horizontalAlignment: Text.AlignRight
+                        }
+
+                        Button {
+                            text: "Max"
+                            width: 40
+                            height: 25
+
+                            background: Rectangle {
+                                color: highlightColor
+                                radius: 4
+                            }
+
+                            contentItem: Text {
+                                text: "Max"
+                                color: foregroundColor
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                                font.pixelSize: 10
+                            }
+
+                            onClicked: {
+                                maxTokensSlider.value = maxTokensSlider.to
+                            }
                         }
                     }
 
@@ -445,7 +444,7 @@ Dialog {
 
                         ComboBox {
                             id: formatCombo
-                            model: ["text", "json_object"]
+                            model: responseFormats
                             Layout.fillWidth: true
                             currentIndex: {
                                 let format = "text"
@@ -496,6 +495,71 @@ Dialog {
                         }
                     }
 
+                    // Reasoning Effort (Only shown for reasoning models)
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: isCurrentModelReasoning
+
+                        Label {
+                            text: "Reasoning Effort:"
+                            color: foregroundColor
+                            Layout.preferredWidth: 120
+                        }
+
+                        ComboBox {
+                            id: reasoningEffortCombo
+                            model: reasoningEfforts
+                            Layout.fillWidth: true
+                            currentIndex: {
+                                let effort = "medium"
+                                if (currentSettings.reasoning &&
+                                    currentSettings.reasoning.effort) {
+                                    effort = currentSettings.reasoning.effort
+                                }
+                                return model.indexOf(effort)
+                            }
+
+                            background: Rectangle {
+                                color: highlightColor
+                                radius: 4
+                            }
+
+                            contentItem: Text {
+                                text: reasoningEffortCombo.displayText
+                                color: foregroundColor
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: 8
+                            }
+                        }
+
+                        Button {
+                            text: "?"
+                            width: 25
+                            height: 25
+
+                            background: Rectangle {
+                                color: highlightColor
+                                radius: 4
+                            }
+
+                            contentItem: Text {
+                                text: "?"
+                                color: foregroundColor
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+
+                            onClicked: {
+                                infoDialog.title = "Reasoning Effort"
+                                infoDialog.message = "Controls how much effort the model puts into reasoning:\n\n" +
+                                    "- low: Minimal reasoning, faster responses\n" +
+                                    "- medium: Balanced reasoning and speed\n" +
+                                    "- high: Thorough reasoning, slower responses"
+                                infoDialog.open()
+                            }
+                        }
+                    }
+
                     // Streaming
                     RowLayout {
                         Layout.fillWidth: true
@@ -534,7 +598,6 @@ Dialog {
                             Layout.fillWidth: true
                             editable: true
 
-                            // KEEP ONLY ONE DECLARATION
                             textFromValue: function (value, locale) {
                                 return value === -1 ? "None" : value.toString()
                             }
@@ -625,13 +688,26 @@ Dialog {
                             api_base: apiBaseField.text,
                             api_type: apiTypeCombo.currentText,
                             temperature: temperatureSlider.value,
-                            max_tokens: maxTokensSlider.value,
                             top_p: topPSlider.value,
                             stream: streamingSwitch.checked,
                             text: {
                                 format: {
                                     type: formatCombo.currentText
                                 }
+                            }
+                        }
+
+                        // Set the correct max tokens parameter based on API type
+                        if (apiTypeCombo.currentText === "responses") {
+                            settings.max_output_tokens = maxTokensSlider.value
+                        } else {
+                            settings.max_tokens = maxTokensSlider.value
+                        }
+
+                        // Add reasoning settings if it's a reasoning model
+                        if (isCurrentModelReasoning) {
+                            settings.reasoning = {
+                                effort: reasoningEffortCombo.currentText
                             }
                         }
 
@@ -643,10 +719,10 @@ Dialog {
                         // Set model based on which tab is active
                         if (modelTabBar.currentIndex === 0) {
                             // Main models
-                            settings.model = mainModelsModel.get(modelCombo.currentIndex).value
+                            settings.model = mainModels[modelCombo.currentIndex].value
                         } else {
                             // Dated snapshots
-                            settings.model = snapshotsModel.get(snapshotCombo.currentIndex).value
+                            settings.model = modelSnapshots[snapshotCombo.currentIndex].value
                         }
 
                         // Emit settings saved signal
@@ -707,57 +783,83 @@ Dialog {
     function initialize(settings) {
         currentSettings = settings || {}
 
-        // Update model info based on current model
-        updateModelInfo()
+        // Fetch model data from view model
+        mainModels = settingsViewModel.get_main_models()
+        modelSnapshots = settingsViewModel.get_model_snapshots()
+        reasoningEfforts = settingsViewModel.get_reasoning_efforts()
+        responseFormats = settingsViewModel.get_response_formats()
+
+        // Set current model index
+        const currentModelId = currentSettings.model || "gpt-4o"
+
+        // Try to find the model in the main models
+        let foundInMain = false
+        for (let i = 0; i < mainModels.length; i++) {
+            if (mainModels[i].value === currentModelId) {
+                modelCombo.currentIndex = i
+                modelTabBar.currentIndex = 0
+                foundInMain = true
+                break
+            }
+        }
+
+        // If not found in main models, try snapshots
+        if (!foundInMain) {
+            for (let i = 0; i < modelSnapshots.length; i++) {
+                if (modelSnapshots[i].value === currentModelId) {
+                    snapshotCombo.currentIndex = i
+                    modelTabBar.currentIndex = 1
+                    break
+                }
+            }
+        }
+
+        // Update model info for the current model
+        updateModelInfo(currentModelId)
     }
 
-    // Update model info display based on selected model
-    function updateModelInfo() {
-        let modelId = ""
+    // Helper function to update model info display
+    function updateModelInfo(modelId) {
+        // Get model info from view model
+        currentModelInfo = settingsViewModel.get_model_info(modelId)
+        isCurrentModelReasoning = settingsViewModel.is_reasoning_model(modelId)
 
-        // Get model ID based on active tab
-        if (modelTabBar.currentIndex === 0) {
-            // Main models tab
-            if (modelCombo.currentIndex >= 0) {
-                modelId = mainModelsModel.get(modelCombo.currentIndex).value
+        // Update info text
+        if (currentModelInfo) {
+            const contextSize = currentModelInfo.context_size ? currentModelInfo.context_size.toLocaleString() : "Unknown"
+            const outputLimit = currentModelInfo.output_limit ? currentModelInfo.output_limit.toLocaleString() : "Unknown"
+
+            modelInfoLabel.text = `Context window: ${contextSize} tokens | Max output: ${outputLimit} tokens`
+
+            // Update max tokens slider range
+            if (currentModelInfo.output_limit) {
+                maxTokensSlider.to = currentModelInfo.output_limit
+            }
+
+            // Update pricing info
+            if (currentModelInfo.pricing) {
+                const inputPrice = currentModelInfo.pricing.input ? currentModelInfo.pricing.input.toFixed(2) : "0.00"
+                const outputPrice = currentModelInfo.pricing.output ? currentModelInfo.pricing.output.toFixed(2) : "0.00"
+
+                pricingInfoLabel.text = `Pricing: Input: $${inputPrice} | Output: $${outputPrice} per 1M tokens`
+            } else {
+                pricingInfoLabel.text = "Pricing: No pricing information available"
             }
         } else {
-            // Dated snapshots tab
-            if (snapshotCombo.currentIndex >= 0) {
-                modelId = snapshotsModel.get(snapshotCombo.currentIndex).value
-            }
+            modelInfoLabel.text = "No model information available"
+            pricingInfoLabel.text = "No pricing information available"
         }
-
-        // Update model info text (this would need to be connected to actual model data)
-        let contextSize = 128000
-        let outputLimit = 16384
-
-        // Set model info text
-        modelInfoLabel.text = `Context window: ${contextSize.toLocaleString()} tokens | Max output: ${outputLimit.toLocaleString()} tokens`
     }
 
-    // Connect UI elements to update model info
+    // Connect UI elements to update model info when tab changes
     Connections {
         target: modelTabBar
-
         function onCurrentIndexChanged() {
-            updateModelInfo()
-        }
-    }
-
-    Connections {
-        target: modelCombo
-
-        function onCurrentIndexChanged() {
-            if (modelTabBar.currentIndex === 0) updateModelInfo()
-        }
-    }
-
-    Connections {
-        target: snapshotCombo
-
-        function onCurrentIndexChanged() {
-            if (modelTabBar.currentIndex === 1) updateModelInfo()
+            if (modelTabBar.currentIndex === 0 && modelCombo.currentIndex >= 0) {
+                updateModelInfo(mainModels[modelCombo.currentIndex].value)
+            } else if (modelTabBar.currentIndex === 1 && snapshotCombo.currentIndex >= 0) {
+                updateModelInfo(modelSnapshots[snapshotCombo.currentIndex].value)
+            }
         }
     }
 }
