@@ -48,7 +48,7 @@ from src.utils.qasync_bridge import (
 
 from src.utils.qml_bridge import (
     QmlBridge,
-    QmlModelBase,
+    # QmlModelBase,
     QmlListModel
 )
 

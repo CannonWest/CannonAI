@@ -33,7 +33,7 @@ class ReactiveProperty(Generic[T]):
 
     def observe(self) -> Observable:
         """Get an observable for this property"""
-        return self._subject.as_observable()
+        return self._subject
 
     def __str__(self) -> str:
         return f"ReactiveProperty({self._subject.value})"
@@ -111,19 +111,19 @@ class ReactiveList(Generic[T]):
 
     def observe(self) -> Observable:
         """Get an observable for all events"""
-        return self._subject.as_observable()
+        return self._subject
 
     def observe_added(self) -> Observable:
         """Get an observable for added events"""
-        return self.added.as_observable()
+        return self.added
 
     def observe_removed(self) -> Observable:
         """Get an observable for removed events"""
-        return self.removed.as_observable()
+        return self.removed
 
     def observe_reset(self) -> Observable:
         """Get an observable for reset events"""
-        return self.reset.as_observable()
+        return self.reset
 
     @property
     def items(self) -> List[T]:
@@ -213,23 +213,23 @@ class ReactiveDict(Generic[T]):
 
     def observe(self) -> Observable:
         """Get an observable for all events"""
-        return self._subject.as_observable()
+        return self._subject 
 
     def observe_added(self) -> Observable:
         """Get an observable for added events"""
-        return self.added.as_observable()
+        return self.added 
 
     def observe_removed(self) -> Observable:
         """Get an observable for removed events"""
-        return self.removed.as_observable()
+        return self.removed 
 
     def observe_changed(self) -> Observable:
         """Get an observable for changed events"""
-        return self.changed.as_observable()
+        return self.changed 
 
     def observe_reset(self) -> Observable:
         """Get an observable for reset events"""
-        return self.reset.as_observable()
+        return self.reset 
 
     def observe_key(self, key: str) -> Observable:
         """Get an observable for a specific key"""
