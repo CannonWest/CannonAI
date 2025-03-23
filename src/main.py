@@ -388,8 +388,22 @@ class Application(QObject):
             qml_dir = os.path.join(os.path.dirname(__file__), "views", "qml")
             self.engine.addImportPath(qml_dir)
 
-            # Log the import paths to verify
-            self.logger.info(f"Adding QML import path: {qml_dir}")
+            # ADDED: Explicitly add components import path
+            components_dir = os.path.join(qml_dir, "components")
+            utils_dir = os.path.join(qml_dir, "utils")
+
+            # Log paths for debugging
+            self.logger.info(f"Adding QML import paths:")
+            self.logger.info(f"  - Main QML dir: {qml_dir}")
+            self.logger.info(f"  - Components dir: {components_dir}")
+            self.logger.info(f"  - Utils dir: {utils_dir}")
+
+            # Verify qmldir files exist
+            comp_qmldir = os.path.join(components_dir, "qmldir")
+            utils_qmldir = os.path.join(utils_dir, "qmldir")
+            self.logger.info(f"Checking qmldir files:")
+            self.logger.info(f"  - Components qmldir exists: {os.path.exists(comp_qmldir)}")
+            self.logger.info(f"  - Utils qmldir exists: {os.path.exists(utils_qmldir)}")
 
             # Create and initialize the bridge
             self.qml_bridge = QmlBridge(self.engine)

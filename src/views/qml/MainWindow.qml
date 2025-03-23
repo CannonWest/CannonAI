@@ -3,11 +3,11 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
-// Replace the old Qt5 dialogs import with Qt6 compatible ones
+// Import dialogs from Qt6
 import QtQuick.Dialogs
 
-// Import custom components
-import "./components"
+// Import our custom components with a namespace
+import "./components" as Components
 
 ApplicationWindow {
     id: mainWindow
@@ -173,7 +173,8 @@ ApplicationWindow {
                     model: ListModel { id: conversationsModel }
 
                     // Use our custom ConversationItem component as delegate
-                    delegate: ConversationItem {
+                    // With namespace prefix "Components."
+                    delegate: Components.ConversationItem {
                         width: conversationList.width
 
                         // Connect signals to slot methods
@@ -269,7 +270,8 @@ ApplicationWindow {
                         model: ListModel { id: messagesModel }
 
                         // Use our custom MessageDelegate for message items
-                        delegate: MessageDelegate {}
+                        // With namespace prefix "Components."
+                        delegate: Components.MessageDelegate {}
 
                         // Auto-scroll to bottom when new messages are added
                         onCountChanged: {
@@ -691,7 +693,8 @@ ApplicationWindow {
     }
 
     // Settings dialog - using our custom component
-    SettingsDialog {
+    // This is the component that was previously not found
+    Components.SettingsDialog {
         id: settingsDialog
         width: 600
         height: 700

@@ -210,12 +210,24 @@ Dialog {
                             Layout.fillWidth: true
                             model: ListModel {
                                 id: mainModelsModel
-                                ListElement { text: "GPT-4o"; value: "gpt-4o" }
-                                ListElement { text: "GPT-4o Mini"; value: "gpt-4o-mini" }
-                                ListElement { text: "GPT-4 Turbo"; value: "gpt-4-turbo" }
-                                ListElement { text: "GPT-3.5 Turbo"; value: "gpt-3.5-turbo" }
-                                ListElement { text: "DeepSeek R1"; value: "deepseek-reasoner" }
-                                ListElement { text: "DeepSeek V3"; value: "deepseek-chat" }
+                                ListElement {
+                                    text: "GPT-4o"; value: "gpt-4o"
+                                }
+                                ListElement {
+                                    text: "GPT-4o Mini"; value: "gpt-4o-mini"
+                                }
+                                ListElement {
+                                    text: "GPT-4 Turbo"; value: "gpt-4-turbo"
+                                }
+                                ListElement {
+                                    text: "GPT-3.5 Turbo"; value: "gpt-3.5-turbo"
+                                }
+                                ListElement {
+                                    text: "DeepSeek R1"; value: "deepseek-reasoner"
+                                }
+                                ListElement {
+                                    text: "DeepSeek V3"; value: "deepseek-chat"
+                                }
                             }
 
                             background: Rectangle {
@@ -254,12 +266,24 @@ Dialog {
                             Layout.fillWidth: true
                             model: ListModel {
                                 id: snapshotsModel
-                                ListElement { text: "GPT-4.5 Turbo (2025-02-27)"; value: "gpt-4.5-preview-2025-02-27" }
-                                ListElement { text: "GPT-4o (2024-08-06)"; value: "gpt-4o-2024-08-06" }
-                                ListElement { text: "GPT-4o (2024-11-20)"; value: "gpt-4o-2024-11-20" }
-                                ListElement { text: "GPT-4o (2024-05-13)"; value: "gpt-4o-2024-05-13" }
-                                ListElement { text: "o1 (2024-12-17)"; value: "o1-2024-12-17" }
-                                ListElement { text: "o3-mini (2025-01-31)"; value: "o3-mini-2025-01-31" }
+                                ListElement {
+                                    text: "GPT-4.5 Turbo (2025-02-27)"; value: "gpt-4.5-preview-2025-02-27"
+                                }
+                                ListElement {
+                                    text: "GPT-4o (2024-08-06)"; value: "gpt-4o-2024-08-06"
+                                }
+                                ListElement {
+                                    text: "GPT-4o (2024-11-20)"; value: "gpt-4o-2024-11-20"
+                                }
+                                ListElement {
+                                    text: "GPT-4o (2024-05-13)"; value: "gpt-4o-2024-05-13"
+                                }
+                                ListElement {
+                                    text: "o1 (2024-12-17)"; value: "o1-2024-12-17"
+                                }
+                                ListElement {
+                                    text: "o3-mini (2025-01-31)"; value: "o3-mini-2025-01-31"
+                                }
                             }
 
                             background: Rectangle {
@@ -466,7 +490,7 @@ Dialog {
                             onClicked: {
                                 infoDialog.title = "Response Format"
                                 infoDialog.message = "When set to 'json_object', the response will be formatted as valid JSON.\n" +
-                                                    "This is useful when you need structured data from the model."
+                                    "This is useful when you need structured data from the model."
                                 infoDialog.open()
                             }
                         }
@@ -482,7 +506,9 @@ Dialog {
                             Layout.preferredWidth: 120
                         }
 
-                        Item { Layout.fillWidth: true }
+                        Item {
+                            Layout.fillWidth: true
+                        }
 
                         Switch {
                             id: streamingSwitch
@@ -508,15 +534,12 @@ Dialog {
                             Layout.fillWidth: true
                             editable: true
 
-                            property string textFromValue: function(value, locale) {
+                            // KEEP ONLY ONE DECLARATION
+                            textFromValue: function (value, locale) {
                                 return value === -1 ? "None" : value.toString()
                             }
 
-                            textFromValue: function(value, locale) {
-                                return value === -1 ? "None" : value.toString()
-                            }
-
-                            valueFromText: function(text, locale) {
+                            valueFromText: function (text, locale) {
                                 return text === "None" ? -1 : parseInt(text, 10)
                             }
                         }
@@ -541,7 +564,7 @@ Dialog {
                             onClicked: {
                                 infoDialog.title = "Seed"
                                 infoDialog.message = "Setting a specific seed value helps generate more deterministic responses.\n" +
-                                                    "Using the same seed with the same parameters should return similar results."
+                                    "Using the same seed with the same parameters should return similar results."
                                 infoDialog.open()
                             }
                         }
@@ -554,7 +577,9 @@ Dialog {
                 Layout.fillWidth: true
                 spacing: 16
 
-                Item { Layout.fillWidth: true }
+                Item {
+                    Layout.fillWidth: true
+                }
 
                 Button {
                     text: "Cancel"
@@ -714,11 +739,15 @@ Dialog {
     // Connect UI elements to update model info
     Connections {
         target: modelTabBar
-        function onCurrentIndexChanged() { updateModelInfo() }
+
+        function onCurrentIndexChanged() {
+            updateModelInfo()
+        }
     }
 
     Connections {
         target: modelCombo
+
         function onCurrentIndexChanged() {
             if (modelTabBar.currentIndex === 0) updateModelInfo()
         }
@@ -726,6 +755,7 @@ Dialog {
 
     Connections {
         target: snapshotCombo
+
         function onCurrentIndexChanged() {
             if (modelTabBar.currentIndex === 1) updateModelInfo()
         }
