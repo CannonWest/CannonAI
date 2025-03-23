@@ -44,25 +44,37 @@ ApplicationWindow {
 
             MenuItem {
                 text: "New Conversation"
-                shortcut: "Ctrl+N"
                 onTriggered: conversationViewModel.create_new_conversation("New Conversation")
+            }
+
+            Shortcut {
+                sequence: "Ctrl+N"
+                onActivated: conversationViewModel.create_new_conversation("New Conversation")
             }
 
             MenuItem {
                 text: "Save Conversations"
-                shortcut: "Ctrl+S"
                 onTriggered: {
                     // Conversations are auto-saved, but we'll show a confirmation
                     saveDialog.open()
                 }
             }
 
+            Shortcut {
+                sequence: "Ctrl+S"
+                onActivated: saveDialog.open()
+            }
+
             MenuSeparator { }
 
             MenuItem {
                 text: "Exit"
-                shortcut: "Ctrl+Q"
                 onTriggered: Qt.quit()
+            }
+
+            Shortcut {
+                sequence: "Ctrl+Q"
+                onActivated: Qt.quit()
             }
         }
 
@@ -71,20 +83,32 @@ ApplicationWindow {
 
             MenuItem {
                 text: "Rename Conversation"
-                shortcut: "F2"
                 onTriggered: renameDialog.open()
+            }
+
+            Shortcut {
+                sequence: "F2"
+                onActivated: renameDialog.open()
             }
 
             MenuItem {
                 text: "Duplicate Conversation"
-                shortcut: "Ctrl+D"
                 onTriggered: duplicateConversation()
+            }
+
+            Shortcut {
+                sequence: "Ctrl+D"
+                onActivated: duplicateConversation()
             }
 
             MenuItem {
                 text: "Search Conversations"
-                shortcut: "Ctrl+F"
                 onTriggered: searchDialog.open()
+            }
+
+            Shortcut {
+                sequence: "Ctrl+F"
+                onActivated: searchDialog.open()
             }
         }
 
