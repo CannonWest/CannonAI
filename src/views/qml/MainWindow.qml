@@ -42,6 +42,52 @@ ApplicationWindow {
 
     signal errorOccurred(string errorMessage)
 
+    function initializeApp() {
+        try {
+            // Try to get all conversations
+            console.log("Getting all conversations");
+            let conversations = conversationViewModel.get_all_conversations();
+            console.log(`Got ${conversations ? conversations.length : 0} conversations`);
+
+            // Clear and rebuild model
+            conversationsModel.clear();
+
+            if (conversations && conversations.length > 0) {
+                console.log("Loading existing conversations");
+
+                // Add conversations to model
+                for (let i = 0; i < conversations.length; i++) {
+                    conversationsModel.append(conversations[i]);
+                }
+
+                // Load first conversation if available
+                if (conversationsModel.count > 0) {
+                    console.log("Loading first conversation");
+                    conversationList.currentIndex = 0;
+                    conversationViewModel.load_conversation(conversationsModel.get(0).id);
+                }
+            } else {
+                console.log("No conversations found, creating new one");
+                // Create a new conversation if none exists
+                conversationViewModel.create_new_conversation("New Conversation");
+            }
+        } catch (e) {
+            console.error("Error initializing application:", e);
+            // Show error to user
+            errorDialog.title = "Initialization Error";
+            errorDialog.message = "Failed to initialize application: " + e;
+            errorDialog.open();
+
+            // Try to create a new conversation as fallback
+            try {
+                console.log("Creating fallback conversation");
+                conversationViewModel.create_new_conversation("New Conversation");
+            } catch (fallbackError) {
+                console.error("Error creating fallback conversation:", fallbackError);
+            }
+        }
+    }
+
     // Menu bar
     menuBar: MenuBar {
         Menu {
@@ -174,7 +220,24 @@ ApplicationWindow {
 
                         Button {
                             text: "+"
-                            onClicked: conversationViewModel.create_new_conversation("New Conversation")
+                            onClicked: {
+                                if (typeof conversationViewModel !== "undefined" && conversationViewModel) {
+                                    try {
+                                        console.log("Create new conversation button clicked");
+                                        conversationViewModel.create_new_conversation("New Conversation");
+                                    } catch (e) {
+                                        console.error("Error creating conversation:", e);
+                                        // Show error to user
+                                        errorDialog.title = "Error";
+                                        errorDialog.message = "Failed to create new conversation: " + e;
+                                        errorDialog.open();
+                                    }
+                                } else {
+                                    console.error("conversationViewModel is not available!");
+                                    // Try to create a conversation after a short delay
+                                    createConvTimer.start();
+                                }
+                            }
                             ToolTip.text: "New Conversation"
                             ToolTip.visible: hovered
                             ToolTip.delay: 500
@@ -189,6 +252,24 @@ ApplicationWindow {
                                 color: foregroundColor
                                 horizontalAlignment: Text.AlignHCenter
                                 verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+
+                        // Add this timer to the same parent element as the button
+                        Timer {
+                            id: createConvTimer
+                            interval: 500
+                            repeat: false
+                            onTriggered: {
+                                if (typeof conversationViewModel !== "undefined" && conversationViewModel) {
+                                    console.log("Creating conversation after delay");
+                                    conversationViewModel.create_new_conversation("New Conversation");
+                                } else {
+                                    console.error("conversationViewModel still not available after delay");
+                                    errorDialog.title = "Error";
+                                    errorDialog.message = "Could not connect to application backend. Please restart the application.";
+                                    errorDialog.open();
+                                }
                             }
                         }
                     }
@@ -248,6 +329,28 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+        Dialog {
+            id: errorDialog
+            title: "Error"
+            modal: true
+            property string message: ""
+
+            background: Rectangle {
+                color: backgroundColor
+                radius: 8
+                border.color: errorColor
+                border.width: 1
+            }
+
+            contentItem: Text {
+                text: errorDialog.message
+                color: foregroundColor
+                wrapMode: Text.WordWrap
+                padding: 16
+            }
+
+            standardButtons: Dialog.Ok
         }
 
         // Main chat area
@@ -1084,51 +1187,41 @@ ApplicationWindow {
 
     // On application startup
     Component.onCompleted: {
-        // Check if conversationViewModel is defined before using it
-        if (typeof conversationViewModel !== "undefined" && conversationViewModel) {
-            // Load all conversations
-            try {
-                let conversations = conversationViewModel.get_all_conversations();
+        console.log("MainWindow initialization started");
 
-                // Clear and rebuild model
-                conversationsModel.clear();
-                if (conversations && conversations.length > 0) {
-                    for (let i = 0; i < conversations.length; i++) {
-                        conversationsModel.append(conversations[i]);
-                    }
+        // Make sure the models are prepared
+        conversationsModel.clear();
+        messagesModel.clear();
 
-                    // Load first conversation if available
-                    if (conversationsModel.count > 0) {
-                        conversationList.currentIndex = 0;
-                        conversationViewModel.load_conversation(conversationsModel.get(0).id);
-                    }
-                } else {
-                    // Create a new conversation if none exists
-                    conversationViewModel.create_new_conversation("New Conversation");
-                }
-            } catch (e) {
-                console.error("Error loading conversations:", e);
-                // Create a new conversation as fallback
-                conversationViewModel.create_new_conversation("New Conversation");
-            }
-        } else {
-            console.warn("conversationViewModel is not defined yet. Will initialize later.");
-            // You may want to set up a Timer to retry initialization after a delay
+        // Check if view models are ready
+        if (typeof conversationViewModel === "undefined" || !conversationViewModel) {
+            console.warn("conversationViewModel is not defined yet");
+            // Start the init timer to retry later
             initTimer.start();
+            return;
         }
+
+        console.log("conversationViewModel is available, initializing app");
+
+        // Initialize the application
+        initializeApp();
     }
 
     // Add this Timer to the ApplicationWindow to handle delayed initialization
     Timer {
         id: initTimer
-        interval: 500
+        interval: 1000 // Increased from 500ms to give more time
         repeat: false
         onTriggered: {
+            console.log("Init timer triggered");
             if (typeof conversationViewModel !== "undefined" && conversationViewModel) {
-                console.log("Initializing conversation after delay");
-                conversationViewModel.create_new_conversation("New Conversation");
+                console.log("conversationViewModel now available, initializing");
+                initializeApp();
             } else {
-                console.warn("conversationViewModel still not available after delay");
+                console.error("conversationViewModel still not available after delay");
+                errorDialog.title = "Connection Error";
+                errorDialog.message = "Could not connect to application backend. Please restart the application.";
+                errorDialog.open();
             }
         }
     }

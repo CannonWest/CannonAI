@@ -25,7 +25,6 @@ class ReactiveConversationViewModel(ReactiveViewModel):
     tokenUsageUpdated = pyqtSignal(dict)  # Emitted when token usage information is updated
     reasoningStepsChanged = pyqtSignal(list)  # Emitted when reasoning steps are available
 
-
     def __init__(self):
         super().__init__()
         self.conversation_service = ConversationService()
@@ -107,12 +106,47 @@ class ReactiveConversationViewModel(ReactiveViewModel):
 
     @pyqtSlot(str)
     def create_new_conversation(self, name="New Conversation"):
-        """Create a new conversation"""
+        """Create a new conversation with enhanced error handling and logging"""
+        from src.utils.logging_utils import get_logger
+        logger = get_logger(__name__)
+
+        logger.info(f"Creating new conversation with name: {name}")
+
+        # Check if services are initialized
+        if not hasattr(self, 'conversation_service') or self.conversation_service is None:
+            error_msg = "Conversation service not initialized"
+            logger.error(error_msg)
+            self.errorOccurred.emit(error_msg)
+            return None
+
         try:
+            # Create the conversation
+            logger.debug("Calling conversation_service.create_conversation")
             conversation = self.conversation_service.create_conversation(name=name)
+
+            if not conversation:
+                error_msg = "Failed to create conversation - returned None"
+                logger.error(error_msg)
+                self.errorOccurred.emit(error_msg)
+                return None
+
+            logger.info(f"Created conversation with ID: {conversation.id}")
+
+            # Set as current conversation
             self.current_conversation_id.set(conversation.id)
+            logger.debug(f"Set current_conversation_id to {conversation.id}")
+
+            return conversation
         except Exception as e:
-            self.errorOccurred.emit(f"Error creating conversation: {str(e)}")
+            error_msg = f"Error creating conversation: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+
+            # Log stack trace for debugging
+            import traceback
+            logger.error(f"Stack trace: {traceback.format_exc()}")
+
+            self.errorOccurred.emit(error_msg)
+            return None
 
     @pyqtSlot(str, str)
     def rename_conversation(self, conversation_id, new_name):

@@ -169,7 +169,7 @@ class Application(QObject):
             raise
 
     def initialize_viewmodels(self):
-        """Initialize and register ViewModels with improved error handling"""
+        """Initialize and register ViewModels with improved error handling and double registration"""
         try:
             # Create ViewModels
             self.conversation_vm = ReactiveConversationViewModel()
@@ -186,10 +186,26 @@ class Application(QObject):
             self.conversation_vm.conversation_service = self.db_service
             self.logger.info("Connected ViewModel to services")
 
-            # Register ViewModels with QML - these lines are critical
+            # Ensure the conversation service is properly initialized
+            try:
+                # Test the service with a simple operation
+                conversations = self.conversation_vm.get_all_conversations()
+                self.logger.info(f"ConversationService returned {len(conversations)} conversations")
+            except Exception as e:
+                self.logger.error(f"Error testing conversation service: {e}", exc_info=True)
+                # Continue despite error - we'll show proper error messages in the UI
+
+            # Register ViewModels with QML - using multiple approaches for redundancy
+            # 1. Register as context properties
             self.qml_bridge.register_context_property("conversationViewModel", self.conversation_vm)
             self.qml_bridge.register_context_property("settingsViewModel", self.settings_vm)
-            self.logger.info("Registered ViewModels with QML")
+            self.logger.info("Registered ViewModels with QML as context properties")
+
+            # 2. Set as global properties in the root context
+            root_context = self.engine.rootContext()
+            root_context.setContextProperty("conversationViewModel", self.conversation_vm)
+            root_context.setContextProperty("settingsViewModel", self.settings_vm)
+            self.logger.info("Set ViewModels as global properties in root context")
 
             # Register bridge for QML logging and error handling
             self.qml_bridge.register_context_property("bridge", self.qml_bridge)
@@ -199,7 +215,11 @@ class Application(QObject):
             self._create_list_models()
         except Exception as e:
             self.logger.error(f"Error initializing ViewModels: {e}", exc_info=True)
-            raise
+            import traceback
+            self.logger.error(f"Stack trace: {traceback.format_exc()}")
+            # Continue despite error - we'll show proper error messages in the UI
+
+        return True  # Return success even with errors to allow UI to show error messages
 
     def _create_list_models(self):
         """Create and register list models for QML"""
@@ -281,17 +301,37 @@ class Application(QObject):
             raise
 
     def _connect_to_root_object(self):
-        """Connect to the root QML object for direct interaction"""
+        """Connect to the root QML object for direct interaction with improved error handling"""
         try:
             # Get the root object (MainWindow)
-            root = self.engine.rootObjects()[0]
-            if not root:
-                self.logger.warning("No root QML object found")
+            root_objects = self.engine.rootObjects()
+            if not root_objects:
+                self.logger.error("No root QML objects found - QML loading failed")
                 return
 
+            root = root_objects[0]
+            if not root:
+                self.logger.error("First root object is null - QML loading failed")
+                return
+
+            self.logger.info(f"Root QML object found: {root.objectName()}")
+
             # Connect Python ViewModels to root properties directly
+            # Store previous value to check if it was actually set
+            prev_conv_vm = root.property("conversationViewModel")
+
             root.setProperty("conversationViewModel", self.conversation_vm)
             root.setProperty("settingsViewModel", self.settings_vm)
+
+            # Verify property was set correctly
+            new_conv_vm = root.property("conversationViewModel")
+            if new_conv_vm and new_conv_vm != prev_conv_vm:
+                self.logger.info("Successfully set conversationViewModel property")
+            else:
+                self.logger.error("Failed to set conversationViewModel property!")
+                # Try the context property approach again as a fallback
+                self.root_context.setContextProperty("conversationViewModel", self.conversation_vm)
+                self.logger.info("Tried setting conversationViewModel via context property as fallback")
 
             # Connect QML signals to Python slots
             self._connect_qml_signals(root)
@@ -300,6 +340,8 @@ class Application(QObject):
             self._initialize_view_data(root)
         except Exception as e:
             self.logger.error(f"Error connecting to root QML object: {e}", exc_info=True)
+            import traceback
+            self.logger.error(f"Stack trace: {traceback.format_exc()}")
 
     def _connect_qml_signals(self, root):
         """Connect QML signals to Python slots"""
