@@ -346,7 +346,7 @@ class Application(QObject):
 
     # File handling helpers
     def _handle_file_request(self, file_url):
-        """Handle file request from QML"""
+        """Handle file request from QML with better error handling and feedback"""
         try:
             # Convert QML URL to Python path
             file_path = file_url.toString()
@@ -359,13 +359,54 @@ class Application(QObject):
                     # Unix paths
                     file_path = file_path[7:]
 
-            # TODO: Process file and return information to QML
             self.logger.info(f"Processing file: {file_path}")
 
-            # Example - could return file info to QML
-            # self.qml_bridge.call_qml_method("mainWindow", "updateFileInfo", file_info)
+            # Use async file processing
+            from src.utils.file_utils import get_file_info_async
+
+            # Define callbacks
+            def on_file_processed(file_info):
+                """Callback when file is processed"""
+                try:
+                    # Update file info in QML model
+                    model_info = {
+                        "fileName": file_info["file_name"],
+                        "filePath": file_path,
+                        "fileSize": self.qml_bridge.format_file_size(file_info["size"]),
+                        "tokenCount": file_info["token_count"]
+                    }
+
+                    # Find the file in the model and update it
+                    self.qml_bridge.call_qml_method("mainWindow", "updateFileInfo", model_info)
+
+                    self.logger.info(f"File processed: {file_info['file_name']} "
+                                     f"({file_info['token_count']} tokens)")
+                except Exception as e:
+                    self.logger.error(f"Error in file processed callback: {str(e)}", exc_info=True)
+
+            def on_file_error(error_message):
+                """Callback when file processing fails"""
+                self.logger.error(f"Error processing file: {error_message}")
+                self.qml_bridge.call_qml_method("mainWindow", "handleFileError",
+                                                os.path.basename(file_path), error_message)
+
+            def on_progress(progress):
+                """Callback for progress updates"""
+                self.qml_bridge.call_qml_method("mainWindow", "updateFileProgress",
+                                                os.path.basename(file_path), progress)
+
+            # Start asynchronous file processing
+            get_file_info_async(file_path,
+                                on_complete=on_file_processed,
+                                on_error=on_file_error,
+                                on_progress=on_progress)
+
         except Exception as e:
-            self.logger.error(f"Error handling file request: {e}", exc_info=True)
+            self.logger.error(f"Error handling file request: {str(e)}", exc_info=True)
+            # Inform QML about the error
+            self.qml_bridge.call_qml_method("mainWindow", "handleFileError",
+                                            os.path.basename(file_path) if 'file_path' in locals() else "Unknown file",
+                                            str(e))
 
     def _handle_qml_error(self, error_message):
         """Handle error from QML"""

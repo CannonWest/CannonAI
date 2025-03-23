@@ -38,6 +38,10 @@ ApplicationWindow {
     // Window properties
     color: backgroundColor
 
+    signal fileRequested(var fileUrl)
+
+    signal errorOccurred(string errorMessage)
+
     // Menu bar
     menuBar: MenuBar {
         Menu {
@@ -620,6 +624,7 @@ ApplicationWindow {
         title: "Rename Conversation"
         standardButtons: Dialog.Ok | Dialog.Cancel
         modal: true
+        width: 400  // Set explicit width instead of relying on implicit width
 
         background: Rectangle {
             color: backgroundColor
@@ -627,43 +632,79 @@ ApplicationWindow {
             border.color: accentColor
             border.width: 1
         }
+
         onAccepted: {
             if (conversationList.currentIndex >= 0) {
                 const conversationId = conversationsModel.get(conversationList.currentIndex).id
                 conversationViewModel.rename_conversation(conversationId, renameField.text)
             }
         }
-        contentItem: Item {  // Use Item as a wrapper that supports padding-like behavior
-            implicitWidth: renameDialogColumnLayout.implicitWidth
-            implicitHeight: renameDialogColumnLayout.implicitHeight + 32  // Add some extra space
 
-            ColumnLayout {
-                id: renameDialogColumnLayout  // Use a unique, specific ID to avoid conflicts
-                anchors.fill: parent
-                anchors.margins: 16  // Use margins instead of padding
-                spacing: 16
+        contentItem: ColumnLayout {
+            spacing: 16
+            width: parent.width
 
-                Text {
-                    text: "Enter new conversation name:"
-                    color: foregroundColor
+            Text {
+                text: "Enter new conversation name:"
+                color: foregroundColor
+                Layout.fillWidth: true
+            }
+
+            TextField {
+                id: renameField
+                Layout.fillWidth: true
+                color: foregroundColor
+
+                background: Rectangle {
+                    color: highlightColor
+                    radius: 4
                 }
 
-                TextField {
-                    id: renameField
-                    Layout.fillWidth: true
-                    color: foregroundColor
-
-                    background: Rectangle {
-                        color: highlightColor
-                        radius: 4
-                    }
-
-                    Component.onCompleted: {
-                        if (conversationList.currentIndex >= 0) {
-                            text = conversationsModel.get(conversationList.currentIndex).name
-                        }
+                Component.onCompleted: {
+                    if (conversationList.currentIndex >= 0) {
+                        text = conversationsModel.get(conversationList.currentIndex).name
                     }
                 }
+            }
+        }
+    }
+
+    Dialog {
+        id: aboutDialog
+        title: "About OpenAI Chat"
+        standardButtons: Dialog.Close
+        modal: true
+        width: 400  // Set explicit width
+
+        background: Rectangle {
+            color: backgroundColor
+            radius: 8
+            border.color: accentColor
+            border.width: 1
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 16
+            width: parent.width
+
+            Text {
+                text: "OpenAI Chat Interface"
+                color: foregroundColor
+                font.bold: true
+                font.pixelSize: 16
+                Layout.fillWidth: true
+            }
+
+            Text {
+                text: "A desktop application for interacting with OpenAI's language models.\n\n" +
+                    "Features include:\n" +
+                    "- Multiple conversations\n" +
+                    "- Branching conversations with retries\n" +
+                    "- Model customization\n" +
+                    "- Conversation saving and loading"
+                color: foregroundColor
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
             }
         }
     }
@@ -695,52 +736,6 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
-        id: aboutDialog
-        title: "About OpenAI Chat"
-        standardButtons: Dialog.Close
-        modal: true
-
-        background: Rectangle {
-            color: backgroundColor
-            radius: 8
-            border.color: accentColor
-            border.width: 1
-        }
-
-        contentItem: Item {  // Use Item as a wrapper that supports padding-like behavior
-            implicitWidth: aboutDialogColumnLayout.implicitWidth
-            implicitHeight: aboutDialogColumnLayout.implicitHeight + 32  // Add some extra space
-
-            ColumnLayout {
-                id: aboutDialogColumnLayout  // Use a unique, specific ID to avoid conflicts
-                anchors.fill: parent
-                anchors.margins: 16  // Use margins instead of padding
-                spacing: 16
-
-                Text {
-                    text: "OpenAI Chat Interface"
-                    color: foregroundColor
-                    font.bold: true
-                    font.pixelSize: 16
-                }
-
-                Text {
-                    text: "A desktop application for interacting with OpenAI's language models.\n\n" +
-                        "Features include:\n" +
-                        "- Multiple conversations\n" +
-                        "- Branching conversations with retries\n" +
-                        "- Model customization\n" +
-                        "- Conversation saving and loading"
-                    color: foregroundColor
-                    wrapMode: Text.WordWrap
-                    Layout.fillWidth: true
-                }
-            }
-        }
-    }
-    // Settings dialog - using our custom component
-    // This is the component that was previously not found
     Components.SettingsDialog {
         id: settingsDialog
         width: 600
@@ -796,13 +791,90 @@ ApplicationWindow {
             const fileUrl = fileUrls[i]
             const fileName = fileUrl.toString().split('/').pop()
 
+            // Emit signal for Python to process the file
+            fileRequested(fileUrl)
+
+            // Add to model (Python will update with correct size/tokens later)
             fileAttachmentsModel.append({
                 "fileName": fileName,
                 "filePath": fileUrl,
-                "fileSize": "—", // Size will be updated by backend
-                "tokenCount": 0   // Token count will be updated by backend
+                "fileSize": "Calculating...",
+                "tokenCount": 0
             })
         }
+    }
+
+    // Add these functions to the MainWindow.qml file
+    // Add them near the other utility functions
+
+    // Update file info in the model
+    function updateFileInfo(fileInfo) {
+        // Find the file in the model
+        for (let i = 0; i < fileAttachmentsModel.count; i++) {
+            const item = fileAttachmentsModel.get(i)
+            if (item.fileName === fileInfo.fileName ||
+                item.filePath.toString().endsWith(fileInfo.fileName)) {
+
+                // Update the item properties
+                fileAttachmentsModel.set(i, {
+                    "fileName": fileInfo.fileName,
+                    "filePath": fileInfo.filePath,
+                    "fileSize": fileInfo.fileSize,
+                    "tokenCount": fileInfo.tokenCount
+                })
+                break
+            }
+        }
+    }
+
+    // Update file processing progress
+    function updateFileProgress(fileName, progress) {
+        // Find the file in the model
+        for (let i = 0; i < fileAttachmentsModel.count; i++) {
+            const item = fileAttachmentsModel.get(i)
+            if (item.fileName === fileName ||
+                item.filePath.toString().endsWith(fileName)) {
+
+                // Update the file size to show progress
+                fileAttachmentsModel.set(i, {
+                    "fileSize": `Processing ${progress}%`
+                })
+                break
+            }
+        }
+    }
+
+    // Handle file processing errors
+    function handleFileError(fileName, errorMessage) {
+        console.error(`Error processing file ${fileName}: ${errorMessage}`)
+
+        // Find the file in the model
+        for (let i = 0; i < fileAttachmentsModel.count; i++) {
+            const item = fileAttachmentsModel.get(i)
+            if (item.fileName === fileName ||
+                item.filePath.toString().endsWith(fileName)) {
+
+                // Update the item to show error
+                fileAttachmentsModel.set(i, {
+                    "fileSize": "Error",
+                    "tokenCount": 0
+                })
+                break
+            }
+        }
+
+        // Show error message to user
+        // You could implement a toast notification or error dialog here
+    }
+
+    // Add a function to handle errors from QML side
+    function handleError(errorMsg) {
+        console.error("QML Error: " + errorMsg)
+        // Emit signal for Python to log
+        errorOccurred(errorMsg)
+
+        // Show error to user
+        // You could add a toast notification or dialog here
     }
 
     function openSettingsDialog() {
@@ -873,14 +945,11 @@ ApplicationWindow {
         }
     }
 
-    // Connect to ViewModel signals
-    // Replace the current Connections block in MainWindow.qml
     Connections {
         target: conversationViewModel
         enabled: conversationViewModel !== null && typeof conversationViewModel !== "undefined"
 
-        // Use the proper naming format for signals in Qt6
-        function onConversationLoaded(conversation) {
+        function conversationLoaded(conversation) {
             // Update conversations list if needed
             let found = false
             for (let i = 0; i < conversationsModel.count; i++) {
@@ -909,7 +978,7 @@ ApplicationWindow {
             currentConversation = conversation
         }
 
-        function onMessageBranchChanged(branch) {
+        function messageBranchChanged(branch) {
             // Clear messages model
             messagesModel.clear()
 
@@ -929,7 +998,7 @@ ApplicationWindow {
             updateBranchNavigation(branch)
         }
 
-        function onMessageStreamChunk(chunk) {
+        function messageStreamChunk(chunk) {
             // If we're streaming, update the last message with the new chunk
             if (messagesModel.count > 0) {
                 const lastIndex = messagesModel.count - 1
@@ -961,7 +1030,7 @@ ApplicationWindow {
             }
         }
 
-        function onTokenUsageUpdated(usage) {
+        function tokenUsageUpdated(usage) {
             // Update token usage display
             let tokenText = "Tokens: " + usage.completion_tokens + " / " + usage.total_tokens
 
@@ -973,12 +1042,25 @@ ApplicationWindow {
             tokenUsageText.text = tokenText
         }
 
-        function onLoadingStateChanged(loading) {
+        function loadingStateChanged(loading) {
             // Update loading state
             isLoading = loading
         }
-    }
 
+        // Add any additional signal handlers here
+        function messageAdded(message) {
+            // This might be used to handle added messages separately
+            // from the branch change
+        }
+
+        function reasoningStepsChanged(steps) {
+            // Handle reasoning steps updates
+        }
+
+        function messagingComplete() {
+            // Handle when messaging is complete
+        }
+    }
     property Timer debugTimer: Timer
     {
         interval: 500
