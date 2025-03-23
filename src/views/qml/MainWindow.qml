@@ -65,7 +65,8 @@ ApplicationWindow {
                 onActivated: saveDialog.open()
             }
 
-            MenuSeparator { }
+            MenuSeparator {
+            }
 
             MenuItem {
                 text: "Exit"
@@ -194,11 +195,14 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
-                    model: ListModel { id: conversationsModel }
+                    model: ListModel {
+                        id: conversationsModel
+                    }
 
                     // Use our custom ConversationItem component as delegate
                     // With namespace prefix "Components."
-                    delegate: Components.ConversationItem {
+                    delegate: Components.ConversationItem
+                    {
                         width: conversationList.width
 
                         // Connect signals to slot methods
@@ -291,11 +295,15 @@ ApplicationWindow {
                         anchors.margins: 8
                         spacing: 16
                         verticalLayoutDirection: ListView.TopToBottom
-                        model: ListModel { id: messagesModel }
+                        model: ListModel {
+                            id: messagesModel
+                        }
 
                         // Use our custom MessageDelegate for message items
                         // With namespace prefix "Components."
-                        delegate: Components.MessageDelegate {}
+                        delegate: Components.MessageDelegate
+                        {
+                        }
 
                         // Auto-scroll to bottom when new messages are added
                         onCountChanged: {
@@ -383,7 +391,9 @@ ApplicationWindow {
                             Layout.fillHeight: true
                             orientation: ListView.Horizontal
                             spacing: 8
-                            model: ListModel { id: fileAttachmentsModel }
+                            model: ListModel {
+                                id: fileAttachmentsModel
+                            }
 
                             delegate: Rectangle {
                                 width: 150
@@ -448,12 +458,14 @@ ApplicationWindow {
                                 id: inputField
                                 placeholderText: "Type your message here..."
                                 color: foregroundColor
-                                background: Rectangle { color: "transparent" }
+                                background: Rectangle {
+                                    color: "transparent"
+                                }
                                 wrapMode: TextEdit.Wrap
                                 enabled: !isLoading
 
                                 // Enable Shift+Enter for newlines, Enter to send
-                                Keys.onPressed: function(event) {
+                                Keys.onPressed: function (event) {
                                     if (event.key === Qt.Key_Return && !event.modifiers) {
                                         sendMessage()
                                         event.accepted = true
@@ -601,7 +613,7 @@ ApplicationWindow {
             padding: 16
         }
     }
-
+    
     Dialog {
         id: renameDialog
         title: "Rename Conversation"
@@ -614,42 +626,46 @@ ApplicationWindow {
             border.color: accentColor
             border.width: 1
         }
-
         onAccepted: {
             if (conversationList.currentIndex >= 0) {
                 const conversationId = conversationsModel.get(conversationList.currentIndex).id
                 conversationViewModel.rename_conversation(conversationId, renameField.text)
             }
         }
+        contentItem: Item {  // Use Item as a wrapper that supports padding-like behavior
+            implicitWidth: renameDialogColumnLayout.implicitWidth
+            implicitHeight: renameDialogColumnLayout.implicitHeight + 32  // Add some extra space
 
-        contentItem: ColumnLayout {
-            spacing: 16
-            padding: 16
+            ColumnLayout {
+                id: renameDialogColumnLayout  // Use a unique, specific ID to avoid conflicts
+                anchors.fill: parent
+                anchors.margins: 16  // Use margins instead of padding
+                spacing: 16
 
-            Text {
-                text: "Enter new conversation name:"
-                color: foregroundColor
-            }
-
-            TextField {
-                id: renameField
-                Layout.fillWidth: true
-                color: foregroundColor
-
-                background: Rectangle {
-                    color: highlightColor
-                    radius: 4
+                Text {
+                    text: "Enter new conversation name:"
+                    color: foregroundColor
                 }
 
-                Component.onCompleted: {
-                    if (conversationList.currentIndex >= 0) {
-                        text = conversationsModel.get(conversationList.currentIndex).name
+                TextField {
+                    id: renameField
+                    Layout.fillWidth: true
+                    color: foregroundColor
+
+                    background: Rectangle {
+                        color: highlightColor
+                        radius: 4
+                    }
+
+                    Component.onCompleted: {
+                        if (conversationList.currentIndex >= 0) {
+                            text = conversationsModel.get(conversationList.currentIndex).name
+                        }
                     }
                 }
             }
         }
     }
-
     Dialog {
         id: deleteConfirmDialog
         title: "Delete Conversation"
@@ -691,31 +707,37 @@ ApplicationWindow {
             border.width: 1
         }
 
-        contentItem: ColumnLayout {
-            spacing: 16
-            padding: 16
+        contentItem: Item {  // Use Item as a wrapper that supports padding-like behavior
+            implicitWidth: aboutDialogColumnLayout.implicitWidth
+            implicitHeight: aboutDialogColumnLayout.implicitHeight + 32  // Add some extra space
 
-            Text {
-                text: "OpenAI Chat Interface"
-                color: foregroundColor
-                font.bold: true
-                font.pixelSize: 16
-            }
+            ColumnLayout {
+                id: aboutDialogColumnLayout  // Use a unique, specific ID to avoid conflicts
+                anchors.fill: parent
+                anchors.margins: 16  // Use margins instead of padding
+                spacing: 16
 
-            Text {
-                text: "A desktop application for interacting with OpenAI's language models.\n\n" +
-                      "Features include:\n" +
-                      "- Multiple conversations\n" +
-                      "- Branching conversations with retries\n" +
-                      "- Model customization\n" +
-                      "- Conversation saving and loading"
-                color: foregroundColor
-                wrapMode: Text.WordWrap
-                Layout.fillWidth: true
+                Text {
+                    text: "OpenAI Chat Interface"
+                    color: foregroundColor
+                    font.bold: true
+                    font.pixelSize: 16
+                }
+
+                Text {
+                    text: "A desktop application for interacting with OpenAI's language models.\n\n" +
+                        "Features include:\n" +
+                        "- Multiple conversations\n" +
+                        "- Branching conversations with retries\n" +
+                        "- Model customization\n" +
+                        "- Conversation saving and loading"
+                    color: foregroundColor
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
             }
         }
     }
-
     // Settings dialog - using our custom component
     // This is the component that was previously not found
     Components.SettingsDialog {
@@ -724,7 +746,7 @@ ApplicationWindow {
         height: 700
 
         // Connect the settings saved signal to our handler
-        onSettingsSaved: function(settings) {
+        onSettingsSaved: function (settings) {
             settingsViewModel.update_settings(settings)
         }
     }
@@ -831,7 +853,7 @@ ApplicationWindow {
             )
 
             // Connect click event
-            button.clicked.connect(function() {
+            button.clicked.connect(function () {
                 conversationViewModel.navigate_to_message(button.nodeId)
             })
 
@@ -912,7 +934,7 @@ ApplicationWindow {
                 // If the last message is from the assistant, update it
                 if (lastMessage.role === "assistant") {
                     const currentContent = lastMessage.content
-                    messagesModel.set(lastIndex, { content: currentContent + chunk })
+                    messagesModel.set(lastIndex, {content: currentContent + chunk})
                 } else {
                     // If not, add a new assistant message
                     messagesModel.append({
