@@ -84,18 +84,47 @@ class Application(QObject):
         # Could show an error dialog or other UI feedback here
 
     def _on_object_created(self, obj, url):
-        """Handle QML object creation events"""
+        """Handle QML object creation events with safer error handling"""
         if not obj and url.isValid():
             self.logger.error(f"Failed to create QML object for {url.toString()}")
-            error = self.engine.rootObjects()[0].findChild(QObject, "errorDialog")
-            if error:
-                error.setProperty("text", f"Error loading QML file: {url.toString()}")
-                self.qml_bridge.call_qml_method("errorDialog", "open")
+
+            # Get a list of all QML errors
+            qml_errors = self.engine.errors() if hasattr(self.engine, 'errors') else []
+            if qml_errors:
+                for i, error in enumerate(qml_errors):
+                    if hasattr(error, 'line') and hasattr(error, 'column') and hasattr(error, 'description'):
+                        error_msg = f"QML Error {i + 1}: Line {error.line()}, Column {error.column()}: {error.description()}"
+                    else:
+                        error_msg = f"QML Error {i + 1}: {error}"
+                    self.logger.error(error_msg)
+
+            # Safe check for root objects before trying to access them
+            root_objects = self.engine.rootObjects()
+            if root_objects:
+                # Only try to find error dialog if we have root objects
+                error = root_objects[0].findChild(QObject, "errorDialog")
+                if error:
+                    error.setProperty("text", f"Error loading QML file: {url.toString()}")
+                    self.qml_bridge.call_qml_method("errorDialog", "open")
+
             sys.exit(-1)
 
     def _on_qml_warning(self, warning):
-        """Handle QML warnings"""
-        self.logger.warning(f"QML Warning: {warning}")
+        """Handle QML warnings with improved detail extraction"""
+        try:
+            # Extract more detail from the QML warning
+            if hasattr(warning, "toString"):
+                detail = warning.toString()
+            elif hasattr(warning, "description"):
+                detail = warning.description()
+            else:
+                detail = str(warning)
+
+            # Log the detailed warning
+            self.logger.warning(f"QML Warning detail: {detail}")
+        except Exception as e:
+            self.logger.warning(f"Error processing QML warning: {e}")
+            self.logger.warning(f"Original warning: {warning}")
 
     def _load_env(self):
         """Load environment variables from .env file with better error handling"""
@@ -209,6 +238,9 @@ class Application(QObject):
                 self.logger.critical(f"QML file not found: {qml_path}")
                 raise FileNotFoundError(f"QML file not found: {qml_path}")
 
+            # Log the attempt to load
+            self.logger.info(f"Attempting to load QML file: {qml_path}")
+
             # Convert to QUrl
             qml_url = QUrl.fromLocalFile(qml_path)
 
@@ -218,6 +250,17 @@ class Application(QObject):
             # Check if loading was successful
             if not self.engine.rootObjects():
                 self.logger.critical("Failed to load QML file")
+
+                # Get a list of all QML errors
+                qml_errors = self.engine.errors() if hasattr(self.engine, 'errors') else []
+                if qml_errors:
+                    for i, error in enumerate(qml_errors):
+                        if hasattr(error, 'line') and hasattr(error, 'column') and hasattr(error, 'description'):
+                            error_msg = f"QML Error {i + 1}: Line {error.line()}, Column {error.column()}: {error.description()}"
+                        else:
+                            error_msg = f"QML Error {i + 1}: {error}"
+                        self.logger.error(error_msg)
+
                 raise RuntimeError("Failed to load QML file")
 
             self.logger.info("QML file loaded successfully")
