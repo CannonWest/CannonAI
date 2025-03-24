@@ -88,6 +88,72 @@ ApplicationWindow {
         }
     }
 
+    // Handle conversationsModel updates from Python
+    function updateConversationsModel(conversations) {
+        // Clear the model first
+        conversationsModel.clear();
+
+        // Add all conversations
+        for (let i = 0; i < conversations.length; i++) {
+            conversationsModel.append(conversations[i]);
+        }
+
+        // Select the first conversation if available
+        if (conversationsModel.count > 0) {
+            conversationList.currentIndex = 0;
+        }
+    }
+
+    // Handle async task events from Python
+    Connections {
+        target: bridge
+
+        function onTaskStarted(taskId) {
+            console.log("Async task started: " + taskId);
+            // You could show a loading indicator here
+        }
+
+        function onTaskFinished(taskId, result) {
+            console.log("Async task finished: " + taskId);
+            // Handle the task result
+            // For example, if you know this is a specific task type:
+            if (taskId.startsWith("search_")) {
+                // This could be a search result
+                handleSearchResults(result);
+            }
+        }
+
+        function onTaskError(taskId, errorMessage) {
+            console.error("Async task error: " + taskId + " - " + errorMessage);
+            // Show error to user
+            errorDialog.title = "Error";
+            errorDialog.message = errorMessage;
+            errorDialog.open();
+        }
+    }
+
+    // Example of calling an async method via the bridge
+    function callAsyncSearchExample() {
+        let searchTerm = "example";
+        let taskId = bridge.call_async_method(
+            "conversationViewModel",
+            "search_conversations",
+            [searchTerm]
+        );
+        console.log("Started search task: " + taskId);
+        // You'll get the result via the onTaskFinished handler above
+    }
+
+    // Example handler for search results
+    function handleSearchResults(results) {
+        if (results && results.length > 0) {
+            console.log("Found " + results.length + " search results");
+            // Process results
+        } else {
+            console.log("No search results found");
+        }
+    }
+
     // Menu bar
     menuBar: MenuBar {
         Menu {

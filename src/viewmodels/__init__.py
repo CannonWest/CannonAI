@@ -1,6 +1,13 @@
 """
 ViewModels package for the OpenAI Chat application.
+Contains both async and reactive implementations for UI data binding.
 """
 
-from src.viewmodels.reactive_conversation_viewmodel import ReactiveConversationViewModel
-from src.viewmodels.settings_viewmodel import SettingsViewModel
+# Async viewmodels (preferred for new code)
+from src.viewmodels.updated_async_conversation_viewmodel import FullAsyncConversationViewModel
+from src.viewmodels.async_settings_viewmodel import AsyncSettingsViewModel
+
+
+# Define preferred models for new code
+ConversationViewModel = FullAsyncConversationViewModel
+SettingsViewModel = AsyncSettingsViewModel

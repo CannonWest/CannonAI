@@ -33,30 +33,23 @@ from src.utils.logging_utils import (
     log_exception
 )
 
-from src.utils.file_utils import (
-    get_file_info,
+# Async file utilities (preferred)
+from src.utils.async_file_utils import (
     get_file_info_async,
-    extract_display_text,
-    format_size,
-    FileCacheManager
+    AsyncFileProcessor,
+    AsyncFileCacheManager,
+    count_tokens,
+    read_text_file,
+    get_file_mime_type
 )
 
+
+# Async QML bridge (preferred)
+from src.utils.async_qml_bridge import AsyncQmlBridge
+
+
+# Async utilities
 from src.utils.qasync_bridge import (
     install as install_qasync,
     run_coroutine
-)
-
-from src.utils.qml_bridge import (
-    QmlBridge,
-    # QmlModelBase,
-    QmlListModel
-)
-
-from src.utils.reactive import (
-    ReactiveProperty,
-    ReactiveList,
-    ReactiveDict,
-    ReactiveViewModel,
-    RxSignalAdapter,
-    connect_observable_to_slot
 )
