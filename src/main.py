@@ -1,5 +1,5 @@
 # src/main.py
-
+import asyncio
 import sys
 import os
 from typing import Dict, Any, List, Optional
@@ -28,6 +28,15 @@ from src.viewmodels.settings_viewmodel import SettingsViewModel
 from src.services.db_service import ConversationService
 from src.services.api_service import ApiService
 
+# Import the new async ViewModel
+from src.viewmodels.async_conversation_viewmodel import AsyncConversationViewModel
+
+# Import the new async API service
+from src.services.async_api_service import AsyncApiService
+
+# Make sure qasync is properly initialized
+from src.utils.qasync_bridge import install as install_qasync, run_coroutine
+
 # Import other utilities
 from dotenv import load_dotenv
 
@@ -52,8 +61,10 @@ class Application(QObject):
         # Load environment variables with better error handling
         self._load_env()
 
-        # Initialize async support
+        # Initialize qasync with the QApplication instance
+        # This is critical for proper async integration
         self.event_loop = install_qasync(self.app)
+        self.logger.info("Initialized qasync event loop")
 
         # Initialize services
         self.initialize_services()
@@ -155,9 +166,9 @@ class Application(QObject):
             self.db_service = ConversationService()
             self.logger.info("Initialized ConversationService")
 
-            # API service for OpenAI interaction
-            self.api_service = ApiService()
-            self.logger.info("Initialized ApiService")
+            # Use the new AsyncApiService instead of ApiService
+            self.api_service = AsyncApiService()
+            self.logger.info("Initialized AsyncApiService")
 
             # Set API key from environment if available
             api_key = os.environ.get("OPENAI_API_KEY", "")
@@ -169,43 +180,26 @@ class Application(QObject):
             raise
 
     def initialize_viewmodels(self):
-        """Initialize and register ViewModels with improved error handling and double registration"""
+        """Initialize and register ViewModels with improved error handling"""
         try:
-            # Create ViewModels
-            self.conversation_vm = ReactiveConversationViewModel()
+            # Create AsyncConversationViewModel instead of ReactiveConversationViewModel
+            self.conversation_vm = AsyncConversationViewModel()
             self.settings_vm = SettingsViewModel()
             self.logger.info("Created ViewModels")
 
             # Initialize settings ViewModel with API service if needed
             if hasattr(self.settings_vm, 'initialize'):
                 self.settings_vm.initialize(self.api_service)
-                self.logger.info("Initialized SettingsViewModel with ApiService")
+                self.logger.info("Initialized SettingsViewModel with AsyncApiService")
 
-            # Connect ViewModels to services
-            self.conversation_vm.api_service = self.api_service
-            self.conversation_vm.conversation_service = self.db_service
-            self.logger.info("Connected ViewModel to services")
+            # No need to manually set services on AsyncConversationViewModel as it creates its own
+            # But you can configure services if needed
+            # self.conversation_vm.conversation_service = self.db_service
 
-            # Ensure the conversation service is properly initialized
-            try:
-                # Test the service with a simple operation
-                conversations = self.conversation_vm.get_all_conversations()
-                self.logger.info(f"ConversationService returned {len(conversations)} conversations")
-            except Exception as e:
-                self.logger.error(f"Error testing conversation service: {e}", exc_info=True)
-                # Continue despite error - we'll show proper error messages in the UI
-
-            # Register ViewModels with QML - using multiple approaches for redundancy
-            # 1. Register as context properties
+            # Register ViewModels with QML
             self.qml_bridge.register_context_property("conversationViewModel", self.conversation_vm)
             self.qml_bridge.register_context_property("settingsViewModel", self.settings_vm)
-            self.logger.info("Registered ViewModels with QML as context properties")
-
-            # 2. Set as global properties in the root context
-            root_context = self.engine.rootContext()
-            root_context.setContextProperty("conversationViewModel", self.conversation_vm)
-            root_context.setContextProperty("settingsViewModel", self.settings_vm)
-            self.logger.info("Set ViewModels as global properties in root context")
+            self.logger.info("Registered ViewModels with QML")
 
             # Register bridge for QML logging and error handling
             self.qml_bridge.register_context_property("bridge", self.qml_bridge)
@@ -215,11 +209,7 @@ class Application(QObject):
             self._create_list_models()
         except Exception as e:
             self.logger.error(f"Error initializing ViewModels: {e}", exc_info=True)
-            import traceback
-            self.logger.error(f"Stack trace: {traceback.format_exc()}")
-            # Continue despite error - we'll show proper error messages in the UI
-
-        return True  # Return success even with errors to allow UI to show error messages
+            raise
 
     def _create_list_models(self):
         """Create and register list models for QML"""
@@ -500,15 +490,32 @@ class Application(QObject):
             self.logger.critical(f"Error initializing QML engine: {e}", exc_info=True)
             raise
 
+    async def _cleanup_async(self):
+        """Perform async cleanup operations before exiting"""
+        # Close the API service connection if it has a close method
+        if hasattr(self.api_service, 'close'):
+            await self.api_service.close()
+            self.logger.info("Closed AsyncApiService connection")
+
+    def cleanup(self):
+        """Clean up resources before application exit"""
+        # Run the async cleanup
+        if self.event_loop:
+            asyncio.run_coroutine_threadsafe(self._cleanup_async(), self.event_loop)
+            self.logger.info("Scheduled async cleanup")
+
     def run(self):
         """Run the application with enhanced error handling"""
         try:
             self.logger.info("Starting application")
 
-            # Show the main window and run the application
+            # Show the main window
             window = self.engine.rootObjects()[0]
             if window:
                 window.show()
+
+            # Set up cleanup on app exit
+            self.app.aboutToQuit.connect(self.cleanup)
 
             # Run the application
             return self.app.exec()

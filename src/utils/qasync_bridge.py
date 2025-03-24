@@ -4,14 +4,27 @@ import sys
 import asyncio
 import signal
 from functools import partial
-from typing import Optional, Any, Callable, Coroutine
-
-from PyQt6.QtCore import QObject, QSocketNotifier, QTimer, QCoreApplication
+from typing import Any, Callable, Coroutine, Optional, TypeVar, Generic, Union
+import rx
+from rx import operators as ops
+from rx.subject import Subject, BehaviorSubject
+from rx.core import Observable
+from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer, QCoreApplication, QSocketNotifier
 from PyQt6.QtWidgets import QApplication
 
+# Get logger
+try:
+    from src.utils.logging_utils import get_logger
 
-# This implementation adapts the qasync library to our needs
-# It allows running asyncio coroutines in a Qt application
+    logger = get_logger(__name__)
+except ImportError:
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+# Type variable for generics
+T = TypeVar('T')
+
 
 class _QEventLoop(asyncio.AbstractEventLoop):
     """
@@ -27,12 +40,28 @@ class _QEventLoop(asyncio.AbstractEventLoop):
         self._timers = {}
         self._schedule_timers = {}
         self._ready = []
+        self._tasks = {}  # Add a dictionary to store tasks
 
         # Create a semaphore to prevent duplicate calls
         self._executing_callbacks = False
 
         # Connect quit signals
         signal.signal(signal.SIGINT, lambda *args: self.stop())
+
+    # Override create_task method to implement it properly
+    def create_task(self, coro):
+        """Create a task from a coroutine"""
+        if not asyncio.iscoroutine(coro):
+            raise TypeError('A coroutine object is required')
+
+        task = asyncio.Task(coro, loop=self)
+        self._tasks[id(task)] = task
+
+        def _on_task_done(task):
+            del self._tasks[id(task)]
+
+        task.add_done_callback(_on_task_done)
+        return task
 
     # Required methods for AbstractEventLoop subclasses
 
@@ -93,6 +122,11 @@ class _QEventLoop(asyncio.AbstractEventLoop):
         for timer in list(self._schedule_timers.values()):
             timer.stop()
         self._schedule_timers.clear()
+
+        # Cancel all tasks
+        for task in list(self._tasks.values()):
+            task.cancel()
+        self._tasks.clear()
 
     # File descriptor methods
 
@@ -255,24 +289,63 @@ class RunCoroutineInQt(QObject):
         self.callback = callback
         self.error_callback = error_callback
         self.task = None
+        self.loop = None
 
     def start(self):
         """Start the coroutine"""
-        loop = asyncio.get_event_loop()
-        self.task = loop.create_task(self.coro)
-        self.task.add_done_callback(self._on_task_done)
-
-    def _on_task_done(self, task):
-        """Handle task completion"""
         try:
-            result = task.result()
-            if self.callback:
-                self.callback(result)
+            # Try to get the current event loop
+            try:
+                self.loop = asyncio.get_event_loop()
+            except RuntimeError:
+                # No event loop in this thread - create a temporary one
+                self.loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self.loop)
+
+            # Schedule the coroutine to run right away
+            if hasattr(self.loop, 'create_task') and callable(self.loop.create_task):
+                self.task = self.loop.create_task(self._wrapped_coro())
+            else:
+                # Fallback for loops that don't implement create_task
+                # Run in the background with a QTimer
+                QTimer.singleShot(0, self._run_in_background)
         except Exception as e:
+            logger.error(f"Error starting coroutine: {e}")
             if self.error_callback:
                 self.error_callback(e)
-            else:
-                print(f"Unhandled exception in coroutine: {e}")
+
+    async def _wrapped_coro(self):
+        """Wrapper around the coroutine to handle callbacks"""
+        try:
+            result = await self.coro
+            if self.callback:
+                self.callback(result)
+            return result
+        except Exception as e:
+            logger.error(f"Error in coroutine: {e}")
+            if self.error_callback:
+                self.error_callback(e)
+            raise
+
+    def _run_in_background(self):
+        """Run the coroutine in the background using a temporary event loop"""
+        try:
+            # Create a new event loop for this background task
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            # Run the coroutine and get the result
+            try:
+                result = loop.run_until_complete(self.coro)
+                if self.callback:
+                    self.callback(result)
+            except Exception as e:
+                logger.error(f"Error in background coroutine: {e}")
+                if self.error_callback:
+                    self.error_callback(e)
+        finally:
+            # Clean up the temporary event loop
+            loop.close()
 
 
 def run_coroutine(coro: Coroutine, callback: Callable[[Any], None] = None,
@@ -285,6 +358,22 @@ def run_coroutine(coro: Coroutine, callback: Callable[[Any], None] = None,
         callback: Optional callback to call with the result
         error_callback: Optional callback to call if an error occurs
     """
+    # Check if we were passed a coroutine or a coroutine function
+    if not asyncio.iscoroutine(coro):
+        # If it's a coroutine function (async def), we need to call it first
+        if asyncio.iscoroutinefunction(coro):
+            try:
+                coro = coro()
+            except Exception as e:
+                if error_callback:
+                    error_callback(e)
+                return
+        else:
+            # Not a coroutine at all
+            if error_callback:
+                error_callback(ValueError("Expected a coroutine"))
+            return
+
     runner = RunCoroutineInQt(coro, callback, error_callback)
     runner.start()
     return runner
