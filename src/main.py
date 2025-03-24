@@ -428,59 +428,20 @@ class AsyncApplication(QObject):
         # Connect to app's aboutToQuit signal
         self.app.aboutToQuit.connect(self._prepare_cleanup)
 
-    async def _async_cleanupOLD(self):
+    async def _async_cleanup(self):
         """Perform async cleanup operations before exiting"""
         try:
-            # Import the async cleanup utilities
-            from src.utils.async_cleanup import cleanup_resources
-
-            # Create a list of all resources that need cleanup
-            resources = []
-
-            # Add the QML bridge
-            if hasattr(self, 'qml_bridge'):
-                resources.append(self.qml_bridge)
-
-            # Add services
-            if hasattr(self, 'api_service'):
-                resources.append(self.api_service)
-
+            # Close database connections
             if hasattr(self, 'db_service'):
-                resources.append(self.db_service)
+                await self.db_service.close()
 
-            # Add view models
-            if hasattr(self, 'conversation_vm'):
-                resources.append(self.conversation_vm)
-
-            if hasattr(self, 'settings_vm'):
-                resources.append(self.settings_vm)
-
-            # Add file processor
-            if hasattr(self, 'file_processor'):
-                resources.append(self.file_processor)
-
-            # Clean up all resources with proper error handling
-            await cleanup_resources(resources)
+            # Close API connections
+            if hasattr(self, 'api_service') and hasattr(self.api_service, 'close'):
+                await self.api_service.close()
 
             self.logger.info("Async cleanup completed")
         except Exception as e:
-            self.logger.error(f"Error during async cleanup: {e}", exc_info=True)
-
-        # Cleanup section
-        async def _async_cleanup(self):
-            """Perform async cleanup operations before exiting"""
-            try:
-                # Close database connections
-                if hasattr(self, 'db_service'):
-                    await self.db_service.close()
-
-                # Close API connections
-                if hasattr(self, 'api_service') and hasattr(self.api_service, 'close'):
-                    await self.api_service.close()
-
-                self.logger.info("Async cleanup completed")
-            except Exception as e:
-                self.logger.error(f"Error during async cleanup: {str(e)}")
+            self.logger.error(f"Error during async cleanup: {str(e)}")
 
     def _global_exception_handler(self, exc_type, exc_value, exc_traceback):
         """Global exception handler for uncaught exceptions"""

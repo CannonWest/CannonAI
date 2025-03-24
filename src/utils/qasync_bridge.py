@@ -41,12 +41,23 @@ class _QEventLoop(asyncio.AbstractEventLoop):
         self._schedule_timers = {}
         self._ready = []
         self._tasks = {}  # Add a dictionary to store tasks
+        self._debug = False  # Add debug flag
 
         # Create a semaphore to prevent duplicate calls
         self._executing_callbacks = False
 
         # Connect quit signals
         signal.signal(signal.SIGINT, lambda *args: self.stop())
+
+    # Add get_debug method (required by Python 3.12)
+    def get_debug(self):
+        """Return the current debug mode (True if enabled, False if disabled)."""
+        return self._debug
+
+    # Add set_debug method to allow changing debug state
+    def set_debug(self, enabled: bool):
+        """Set the debug mode of the event loop."""
+        self._debug = enabled
 
     # Override create_task method to implement it properly
     def create_task(self, coro):
@@ -62,8 +73,6 @@ class _QEventLoop(asyncio.AbstractEventLoop):
 
         task.add_done_callback(_on_task_done)
         return task
-
-    # Required methods for AbstractEventLoop subclasses
 
     def run_forever(self):
         """Run the event loop until stop() is called"""
