@@ -517,8 +517,12 @@ class AsyncApplication(QObject):
             self.conversation_vm = FullAsyncConversationViewModel()
             self.settings_vm = AsyncSettingsViewModel()
 
-            # Set up async initialization
-            asyncio.create_task(self._async_initialize_services())
+            from src.utils.qasync_bridge import run_coroutine
+            run_coroutine(
+                self._async_initialize_services(),
+                callback=lambda _: self.logger.info("Services initialized"),
+                error_callback=lambda e: self.logger.error(f"Error in async service initialization: {str(e)}")
+            )
 
             self.logger.info("Services created successfully")
         except Exception as e:

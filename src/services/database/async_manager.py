@@ -23,21 +23,21 @@ class AsyncDatabaseManager:
     Uses SQLAlchemy 2.0 with asyncio support.
     """
 
-    def __init__(self, connection_string='sqlite+aiosqlite:///data/database/conversations.db'):
+    def __init__(self, connection_string=None):
         """
         Initialize the async database manager
 
         Args:
             connection_string: SQLAlchemy connection string for the database
         """
-        # Make sure we use the proper path for sqlite databases
-        if connection_string.startswith('sqlite'):
-            db_path = os.path.join(DATABASE_DIR, 'conversations.db')
+        # Ensure the directory exists
+        db_path = os.path.join(DATABASE_DIR, 'conversations.db')
+        os.makedirs(DATABASE_DIR, exist_ok=True)
+
+        # Set default connection string if None is provided
+        if connection_string is None:
             connection_string = f'sqlite+aiosqlite:///{db_path}'
-            
-            # Ensure the directory exists
-            os.makedirs(DATABASE_DIR, exist_ok=True)
-            
+
         self.connection_string = connection_string
         self.engine = create_async_engine(connection_string, echo=False)
         self.async_session = async_sessionmaker(
