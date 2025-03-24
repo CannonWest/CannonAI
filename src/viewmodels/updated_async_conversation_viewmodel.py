@@ -6,22 +6,19 @@ Uses pure asyncio without dependencies on the reactive model.
 import asyncio
 import uuid
 from typing import List, Dict, Any, Optional, AsyncGenerator, Union
-from concurrent.futures import ThreadPoolExecutor
-
-import uuid
-from typing import List, Dict, Any
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
-from src.services.async_db_service import AsyncConversationService
-from src.services.async_api_service import AsyncApiService
+# Update this import to use the new services
+from src.services.database import AsyncConversationService  # New import
+from src.services.api import AsyncApiService
 from src.utils.qasync_bridge import run_coroutine
 from src.utils.logging_utils import get_logger
 
 
 class FullAsyncConversationViewModel(QObject):
     """
-    ViewModel for managing conversation interactions using pure async/await patterns 
+    ViewModel for managing conversation interactions using pure async/await patterns
     without reactive programming dependencies.
     """
 
@@ -40,6 +37,8 @@ class FullAsyncConversationViewModel(QObject):
     def __init__(self):
         super().__init__()
         self.logger = get_logger(__name__)
+
+        # Use the new async service
         self.conversation_service = AsyncConversationService()
         self.api_service = AsyncApiService()
 
@@ -51,15 +50,30 @@ class FullAsyncConversationViewModel(QObject):
         self._stream_buffer = ""
         self._model_info = {}
         self._reasoning_steps = []
-        
+        self._initialized = False
+
         # Set up signal connections from API service
         self.api_service.requestStarted.connect(self._on_request_started)
         self.api_service.requestFinished.connect(self._on_request_finished)
         self.api_service.chunkReceived.connect(self._on_chunk_received)
         self.api_service.metadataReceived.connect(self._on_metadata_received)
         self.api_service.errorOccurred.connect(self._on_error_occurred)
-        
-        self.logger.info("FullAsyncConversationViewModel initialized")
+
+        # Initialize the service asynchronously
+        run_coroutine(
+            self.initialize(),
+            callback=lambda _: self.logger.info("ViewModel initialized"),
+            error_callback=lambda e: self.logger.error(f"Error initializing ViewModel: {str(e)}")
+        )
+
+        self.logger.info("FullAsyncConversationViewModel constructor completed")
+
+    async def initialize(self):
+        """Initialize services"""
+        if not self._initialized:
+            await self.conversation_service.initialize()
+            self._initialized = True
+            self.logger.info("Services initialized")
 
     def _on_request_started(self):
         """Handle API request started"""
@@ -102,9 +116,9 @@ class FullAsyncConversationViewModel(QObject):
         """Load a conversation by ID (public slot)"""
         if conversation_id == self._current_conversation_id:
             return  # Already loaded
-            
+
         self._current_conversation_id = conversation_id
-        
+
         # Use run_coroutine to handle the async operation
         run_coroutine(
             self._load_conversation_async(conversation_id),
@@ -115,6 +129,10 @@ class FullAsyncConversationViewModel(QObject):
     async def _load_conversation_async(self, conversation_id):
         """Async implementation of load_conversation"""
         try:
+            # Ensure initialized
+            if not self._initialized:
+                await self.initialize()
+
             # Load the conversation from database
             conversation = await self.conversation_service.get_conversation(conversation_id)
             if conversation:
@@ -126,7 +144,7 @@ class FullAsyncConversationViewModel(QObject):
                     branch = await self.conversation_service.get_message_branch(current_node_id)
                     self._current_branch = branch
                     self.messageBranchChanged.emit(branch)
-                    
+
             return conversation
         except Exception as e:
             self.logger.error(f"Error loading conversation: {str(e)}")
@@ -137,10 +155,14 @@ class FullAsyncConversationViewModel(QObject):
     def get_all_conversations(self):
         """Get all conversations for display in UI"""
         try:
-            # This is a synchronous operation to support QML's immediate result needs
-            # We'll use the ThreadPool inside AsyncConversationService
+            # We'll still use this synchronous approach to support QML's immediate result needs
+            # But we'll wrap our async method in a new event loop
             loop = asyncio.new_event_loop()
             try:
+                # Ensure initialized
+                if not self._initialized:
+                    loop.run_until_complete(self.initialize())
+
                 conversations = loop.run_until_complete(self.conversation_service.get_all_conversations())
                 return [
                     {
@@ -170,9 +192,13 @@ class FullAsyncConversationViewModel(QObject):
     async def _create_new_conversation_async(self, name="New Conversation"):
         """Async implementation of create_new_conversation"""
         try:
+            # Ensure initialized
+            if not self._initialized:
+                await self.initialize()
+
             self.logger.info(f"Creating new conversation with name: {name}")
             conversation = await self.conversation_service.create_conversation(name=name)
-            
+
             if conversation:
                 self.logger.info(f"Created conversation with ID: {conversation.id}")
                 return conversation
@@ -223,6 +249,10 @@ class FullAsyncConversationViewModel(QObject):
             List of matching message dictionaries
         """
         try:
+            # Ensure initialized
+            if not self._initialized:
+                await self.initialize()
+
             self.logger.debug(f"Performing async search for: {search_term}")
             return await self.conversation_service.search_conversations(search_term, conversation_id)
         except Exception as e:
@@ -257,6 +287,10 @@ class FullAsyncConversationViewModel(QObject):
     async def _rename_conversation_async(self, conversation_id, new_name):
         """Async implementation of rename_conversation"""
         try:
+            # Ensure initialized
+            if not self._initialized:
+                await self.initialize()
+
             return await self.conversation_service.update_conversation(conversation_id, name=new_name)
         except Exception as e:
             self.logger.error(f"Error renaming conversation: {str(e)}")
@@ -271,7 +305,7 @@ class FullAsyncConversationViewModel(QObject):
             callback=lambda success: self._clear_current_conversation() if success and conversation_id == self._current_conversation_id else None,
             error_callback=lambda e: self.errorOccurred.emit(f"Error deleting conversation: {str(e)}")
         )
-        
+
     def _clear_current_conversation(self):
         """Clear current conversation after deletion"""
         self._current_conversation_id = None
@@ -281,6 +315,10 @@ class FullAsyncConversationViewModel(QObject):
     async def _delete_conversation_async(self, conversation_id):
         """Async implementation of delete_conversation"""
         try:
+            # Ensure initialized
+            if not self._initialized:
+                await self.initialize()
+
             return await self.conversation_service.delete_conversation(conversation_id)
         except Exception as e:
             self.logger.error(f"Error deleting conversation: {str(e)}")
@@ -304,6 +342,10 @@ class FullAsyncConversationViewModel(QObject):
     async def _send_message_async(self, conversation_id, content, attachments=None):
         """Async implementation of send_message"""
         try:
+            # Ensure initialized
+            if not self._initialized:
+                await self.initialize()
+
             # 1. Reset state
             self._stream_buffer = ""
             self._reasoning_steps = []
@@ -339,10 +381,10 @@ class FullAsyncConversationViewModel(QObject):
                 async for _ in self.api_service.get_streaming_completion(messages):
                     # Events are handled through signals, we don't need to do anything here
                     pass
-                
+
                 # 7. Save the assistant response after streaming completes
                 await self._save_assistant_response_async(conversation_id)
-                
+
             except Exception as e:
                 self.logger.error(f"Error in streaming API call: {str(e)}")
                 self.errorOccurred.emit(f"Error in streaming API call: {str(e)}")
@@ -374,6 +416,10 @@ class FullAsyncConversationViewModel(QObject):
             return
 
         try:
+            # Ensure initialized
+            if not self._initialized:
+                await self.initialize()
+
             # Save to database
             assistant_message = await self.conversation_service.add_assistant_message(
                 conversation_id=conversation_id,
@@ -409,6 +455,10 @@ class FullAsyncConversationViewModel(QObject):
     async def _navigate_to_message_async(self, conversation_id, message_id):
         """Async implementation of navigate_to_message"""
         try:
+            # Ensure initialized
+            if not self._initialized:
+                await self.initialize()
+
             success = await self.conversation_service.navigate_to_message(conversation_id, message_id)
 
             if success:
@@ -437,6 +487,10 @@ class FullAsyncConversationViewModel(QObject):
     async def _retry_last_response_async(self):
         """Async implementation of retry_last_response"""
         try:
+            # Ensure initialized
+            if not self._initialized:
+                await self.initialize()
+
             # Get the current conversation
             conversation_id = self._current_conversation_id
             conversation = await self.conversation_service.get_conversation(conversation_id)
@@ -472,10 +526,10 @@ class FullAsyncConversationViewModel(QObject):
                     async for _ in self.api_service.get_streaming_completion(messages):
                         # Events are handled through signals
                         pass
-                    
+
                     # Save the assistant response after streaming completes
                     await self._save_assistant_response_async(conversation_id)
-                    
+
                 except Exception as e:
                     self.logger.error(f"Error in streaming API call during retry: {str(e)}")
                     self.errorOccurred.emit(f"Error in streaming API call: {str(e)}")
@@ -491,6 +545,10 @@ class FullAsyncConversationViewModel(QObject):
             # Synchronous operation to support QML's immediate result needs
             loop = asyncio.new_event_loop()
             try:
+                # Ensure initialized
+                if not self._initialized:
+                    loop.run_until_complete(self.initialize())
+
                 return loop.run_until_complete(
                     self.conversation_service.search_conversations(search_term, conversation_id)
                 )
@@ -508,10 +566,14 @@ class FullAsyncConversationViewModel(QObject):
             # Synchronous operation to support QML's immediate result needs
             loop = asyncio.new_event_loop()
             try:
+                # Ensure initialized
+                if not self._initialized:
+                    loop.run_until_complete(self.initialize())
+
                 new_conversation = loop.run_until_complete(
                     self.conversation_service.duplicate_conversation(conversation_id, new_name)
                 )
-                
+
                 if new_conversation:
                     # Set the current conversation ID
                     self._current_conversation_id = new_conversation.id
@@ -527,9 +589,13 @@ class FullAsyncConversationViewModel(QObject):
             self.logger.error(f"Error duplicating conversation: {str(e)}")
             self.errorOccurred.emit(f"Error duplicating conversation: {str(e)}")
             return None
-            
-    def cleanup(self):
+
+    async def cleanup(self):
         """Clean up resources"""
+        self.logger.debug("Cleaning up FullAsyncConversationViewModel resources")
+
         # Close the async conversation service
         if hasattr(self.conversation_service, 'close'):
-            self.conversation_service.close()
+            await self.conversation_service.close()
+
+        self.logger.info("FullAsyncConversationViewModel resources cleaned up")

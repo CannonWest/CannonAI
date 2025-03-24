@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtQml import QQmlApplicationEngine
 from PyQt6.QtCore import QUrl, QObject, pyqtSlot, QTimer, QCoreApplication
 
+
 # Import logging utilities first to set up logging early
 from src.utils.logging_utils import configure_logging, get_logger
 from src.utils.qasync_utilities import setup_async_task_processor
@@ -31,8 +32,8 @@ from src.viewmodels.updated_async_conversation_viewmodel import FullAsyncConvers
 from src.viewmodels.async_settings_viewmodel import AsyncSettingsViewModel
 
 # Import services
-from src.services.async_db_service import AsyncConversationService
-from src.services.async_api_service import AsyncApiService
+from src.services.database import AsyncConversationService
+from src.services.api.async_api_service import AsyncApiService
 
 # Import async file utilities
 from src.utils.async_file_utils import AsyncFileProcessor, get_file_info_async
@@ -427,7 +428,7 @@ class AsyncApplication(QObject):
         # Connect to app's aboutToQuit signal
         self.app.aboutToQuit.connect(self._prepare_cleanup)
 
-    async def _async_cleanup(self):
+    async def _async_cleanupOLD(self):
         """Perform async cleanup operations before exiting"""
         try:
             # Import the async cleanup utilities
@@ -465,6 +466,22 @@ class AsyncApplication(QObject):
         except Exception as e:
             self.logger.error(f"Error during async cleanup: {e}", exc_info=True)
 
+        # Cleanup section
+        async def _async_cleanup(self):
+            """Perform async cleanup operations before exiting"""
+            try:
+                # Close database connections
+                if hasattr(self, 'db_service'):
+                    await self.db_service.close()
+
+                # Close API connections
+                if hasattr(self, 'api_service') and hasattr(self.api_service, 'close'):
+                    await self.api_service.close()
+
+                self.logger.info("Async cleanup completed")
+            except Exception as e:
+                self.logger.error(f"Error during async cleanup: {str(e)}")
+
     def _global_exception_handler(self, exc_type, exc_value, exc_traceback):
         """Global exception handler for uncaught exceptions"""
         self.logger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
@@ -478,10 +495,6 @@ class AsyncApplication(QObject):
     def initialize_services(self):
         """Initialize application services with better error handling"""
         try:
-            # Use AsyncConversationService for database operations
-            self.db_service = AsyncConversationService()
-            self.logger.info("Initialized AsyncConversationService")
-
             # Use AsyncApiService for API calls
             self.api_service = AsyncApiService()
             self.logger.info("Initialized AsyncApiService")
@@ -492,9 +505,22 @@ class AsyncApplication(QObject):
                 self.api_service.set_api_key(api_key)
                 self.logger.info("Set API key from environment")
 
+            # Use AsyncConversationService for database operations
+            self.db_service = AsyncConversationService()
+            self.logger.info("Initialized AsyncConversationService")
+
             # Create an AsyncFileProcessor for handling file operations
             self.file_processor = AsyncFileProcessor()
             self.logger.info("Initialized AsyncFileProcessor")
+
+            # Create ViewModels
+            self.conversation_vm = FullAsyncConversationViewModel()
+            self.settings_vm = AsyncSettingsViewModel()
+
+            # Set up async initialization
+            asyncio.create_task(self._async_initialize_services())
+
+            self.logger.info("Services created successfully")
         except Exception as e:
             self.logger.error(f"Error initializing services: {e}", exc_info=True)
             raise
@@ -528,6 +554,16 @@ class AsyncApplication(QObject):
             self.logger.info("Registered QmlAsyncHelper with QML")
         except Exception as e:
             self.logger.error(f"Error initializing ViewModels: {e}", exc_info=True)
+            raise
+
+    async def _async_initialize_services(self):
+        """Initialize async services"""
+        try:
+            # Initialize database service
+            await self.db_service.initialize()
+            self.logger.info("Database service initialized")
+        except Exception as e:
+            self.logger.error(f"Error in async service initialization: {str(e)}")
             raise
 
     def _start_async_initialization(self):

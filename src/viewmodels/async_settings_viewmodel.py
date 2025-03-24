@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, pyqtProperty, QVariant
 
 from src.services.storage import SettingsManager
-from src.services.async_api_service import AsyncApiService
+from src.services.api.async_api_service import AsyncApiService
 from src.utils.qasync_bridge import run_coroutine
 from src.utils.logging_utils import get_logger
 
