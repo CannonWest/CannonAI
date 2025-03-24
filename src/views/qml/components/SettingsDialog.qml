@@ -368,9 +368,9 @@ Dialog {
                             to: currentModelInfo.output_limit || 16384
                             stepSize: 256
                             value: currentSettings.max_output_tokens ||
-                                   currentSettings.max_tokens ||
-                                   currentSettings.max_completion_tokens ||
-                                   1024
+                                currentSettings.max_tokens ||
+                                currentSettings.max_completion_tokens ||
+                                1024
                             Layout.fillWidth: true
                         }
 
@@ -781,79 +781,101 @@ Dialog {
 
     // Initialize dialog with current settings
     function initialize(settings) {
-        currentSettings = settings || {}
+        currentSettings = settings || {};
 
         // Fetch model data from view model
-        mainModels = settingsViewModel.get_main_models()
-        modelSnapshots = settingsViewModel.get_model_snapshots()
-        reasoningEfforts = settingsViewModel.get_reasoning_efforts()
-        responseFormats = settingsViewModel.get_response_formats()
+        mainModels = settingsViewModel.get_main_models() || [];
+        modelSnapshots = settingsViewModel.get_model_snapshots() || [];
+        reasoningEfforts = settingsViewModel.get_reasoning_efforts() || ["low", "medium", "high"];
+        responseFormats = settingsViewModel.get_response_formats() || ["text", "json_object"];
 
-        // Set current model index
-        const currentModelId = currentSettings.model || "gpt-4o"
+        // Set current model index with defensive programming
+        const currentModelId = currentSettings.model || "gpt-4o";
+
+        // Set default values for controls
+        // This ensures controls have valid values even if data is missing
+        temperatureSlider.value = currentSettings.temperature !== undefined ? currentSettings.temperature : 0.7;
+        maxTokensSlider.value = currentSettings.max_output_tokens || currentSettings.max_tokens || 1024;
+        topPSlider.value = currentSettings.top_p !== undefined ? currentSettings.top_p : 1.0;
+        streamingSwitch.checked = currentSettings.stream !== undefined ? currentSettings.stream : true;
+        seedSpinBox.value = currentSettings.seed !== undefined ? currentSettings.seed : -1;
+
+        // Select appropriate response format
+        let formatIndex = 0; // default to "text"
+        if (currentSettings.text && currentSettings.text.format && currentSettings.text.format.type) {
+            formatIndex = responseFormats.indexOf(currentSettings.text.format.type);
+            if (formatIndex < 0) formatIndex = 0;
+        }
+        formatCombo.currentIndex = formatIndex;
 
         // Try to find the model in the main models
-        let foundInMain = false
+        let foundInMain = false;
         for (let i = 0; i < mainModels.length; i++) {
             if (mainModels[i].value === currentModelId) {
-                modelCombo.currentIndex = i
-                modelTabBar.currentIndex = 0
-                foundInMain = true
-                break
+                modelCombo.currentIndex = i;
+                modelTabBar.currentIndex = 0;
+                foundInMain = true;
+                break;
             }
         }
 
         // If not found in main models, try snapshots
-        if (!foundInMain) {
+        if (!foundInMain && modelSnapshots.length > 0) {
             for (let i = 0; i < modelSnapshots.length; i++) {
                 if (modelSnapshots[i].value === currentModelId) {
-                    snapshotCombo.currentIndex = i
-                    modelTabBar.currentIndex = 1
-                    break
+                    snapshotCombo.currentIndex = i;
+                    modelTabBar.currentIndex = 1;
+                    break;
                 }
             }
         }
 
         // Update model info for the current model
-        updateModelInfo(currentModelId)
+        updateModelInfo(currentModelId);
     }
 
     // Helper function to update model info display
     function updateModelInfo(modelId) {
         // Get model info from view model
-        currentModelInfo = settingsViewModel.get_model_info(modelId)
-        isCurrentModelReasoning = settingsViewModel.is_reasoning_model(modelId)
+        currentModelInfo = settingsViewModel.get_model_info(modelId) || {};
+        isCurrentModelReasoning = settingsViewModel.is_reasoning_model(modelId);
 
-        // Update info text
+        // Update info text with null checks
         if (currentModelInfo) {
-            const contextSize = currentModelInfo.context_size ? currentModelInfo.context_size.toLocaleString() : "Unknown"
-            const outputLimit = currentModelInfo.output_limit ? currentModelInfo.output_limit.toLocaleString() : "Unknown"
+            const contextSize = currentModelInfo.context_size ? currentModelInfo.context_size.toLocaleString() : "Unknown";
+            const outputLimit = currentModelInfo.output_limit ? currentModelInfo.output_limit.toLocaleString() : "Unknown";
 
-            modelInfoLabel.text = `Context window: ${contextSize} tokens | Max output: ${outputLimit} tokens`
+            modelInfoLabel.text = `Context window: ${contextSize} tokens | Max output: ${outputLimit} tokens`;
 
-            // Update max tokens slider range
+            // Update max tokens slider range with null check
             if (currentModelInfo.output_limit) {
-                maxTokensSlider.to = currentModelInfo.output_limit
+                maxTokensSlider.to = currentModelInfo.output_limit;
+            } else {
+                // Default fallback
+                maxTokensSlider.to = 16384;
             }
 
-            // Update pricing info
+            // Update pricing info with null checks
             if (currentModelInfo.pricing) {
-                const inputPrice = currentModelInfo.pricing.input ? currentModelInfo.pricing.input.toFixed(2) : "0.00"
-                const outputPrice = currentModelInfo.pricing.output ? currentModelInfo.pricing.output.toFixed(2) : "0.00"
+                const inputPrice = currentModelInfo.pricing.input ? currentModelInfo.pricing.input.toFixed(2) : "0.00";
+                const outputPrice = currentModelInfo.pricing.output ? currentModelInfo.pricing.output.toFixed(2) : "0.00";
 
-                pricingInfoLabel.text = `Pricing: Input: $${inputPrice} | Output: $${outputPrice} per 1M tokens`
+                pricingInfoLabel.text = `Pricing: Input: $${inputPrice} | Output: $${outputPrice} per 1M tokens`;
             } else {
-                pricingInfoLabel.text = "Pricing: No pricing information available"
+                pricingInfoLabel.text = "Pricing: No pricing information available";
             }
         } else {
-            modelInfoLabel.text = "No model information available"
-            pricingInfoLabel.text = "No pricing information available"
+            modelInfoLabel.text = "No model information available";
+            pricingInfoLabel.text = "No pricing information available";
+            // Set reasonable defaults
+            maxTokensSlider.to = 16384;
         }
     }
 
     // Connect UI elements to update model info when tab changes
     Connections {
         target: modelTabBar
+
         function onCurrentIndexChanged() {
             if (modelTabBar.currentIndex === 0 && modelCombo.currentIndex >= 0) {
                 updateModelInfo(mainModels[modelCombo.currentIndex].value)

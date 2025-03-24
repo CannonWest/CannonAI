@@ -104,83 +104,120 @@ ApplicationWindow {
         }
     }
 
-    // Handle async task events from Python
+    // Add connections to the asyncHelper
     Connections {
-        target: bridge
+        target: asyncHelper
 
         function onTaskStarted(taskId) {
             console.log("Async task started: " + taskId);
-            // You could show a loading indicator here
+
+            // Show loading indicators based on task type
+            if (taskId.startsWith("search_")) {
+                searchingIndicator.visible = true;
+            } else if (taskId.startsWith("load_")) {
+                // Show loading state for data loading
+                loadingIndicator.visible = true;
+            }
         }
 
-        // Add this connection to the Connections block for the bridge
         function onTaskFinished(taskId, result) {
-            console.log("Task finished: " + taskId)
+            console.log("Task finished: " + taskId);
 
-            // Check if this is a search task
+            // Handle different task types
             if (taskId.startsWith("search_")) {
-                searchingIndicator.visible = false
+                // Handle search results
+                searchingIndicator.visible = false;
+
+                // Clear previous results
+                searchResultsModel.clear();
 
                 // Populate results model
-                for (let i = 0; i < result.length; i++) {
-                    searchResultsModel.append(result[i])
+                if (result && result.length > 0) {
+                    for (let i = 0; i < result.length; i++) {
+                        searchResultsModel.append(result[i]);
+                    }
                 }
+            } else if (taskId.startsWith("load_conversations")) {
+                // Handle loaded conversations
+                loadingIndicator.visible = false;
+
+                // Update conversations model
+                updateConversationsModel(result);
+            } else if (taskId.startsWith("file_")) {
+                // Handle file processing results
+                updateFileInfo(result);
             }
         }
 
         function onTaskError(taskId, errorMessage) {
-            console.error("Task error: " + taskId + " - " + errorMessage)
+            console.error("Task error: " + taskId + " - " + errorMessage);
 
-            // Check if this is a search task
-            if (taskId.startsWith("search_")) {
-                searchingIndicator.visible = false
-                errorDialog.title = "Search Error"
-                errorDialog.message = errorMessage
-                errorDialog.open()
+            // Hide loading indicators
+            searchingIndicator.visible = false;
+            loadingIndicator.visible = false;
+
+            // Show error to user
+            errorDialog.title = "Error";
+            errorDialog.message = errorMessage;
+            errorDialog.open();
+        }
+
+        function onTaskProgress(taskId, progress) {
+            console.log("Task progress: " + taskId + " - " + progress + "%");
+
+            // Update progress indicators
+            if (taskId.startsWith("file_")) {
+                // Update file processing progress
+                updateFileProgress(taskId.split("_")[1], progress);
             }
         }
     }
 
-    // Example of calling an async method via the bridge
-    function callAsyncSearchExample() {
-        let searchTerm = "example";
-        let taskId = bridge.call_async_method(
-            "conversationViewModel",
-            "search_conversations",
-            [searchTerm]
-        );
-        console.log("Started search task: " + taskId);
-        // You'll get the result via the onTaskFinished handler above
-    }
-
-    // Example handler for search results
-    function handleSearchResults(results) {
-        if (results && results.length > 0) {
-            console.log("Found " + results.length + " search results");
-            // Process results
-        } else {
-            console.log("No search results found");
-        }
-    }
-
+    // Updated performSearch function to use asyncHelper
     function performSearch() {
-        const searchTerm = searchField.text.trim()
-        if (searchTerm === "") return
+        const searchTerm = searchField.text.trim();
+        if (searchTerm === "") return;
 
         // Clear previous results
-        searchResultsModel.clear()
+        searchResultsModel.clear();
 
-        // Show loading indicator
-        searchingIndicator.visible = true
+        // Call the async helper to run the search
+        asyncHelper.run_async_task(
+            "search",
+            "search_conversations",
+            [searchTerm, searchAllConversations ? null : currentConversationId]
+        );
+    }
 
-        // Call async search method that returns a task ID
-        const taskId = conversationViewModel.search_conversations_task(
-            searchTerm,
-            searchAllConversations ? null : currentConversationId
-        )
+    // Function to be called during initialization to load conversations
+    function loadAllConversations() {
+        // Use the async helper
+        asyncHelper.run_async_task(
+            "load_conversations",
+            "get_all_conversations",
+            []
+        );
+    }
 
-        console.log("Started search task: " + taskId)
-        // Results will be handled by the bridge task handlers
+    // Example of handling file uploads asynchronously
+    function handleFileSelected(fileUrl) {
+        // Extract filename
+        const fileName = fileUrl.toString().split('/').pop();
+
+        // Add to model with placeholder info
+        fileAttachmentsModel.append({
+            "fileName": fileName,
+            "filePath": fileUrl,
+            "fileSize": "Processing...",
+            "tokenCount": 0
+        });
+
+        // Start async processing
+        asyncHelper.run_async_task(
+            "file_" + fileName,
+            "process_file",
+            [fileUrl]
+        );
     }
 
     // Menu bar

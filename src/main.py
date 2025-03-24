@@ -14,6 +14,7 @@ from PyQt6.QtCore import QUrl, QObject, pyqtSlot, QTimer, QCoreApplication
 
 # Import logging utilities first to set up logging early
 from src.utils.logging_utils import configure_logging, get_logger
+from src.utils.qasync_utilities import setup_async_task_processor
 
 # Configure logging for the application
 configure_logging()
@@ -22,7 +23,7 @@ configure_logging()
 logger = get_logger(__name__)
 
 # Import utilities for async support
-from src.utils.qasync_bridge import install as install_qasync
+from src.utils.qasync_bridge import install as install_qasync, run_coroutine
 from src.utils.async_qml_bridge import AsyncQmlBridge
 
 # Import the fully async ViewModels
@@ -63,6 +64,10 @@ class AsyncApplication(QObject):
         # Initialize qasync with the QApplication instance
         # This is critical for proper async integration
         self.event_loop = install_qasync(self.app)
+
+        # Set up periodic task processor for event loop integration
+        self.task_processor_timer = setup_async_task_processor()
+
         self.logger.info("Initialized qasync event loop")
 
         # Initialize QML engine with proper setup
@@ -79,16 +84,6 @@ class AsyncApplication(QObject):
 
         # Set up cleanup handlers
         self._setup_cleanup_handlers()
-
-    def _global_exception_handler(self, exc_type, exc_value, exc_traceback):
-        """Global exception handler for uncaught exceptions"""
-        self.logger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
-        sys.__excepthook__(exc_type, exc_value, exc_traceback)
-
-    def _on_bridge_error(self, error_type: str, message: str):
-        """Handle errors from the QML bridge"""
-        self.logger.error(f"QML Bridge error ({error_type}): {message}")
-        # Could show an error dialog or other UI feedback here
 
     def _on_object_created(self, obj, url):
         """Handle QML object creation events with safer error handling"""
@@ -161,58 +156,22 @@ class AsyncApplication(QObject):
             self.logger.warning(f"Error loading .env file: {e}")
             # Continue with application startup even if .env loading fails
 
-    def initialize_services(self):
-        """Initialize application services with better error handling"""
+    def get_event_loop(self):
+        """Get the event loop, ensuring it exists and is running"""
         try:
-            # Use AsyncConversationService for database operations
-            self.db_service = AsyncConversationService()
-            self.logger.info("Initialized AsyncConversationService")
-
-            # Use AsyncApiService for API calls
-            self.api_service = AsyncApiService()
-            self.logger.info("Initialized AsyncApiService")
-
-            # Set API key from environment if available
-            api_key = os.environ.get("OPENAI_API_KEY", "")
-            if api_key:
-                self.api_service.set_api_key(api_key)
-                self.logger.info("Set API key from environment")
-
-            # Create an AsyncFileProcessor for handling file operations
-            self.file_processor = AsyncFileProcessor()
-            self.logger.info("Initialized AsyncFileProcessor")
-        except Exception as e:
-            self.logger.error(f"Error initializing services: {e}", exc_info=True)
-            raise
-
-    def initialize_viewmodels(self):
-        """Initialize and register ViewModels with improved error handling"""
-        try:
-            # Create FullAsyncConversationViewModel instead of AsyncConversationViewModel
-            self.conversation_vm = FullAsyncConversationViewModel()
-            self.settings_vm = AsyncSettingsViewModel()
-            self.logger.info("Created ViewModels")
-
-            # Initialize settings ViewModel with API service if needed
-            if hasattr(self.settings_vm, 'initialize'):
-                self.settings_vm.initialize(self.api_service)
-                self.logger.info("Initialized AsyncSettingsViewModel with AsyncApiService")
-
-            # Register ViewModels with QML
-            self.qml_bridge.register_context_property("conversationViewModel", self.conversation_vm)
-            self.qml_bridge.register_context_property("settingsViewModel", self.settings_vm)
-            self.logger.info("Registered ViewModels with QML")
-
-            # Register bridge for QML logging and error handling
-            self.qml_bridge.register_context_property("bridge", self.qml_bridge)
-            self.logger.info("Registered bridge with QML")
-
-            # Create and register list models if needed
-            # In a fully async application, you might not need separate list models
-            # as the view models can provide the data directly
-        except Exception as e:
-            self.logger.error(f"Error initializing ViewModels: {e}", exc_info=True)
-            raise
+            return asyncio.get_event_loop()
+        except RuntimeError:
+            # If we're here, we need to use the previously stored event loop
+            if hasattr(self, 'event_loop') and self.event_loop:
+                # Set it as the current thread's event loop
+                asyncio.set_event_loop(self.event_loop)
+                return self.event_loop
+            else:
+                # Last resort - create a new one (but this indicates a design issue)
+                self.logger.warning("Creating new event loop - this might indicate an architectural issue")
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                return loop
 
     def load_qml(self):
         """Load the main QML file with enhanced error handling"""
@@ -318,10 +277,6 @@ class AsyncApplication(QObject):
         # Use a small delay to ensure QML is fully loaded,
         # then start the async initialization
         QTimer.singleShot(100, self._start_async_initialization)
-
-    def _start_async_initialization(self):
-        """Start the async initialization process"""
-        asyncio.create_task(self._async_initialize_view_data())
 
     async def _async_initialize_view_data(self):
         """Asynchronously initialize view data"""
@@ -459,15 +414,6 @@ class AsyncApplication(QObject):
         # Connect to app's aboutToQuit signal
         self.app.aboutToQuit.connect(self._prepare_cleanup)
 
-    def _prepare_cleanup(self):
-        """Prepare for cleanup - run async cleanup in the event loop"""
-        # We need to run the async cleanup before the app quits
-        # We'll create a task and then run it in the event loop
-        cleanup_task = asyncio.create_task(self._async_cleanup())
-
-        # In a real app, you might want to wait for the cleanup to finish
-        # but for this example, we'll just let it run
-
     async def _async_cleanup(self):
         """Perform async cleanup operations before exiting"""
         try:
@@ -505,7 +451,93 @@ class AsyncApplication(QObject):
             self.logger.info("Async cleanup completed")
         except Exception as e:
             self.logger.error(f"Error during async cleanup: {e}", exc_info=True)
-            
+
+    def _global_exception_handler(self, exc_type, exc_value, exc_traceback):
+        """Global exception handler for uncaught exceptions"""
+        self.logger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+    def _on_bridge_error(self, error_type: str, message: str):
+        """Handle errors from the QML bridge"""
+        self.logger.error(f"QML Bridge error ({error_type}): {message}")
+        # Could show an error dialog or other UI feedback here
+
+    def initialize_services(self):
+        """Initialize application services with better error handling"""
+        try:
+            # Use AsyncConversationService for database operations
+            self.db_service = AsyncConversationService()
+            self.logger.info("Initialized AsyncConversationService")
+
+            # Use AsyncApiService for API calls
+            self.api_service = AsyncApiService()
+            self.logger.info("Initialized AsyncApiService")
+
+            # Set API key from environment if available
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+            if api_key:
+                self.api_service.set_api_key(api_key)
+                self.logger.info("Set API key from environment")
+
+            # Create an AsyncFileProcessor for handling file operations
+            self.file_processor = AsyncFileProcessor()
+            self.logger.info("Initialized AsyncFileProcessor")
+        except Exception as e:
+            self.logger.error(f"Error initializing services: {e}", exc_info=True)
+            raise
+
+    def initialize_viewmodels(self):
+        """Initialize and register ViewModels with improved error handling"""
+        try:
+            # Create FullAsyncConversationViewModel
+            self.conversation_vm = FullAsyncConversationViewModel()
+            self.settings_vm = AsyncSettingsViewModel()
+            self.logger.info("Created ViewModels")
+
+            # Initialize settings ViewModel with API service if needed
+            if hasattr(self.settings_vm, 'initialize'):
+                self.settings_vm.initialize(self.api_service)
+                self.logger.info("Initialized AsyncSettingsViewModel with AsyncApiService")
+
+            # Register ViewModels with QML
+            self.qml_bridge.register_context_property("conversationViewModel", self.conversation_vm)
+            self.qml_bridge.register_context_property("settingsViewModel", self.settings_vm)
+            self.logger.info("Registered ViewModels with QML")
+
+            # Register bridge for QML logging and error handling
+            self.qml_bridge.register_context_property("bridge", self.qml_bridge)
+            self.logger.info("Registered bridge with QML")
+
+            # Create QmlAsyncHelper for better QML-async integration
+            from src.utils.qml_async_helper import QmlAsyncHelper
+            self.qml_async_helper = QmlAsyncHelper()
+            self.qml_bridge.register_context_property("asyncHelper", self.qml_async_helper)
+            self.logger.info("Registered QmlAsyncHelper with QML")
+        except Exception as e:
+            self.logger.error(f"Error initializing ViewModels: {e}", exc_info=True)
+            raise
+
+    def _start_async_initialization(self):
+        """Start the async initialization process"""
+        # Use run_coroutine instead of asyncio.create_task()
+        run_coroutine(
+            self._async_initialize_view_data(),
+            callback=lambda result: self.logger.info("View data initialization completed"),
+            error_callback=lambda e: self.logger.error(f"Error initializing view data: {str(e)}")
+        )
+
+    def _prepare_cleanup(self):
+        """Prepare for cleanup - run async cleanup in the event loop"""
+        # Use run_coroutine instead of asyncio.create_task()
+        run_coroutine(
+            self._async_cleanup(),
+            callback=lambda _: self.logger.info("Async cleanup completed"),
+            error_callback=lambda e: self.logger.error(f"Error during cleanup: {str(e)}")
+        )
+
+        # Give some time for cleanup to complete before app exits
+        QTimer.singleShot(500, lambda: None)
+
     def run(self):
         """Run the application with enhanced error handling"""
         try:
