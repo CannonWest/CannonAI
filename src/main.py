@@ -282,7 +282,9 @@ class AsyncApplication(QObject):
         """Asynchronously initialize view data"""
         try:
             # Asynchronously load conversations
+            self.logger.debug("Starting to load conversations asynchronously")
             conversations = await self.db_service.get_all_conversations()
+            self.logger.debug(f"Loaded {len(conversations) if conversations else 0} conversations")
 
             if conversations:
                 # Convert conversations to list of dicts for the model
@@ -296,18 +298,29 @@ class AsyncApplication(QObject):
                     })
 
                 # Update model in QML by calling a method on the mainWindow
+                self.logger.debug("Updating QML conversation model")
                 self.qml_bridge.call_qml_method("mainWindow", "updateConversationsModel", conv_dicts)
                 self.logger.info(f"Loaded {len(conv_dicts)} conversations into model")
 
                 # Load the first conversation if available
                 if conv_dicts:
+                    self.logger.debug(f"Loading first conversation: {conv_dicts[0]['id']}")
+                    await asyncio.sleep(0.1)  # Small delay to ensure UI is ready
                     self.conversation_vm.load_conversation(conv_dicts[0]['id'])
             else:
                 # No conversations - create a new one
                 self.logger.info("No existing conversations found, creating new conversation")
+                await asyncio.sleep(0.1)  # Small delay to ensure UI is ready
                 self.conversation_vm.create_new_conversation("New Conversation")
+
+            return True  # Signal successful completion
         except Exception as e:
-            self.logger.error(f"Error initializing view data: {e}", exc_info=True)
+            # Comprehensive error logging
+            import traceback
+            self.logger.error(f"Error initializing view data: {str(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            # Re-raise to ensure error propagation
+            raise
 
     # File handling helper
     def _handle_file_request(self, file_url):
@@ -519,12 +532,19 @@ class AsyncApplication(QObject):
 
     def _start_async_initialization(self):
         """Start the async initialization process"""
-        # Use run_coroutine instead of asyncio.create_task()
-        run_coroutine(
-            self._async_initialize_view_data,
-            callback=lambda result: self.logger.info("View data initialization completed"),
-            error_callback=lambda e: self.logger.error(f"Error initializing view data: {str(e)}")
-        )
+        try:
+            # Make sure we're passing a coroutine object, not a coroutine function
+            # The missing parentheses were likely causing the issue
+            run_coroutine(
+                self._async_initialize_view_data(),  # Note the () to call the coroutine function
+                callback=lambda result: self.logger.info("View data initialization completed"),
+                error_callback=lambda e: self.logger.error(f"Error initializing view data: {str(e)}", exc_info=True)
+            )
+        except Exception as e:
+            # Improve error logging
+            import traceback
+            self.logger.error(f"Error starting async initialization: {str(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
 
     def _prepare_cleanup(self):
         """Prepare for cleanup - run async cleanup in the event loop"""

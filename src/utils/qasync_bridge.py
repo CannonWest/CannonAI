@@ -283,7 +283,6 @@ class RunCoroutineInQt(QObject):
     def __init__(self, coro, callback=None, error_callback=None):
         super().__init__()
         # Store the original coroutine or coroutine function
-        # The issue may be here if coro is a coroutine function instead of a coroutine object
         self.coro = coro
         self.callback = callback
         self.error_callback = error_callback
@@ -310,7 +309,7 @@ class RunCoroutineInQt(QObject):
                 actual_coro = self.coro
             else:
                 # Not a coroutine at all
-                raise TypeError("Expected a coroutine or coroutine function")
+                raise TypeError(f"Expected a coroutine or coroutine function, got {type(self.coro)}")
 
             # Schedule the coroutine to run right away
             if hasattr(self.loop, 'create_task') and callable(self.loop.create_task):
@@ -320,7 +319,7 @@ class RunCoroutineInQt(QObject):
                 # Run in the background with a QTimer
                 QTimer.singleShot(0, lambda: self._run_in_background(actual_coro))
         except Exception as e:
-            logger.error(f"Error starting coroutine: {e}")
+            logger.error(f"Error starting coroutine: {str(e)}", exc_info=True)
             if self.error_callback:
                 self.error_callback(e)
 
@@ -332,7 +331,10 @@ class RunCoroutineInQt(QObject):
                 self.callback(result)
             return result
         except Exception as e:
-            logger.error(f"Error in coroutine: {e}")
+            # Improve error logging with full traceback
+            import traceback
+            logger.error(f"Error in coroutine: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             if self.error_callback:
                 self.error_callback(e)
             raise
@@ -350,7 +352,10 @@ class RunCoroutineInQt(QObject):
                 if self.callback:
                     self.callback(result)
             except Exception as e:
-                logger.error(f"Error in background coroutine: {e}")
+                # Improve error logging with full traceback
+                import traceback
+                logger.error(f"Error in background coroutine: {str(e)}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
                 if self.error_callback:
                     self.error_callback(e)
         finally:

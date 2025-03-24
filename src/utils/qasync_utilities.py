@@ -216,7 +216,10 @@ def process_async_tasks():
         loop = asyncio.get_event_loop()
         loop.call_soon(lambda: None)  # This forces the event loop to process any pending callbacks
     except Exception as e:
+        # Improve error logging with full traceback
+        import traceback
         logger.error(f"Error processing async tasks: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
 
 
 # Utility function to make a method async-safe (can be called from both sync and async contexts)

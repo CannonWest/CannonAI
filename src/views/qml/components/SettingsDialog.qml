@@ -780,14 +780,34 @@ Dialog {
     }
 
     // Initialize dialog with current settings
+    // Add this to the initialize function in SettingsDialog.qml
     function initialize(settings) {
         currentSettings = settings || {};
 
+        // Defensive initialization of model properties
+        if (!currentModelInfo) {
+            currentModelInfo = {
+                context_size: 16384,
+                output_limit: 16384,
+                pricing: {
+                    input: 0.0,
+                    output: 0.0
+                }
+            };
+        }
+
         // Fetch model data from view model
-        mainModels = settingsViewModel.get_main_models() || [];
-        modelSnapshots = settingsViewModel.get_model_snapshots() || [];
-        reasoningEfforts = settingsViewModel.get_reasoning_efforts() || ["low", "medium", "high"];
-        responseFormats = settingsViewModel.get_response_formats() || ["text", "json_object"];
+        try {
+            mainModels = settingsViewModel.get_main_models() || [];
+            modelSnapshots = settingsViewModel.get_model_snapshots() || [];
+            reasoningEfforts = settingsViewModel.get_reasoning_efforts() || ["low", "medium", "high"];
+            responseFormats = settingsViewModel.get_response_formats() || ["text", "json_object"];
+        } catch (e) {
+            console.error("Error loading model data:", e);
+            // Use fallback values
+            mainModels = [];
+            modelSnapshots = [];
+        }
 
         // Set current model index with defensive programming
         const currentModelId = currentSettings.model || "gpt-4o";
@@ -816,15 +836,15 @@ Dialog {
         currentModelInfo = settingsViewModel.get_model_info(modelId) || {};
         isCurrentModelReasoning = settingsViewModel.is_reasoning_model(modelId);
 
-        // Update info text with null checks
+        // Improved model info update with proper null checks
         modelInfoLabel.text = `Context window: ${
                 currentModelInfo && currentModelInfo.context_size ?
             currentModelInfo.context_size.toLocaleString() : "Unknown"} tokens | Max output: ${
                 currentModelInfo && currentModelInfo.output_limit ?
             currentModelInfo.output_limit.toLocaleString() : "Unknown"} tokens`;
 
-        // Update max tokens slider range with null check
-        maxTokensSlider.to = (currentModelInfo && currentModelInfo.output_limit) ?
+        // Update max tokens slider range with proper null checks
+        maxTokensSlider.to = (currentModelInfo && typeof currentModelInfo.output_limit !== 'undefined') ?
             currentModelInfo.output_limit : 16384;  // Default fallback
 
         // Update pricing info with null checks
