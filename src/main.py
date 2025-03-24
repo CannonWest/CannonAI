@@ -521,7 +521,7 @@ class AsyncApplication(QObject):
         """Start the async initialization process"""
         # Use run_coroutine instead of asyncio.create_task()
         run_coroutine(
-            self._async_initialize_view_data(),
+            self._async_initialize_view_data,
             callback=lambda result: self.logger.info("View data initialization completed"),
             error_callback=lambda e: self.logger.error(f"Error initializing view data: {str(e)}")
         )

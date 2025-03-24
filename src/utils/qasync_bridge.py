@@ -277,14 +277,13 @@ def install(application=None):
     asyncio.set_event_loop_policy(policy)
     return policy.get_event_loop()
 
-
-# Utility functions to run coroutines from Qt code
-
 class RunCoroutineInQt(QObject):
     """Helper class to run a coroutine from Qt code"""
 
     def __init__(self, coro, callback=None, error_callback=None):
         super().__init__()
+        # Store the original coroutine or coroutine function
+        # The issue may be here if coro is a coroutine function instead of a coroutine object
         self.coro = coro
         self.callback = callback
         self.error_callback = error_callback
@@ -302,22 +301,33 @@ class RunCoroutineInQt(QObject):
                 self.loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(self.loop)
 
+            # Handle both coroutine functions and coroutine objects
+            if asyncio.iscoroutinefunction(self.coro):
+                # If it's a coroutine function, call it to get the coroutine object
+                actual_coro = self.coro()
+            elif asyncio.iscoroutine(self.coro):
+                # If it's already a coroutine object, use it directly
+                actual_coro = self.coro
+            else:
+                # Not a coroutine at all
+                raise TypeError("Expected a coroutine or coroutine function")
+
             # Schedule the coroutine to run right away
             if hasattr(self.loop, 'create_task') and callable(self.loop.create_task):
-                self.task = self.loop.create_task(self._wrapped_coro())
+                self.task = self.loop.create_task(self._wrapped_coro(actual_coro))
             else:
                 # Fallback for loops that don't implement create_task
                 # Run in the background with a QTimer
-                QTimer.singleShot(0, self._run_in_background)
+                QTimer.singleShot(0, lambda: self._run_in_background(actual_coro))
         except Exception as e:
             logger.error(f"Error starting coroutine: {e}")
             if self.error_callback:
                 self.error_callback(e)
 
-    async def _wrapped_coro(self):
+    async def _wrapped_coro(self, coro):
         """Wrapper around the coroutine to handle callbacks"""
         try:
-            result = await self.coro
+            result = await coro
             if self.callback:
                 self.callback(result)
             return result
@@ -327,7 +337,7 @@ class RunCoroutineInQt(QObject):
                 self.error_callback(e)
             raise
 
-    def _run_in_background(self):
+    def _run_in_background(self, coro):
         """Run the coroutine in the background using a temporary event loop"""
         try:
             # Create a new event loop for this background task
@@ -336,7 +346,7 @@ class RunCoroutineInQt(QObject):
 
             # Run the coroutine and get the result
             try:
-                result = loop.run_until_complete(self.coro)
+                result = loop.run_until_complete(coro)
                 if self.callback:
                     self.callback(result)
             except Exception as e:
@@ -348,32 +358,18 @@ class RunCoroutineInQt(QObject):
             loop.close()
 
 
-def run_coroutine(coro: Coroutine, callback: Callable[[Any], None] = None,
-                  error_callback: Callable[[Exception], None] = None) -> None:
+def run_coroutine(coro: Union[Coroutine, Callable[[], Coroutine]],
+                  callback: Optional[Callable[[Any], None]] = None,
+                  error_callback: Optional[Callable[[Exception], None]] = None) -> None:
     """
     Run a coroutine from Qt code
 
     Args:
-        coro: The coroutine to run
+        coro: The coroutine or coroutine function to run
         callback: Optional callback to call with the result
         error_callback: Optional callback to call if an error occurs
     """
-    # Check if we were passed a coroutine or a coroutine function
-    if not asyncio.iscoroutine(coro):
-        # If it's a coroutine function (async def), we need to call it first
-        if asyncio.iscoroutinefunction(coro):
-            try:
-                coro = coro()
-            except Exception as e:
-                if error_callback:
-                    error_callback(e)
-                return
-        else:
-            # Not a coroutine at all
-            if error_callback:
-                error_callback(ValueError("Expected a coroutine"))
-            return
-
+    # Create a runner and start it
     runner = RunCoroutineInQt(coro, callback, error_callback)
     runner.start()
     return runner

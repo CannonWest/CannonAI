@@ -793,45 +793,21 @@ Dialog {
         const currentModelId = currentSettings.model || "gpt-4o";
 
         // Set default values for controls
-        // This ensures controls have valid values even if data is missing
         temperatureSlider.value = currentSettings.temperature !== undefined ? currentSettings.temperature : 0.7;
         maxTokensSlider.value = currentSettings.max_output_tokens || currentSettings.max_tokens || 1024;
         topPSlider.value = currentSettings.top_p !== undefined ? currentSettings.top_p : 1.0;
         streamingSwitch.checked = currentSettings.stream !== undefined ? currentSettings.stream : true;
         seedSpinBox.value = currentSettings.seed !== undefined ? currentSettings.seed : -1;
 
-        // Select appropriate response format
-        let formatIndex = 0; // default to "text"
-        if (currentSettings.text && currentSettings.text.format && currentSettings.text.format.type) {
-            formatIndex = responseFormats.indexOf(currentSettings.text.format.type);
-            if (formatIndex < 0) formatIndex = 0;
+        // Update model info for the current model - prevent NaN errors with fallback
+        if (mainModels.length > 0 || modelSnapshots.length > 0) {
+            updateModelInfo(currentModelId);
+        } else {
+            // No models available yet, use fallback values
+            modelInfoLabel.text = "Context window: Unknown | Max output: Unknown";
+            pricingInfoLabel.text = "Pricing: No pricing information available";
+            maxTokensSlider.to = 16384;  // Default fallback
         }
-        formatCombo.currentIndex = formatIndex;
-
-        // Try to find the model in the main models
-        let foundInMain = false;
-        for (let i = 0; i < mainModels.length; i++) {
-            if (mainModels[i].value === currentModelId) {
-                modelCombo.currentIndex = i;
-                modelTabBar.currentIndex = 0;
-                foundInMain = true;
-                break;
-            }
-        }
-
-        // If not found in main models, try snapshots
-        if (!foundInMain && modelSnapshots.length > 0) {
-            for (let i = 0; i < modelSnapshots.length; i++) {
-                if (modelSnapshots[i].value === currentModelId) {
-                    snapshotCombo.currentIndex = i;
-                    modelTabBar.currentIndex = 1;
-                    break;
-                }
-            }
-        }
-
-        // Update model info for the current model
-        updateModelInfo(currentModelId);
     }
 
     // Helper function to update model info display
@@ -841,34 +817,26 @@ Dialog {
         isCurrentModelReasoning = settingsViewModel.is_reasoning_model(modelId);
 
         // Update info text with null checks
-        if (currentModelInfo) {
-            const contextSize = currentModelInfo.context_size ? currentModelInfo.context_size.toLocaleString() : "Unknown";
-            const outputLimit = currentModelInfo.output_limit ? currentModelInfo.output_limit.toLocaleString() : "Unknown";
+        modelInfoLabel.text = `Context window: ${
+                currentModelInfo && currentModelInfo.context_size ?
+            currentModelInfo.context_size.toLocaleString() : "Unknown"} tokens | Max output: ${
+                currentModelInfo && currentModelInfo.output_limit ?
+            currentModelInfo.output_limit.toLocaleString() : "Unknown"} tokens`;
 
-            modelInfoLabel.text = `Context window: ${contextSize} tokens | Max output: ${outputLimit} tokens`;
+        // Update max tokens slider range with null check
+        maxTokensSlider.to = (currentModelInfo && currentModelInfo.output_limit) ?
+            currentModelInfo.output_limit : 16384;  // Default fallback
 
-            // Update max tokens slider range with null check
-            if (currentModelInfo.output_limit) {
-                maxTokensSlider.to = currentModelInfo.output_limit;
-            } else {
-                // Default fallback
-                maxTokensSlider.to = 16384;
-            }
+        // Update pricing info with null checks
+        if (currentModelInfo && currentModelInfo.pricing) {
+            const inputPrice = currentModelInfo.pricing.input ?
+                currentModelInfo.pricing.input.toFixed(2) : "0.00";
+            const outputPrice = currentModelInfo.pricing.output ?
+                currentModelInfo.pricing.output.toFixed(2) : "0.00";
 
-            // Update pricing info with null checks
-            if (currentModelInfo.pricing) {
-                const inputPrice = currentModelInfo.pricing.input ? currentModelInfo.pricing.input.toFixed(2) : "0.00";
-                const outputPrice = currentModelInfo.pricing.output ? currentModelInfo.pricing.output.toFixed(2) : "0.00";
-
-                pricingInfoLabel.text = `Pricing: Input: $${inputPrice} | Output: $${outputPrice} per 1M tokens`;
-            } else {
-                pricingInfoLabel.text = "Pricing: No pricing information available";
-            }
+            pricingInfoLabel.text = `Pricing: Input: $${inputPrice} | Output: $${outputPrice} per 1M tokens`;
         } else {
-            modelInfoLabel.text = "No model information available";
-            pricingInfoLabel.text = "No pricing information available";
-            // Set reasonable defaults
-            maxTokensSlider.to = 16384;
+            pricingInfoLabel.text = "Pricing: No pricing information available";
         }
     }
 
