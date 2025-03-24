@@ -32,6 +32,32 @@ Dialog {
     contentItem: ColumnLayout {
         spacing: 16
 
+        Rectangle {
+                id: searchingIndicator
+                width: resultsList.width
+                height: 30
+                color: highlightColor
+                visible: false
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    spacing: 8
+
+                    BusyIndicator {
+                        width: 20
+                        height: 20
+                        running: searchingIndicator.visible
+                    }
+
+                    Text {
+                        text: "Searching..."
+                        color: foregroundColor
+                        Layout.fillWidth: true
+                    }
+                }
+            }
+
         // Search options
         RowLayout {
             Layout.fillWidth: true

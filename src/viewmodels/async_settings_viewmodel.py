@@ -4,7 +4,7 @@ Handles API key validation and manages setting values.
 """
 
 import asyncio
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, pyqtProperty, QVariant
 

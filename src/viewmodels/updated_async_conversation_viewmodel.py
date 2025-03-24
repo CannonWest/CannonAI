@@ -4,8 +4,12 @@ Uses pure asyncio without dependencies on the reactive model.
 """
 
 import asyncio
+import uuid
 from typing import List, Dict, Any, Optional, AsyncGenerator, Union
 from concurrent.futures import ThreadPoolExecutor
+
+import uuid
+from typing import List, Dict, Any
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
@@ -179,6 +183,67 @@ class FullAsyncConversationViewModel(QObject):
             self.logger.error(f"Error creating conversation: {str(e)}")
             self.errorOccurred.emit(f"Error creating conversation: {str(e)}")
             return None
+
+    @pyqtSlot(str, str, result=str)
+    def search_conversations_task(self, search_term, conversation_id=None):
+        """
+        Start an async search task and return a task ID for tracking
+
+        Args:
+            search_term: Text to search for
+            conversation_id: Optional conversation ID to limit search
+
+        Returns:
+            Task ID for tracking the search operation
+        """
+        if not search_term:
+            return ""
+
+        task_id = f"search_{uuid.uuid4()}"
+        self.logger.debug(f"Starting search task {task_id} for term: {search_term}")
+
+        # Use run_coroutine to handle the async operation
+        run_coroutine(
+            self._search_conversations_async(search_term, conversation_id),
+            callback=lambda results: self._handle_search_results(task_id, results),
+            error_callback=lambda e: self._handle_search_error(task_id, e)
+        )
+
+        return task_id
+
+    async def _search_conversations_async(self, search_term, conversation_id=None) -> List[Dict[str, Any]]:
+        """
+        Async implementation of search_conversations
+
+        Args:
+            search_term: Text to search for
+            conversation_id: Optional conversation ID to limit search
+
+        Returns:
+            List of matching message dictionaries
+        """
+        try:
+            self.logger.debug(f"Performing async search for: {search_term}")
+            return await self.conversation_service.search_conversations(search_term, conversation_id)
+        except Exception as e:
+            self.logger.error(f"Error searching conversations: {str(e)}")
+            raise
+
+    def _handle_search_results(self, task_id, results):
+        """Handle search results"""
+        self.logger.debug(f"Search task {task_id} completed with {len(results)} results")
+        # Emit result through QML bridge if available
+        if hasattr(self, 'qml_bridge') and self.qml_bridge:
+            self.qml_bridge.taskFinished.emit(task_id, results)
+
+    def _handle_search_error(self, task_id, error):
+        """Handle search error"""
+        error_msg = str(error)
+        self.logger.error(f"Search task {task_id} failed: {error_msg}")
+        self.errorOccurred.emit(f"Error searching conversations: {error_msg}")
+        # Emit error through QML bridge if available
+        if hasattr(self, 'qml_bridge') and self.qml_bridge:
+            self.qml_bridge.taskError.emit(task_id, error_msg)
 
     @pyqtSlot(str, str)
     def rename_conversation(self, conversation_id, new_name):

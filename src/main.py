@@ -471,26 +471,41 @@ class AsyncApplication(QObject):
     async def _async_cleanup(self):
         """Perform async cleanup operations before exiting"""
         try:
-            # Clean up AsyncQmlBridge (this will also clean up view models)
-            await self.qml_bridge.perform_async_cleanup()
+            # Import the async cleanup utilities
+            from src.utils.async_cleanup import cleanup_resources
 
-            # Close the API service connection if it has a close method
-            if hasattr(self.api_service, 'close'):
-                await self.api_service.close()
-                self.logger.info("Closed AsyncApiService connection")
+            # Create a list of all resources that need cleanup
+            resources = []
 
-            # Close the conversation service
-            if hasattr(self.conversation_vm, 'cleanup'):
-                self.conversation_vm.cleanup()
+            # Add the QML bridge
+            if hasattr(self, 'qml_bridge'):
+                resources.append(self.qml_bridge)
 
-            # Close the file processor
-            if hasattr(self.file_processor, 'close'):
-                self.file_processor.close()
+            # Add services
+            if hasattr(self, 'api_service'):
+                resources.append(self.api_service)
+
+            if hasattr(self, 'db_service'):
+                resources.append(self.db_service)
+
+            # Add view models
+            if hasattr(self, 'conversation_vm'):
+                resources.append(self.conversation_vm)
+
+            if hasattr(self, 'settings_vm'):
+                resources.append(self.settings_vm)
+
+            # Add file processor
+            if hasattr(self, 'file_processor'):
+                resources.append(self.file_processor)
+
+            # Clean up all resources with proper error handling
+            await cleanup_resources(resources)
 
             self.logger.info("Async cleanup completed")
         except Exception as e:
             self.logger.error(f"Error during async cleanup: {e}", exc_info=True)
-
+            
     def run(self):
         """Run the application with enhanced error handling"""
         try:
