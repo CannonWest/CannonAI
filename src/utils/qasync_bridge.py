@@ -26,9 +26,11 @@ except ImportError:
 # Local application imports
 try:
     from src.utils.logging_utils import get_logger
+
     logger = get_logger(__name__)
 except ImportError:
     import logging
+
     logger = logging.getLogger(__name__)
 
 # Global variables to track event loop state
@@ -66,6 +68,7 @@ def configure_event_loop_policy():
 
             class CustomEventLoopPolicy(asyncio.DefaultEventLoopPolicy):
                 """Custom event loop policy that uses SelectorEventLoop on Windows"""
+
                 def new_event_loop(self):
                     return asyncio.SelectorEventLoop()
 
@@ -168,10 +171,9 @@ def install(application=None):
                     _main_loop._process_events([])
 
             # Create and run a no-op coroutine to kickstart the loop
-            @asyncio.coroutine
-            def _init_coroutine():
-                # Use yield from rather than await for backward compatibility
-                yield from asyncio.sleep(0.001)
+            async def _init_coroutine():
+                # Modern async/await syntax instead of yield from
+                await asyncio.sleep(0.001)
                 return True
 
             try:
@@ -183,7 +185,6 @@ def install(application=None):
             except Exception as e:
                 logger.warning(f"Failed to run initialization coroutine: {e}")
                 # Even if there's an exception, we'll proceed
-
         # Set _loop_running flag to True once we've done what we can
         _loop_running = True
 
@@ -293,9 +294,8 @@ def _start_status_check(interval=1000):
                     _loop_running = True
 
                     # Run a simple task to try to kick-start the loop
-                    @asyncio.coroutine
-                    def _restart_coroutine():
-                        yield from asyncio.sleep(0.001)
+                    async def _restart_coroutine():
+                        await asyncio.sleep(0.001)
                         return True
 
                     try:
@@ -320,9 +320,8 @@ def _start_status_check(interval=1000):
                 # Create a restart task
                 if hasattr(_main_loop, 'run_until_complete'):
                     try:
-                        @asyncio.coroutine
-                        def _restart_check():
-                            yield from asyncio.sleep(0.001)
+                        async def _restart_check():
+                            await asyncio.sleep(0.001)
                             return True
 
                         _main_loop.run_until_complete(_restart_check())
@@ -521,6 +520,7 @@ class RunCoroutineInQt(QObject):
 
     def _windows_execute(self):
         """Special execution strategy for Windows or fallback cases"""
+
         def run_and_process():
             try:
                 # Get the event loop - should be already set up by ensure_qasync_loop
@@ -709,11 +709,10 @@ def run_sync(coro):
     # Windows-specific approach that bypasses the running loop check
     if platform.system() == "Windows":
         # This approach doesn't use create_task which requires running loop
-        @asyncio.coroutine
-        def _sync_wrapper():
+        async def _sync_wrapper():
             try:
-                # Use yield from for backward compatibility
-                result = yield from coro
+                # Use await instead of yield from
+                result = await coro
                 return result
             except Exception as e:
                 raise e
