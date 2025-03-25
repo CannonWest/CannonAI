@@ -7,9 +7,11 @@ import asyncio
 import traceback
 import functools
 import sys
+import time
 from typing import Any, Callable, Coroutine, Optional, Union, Type, Awaitable
 
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer, QCoreApplication
+from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer, QCoreApplication, QThread
+from PyQt6.QtWidgets import QApplication
 
 # Import qasync with better error handling
 try:
@@ -28,11 +30,12 @@ except ImportError:
 # Global reference to the main event loop
 _main_loop = None
 _loop_running = False  # Flag to track if the loop is properly running
-_install_complete = False # Flag to track if installation was completed
+_install_complete = False  # Flag to track if installation was completed
+_keep_alive_timer = None  # Reference to keep-alive timer to prevent garbage collection
 
 def install(application=None):
     """
-    Install the Qt event loop for asyncio with improved initialization
+    Install the Qt event loop for asyncio with robust initialization.
 
     This function properly integrates the asyncio event loop with the Qt event loop
     using qasync, ensuring they work together correctly.
@@ -43,56 +46,61 @@ def install(application=None):
     Returns:
         The installed qasync event loop
     """
-    global _main_loop, _loop_running, _install_complete
+    global _main_loop, _loop_running, _install_complete, _keep_alive_timer
 
     # Avoid multiple installations
     if _install_complete and _main_loop is not None:
         logger.debug(f"Using existing qasync event loop: {id(_main_loop)}")
+        ensure_loop_running()  # Make sure the loop is actually running
         return _main_loop
 
     try:
         # Use the application if provided, otherwise get the current one
-        app = application or QCoreApplication.instance()
+        app = application or QApplication.instance()
         if app is None:
             from PyQt6.QtWidgets import QApplication
             app = QApplication([])
             logger.debug("Created new QApplication instance")
 
-        # Create the qasync event loop
+        # Create the qasync event loop with specific settings
         _main_loop = qasync.QEventLoop(app)
+
+        # Explicitly set debug if in development
+        _main_loop.set_debug(True)
+
+        # Set as the default event loop for the current thread
         asyncio.set_event_loop(_main_loop)
         logger.debug(f"Installed qasync event loop: {id(_main_loop)}")
 
-        # CRITICAL: Make sure the loop is properly connected to the application
-        if hasattr(_main_loop, '_install_app_as_event_processor'):
-            _main_loop._install_app_as_event_processor()
-
-        # Set exception handler
+        # Set custom exception handler to improve error reporting
         _main_loop.set_exception_handler(_exception_handler)
 
-        # CRITICAL: Start the loop by scheduling and running a dummy task
-        # This ensures the internal loop state is properly set
-        dummy_future = asyncio.ensure_future(asyncio.sleep(0.01), loop=_main_loop)
+        # CRITICAL: Start the event loop properly
+        # We need to create and run a small task to initialize internal loop state
+        dummy_task = _main_loop.create_task(_dummy_coroutine())
 
-        # Process Qt events to ensure the loop gets a chance to run
+        # Process Qt events immediately to kickstart the loop
         app.processEvents()
 
-        # Set up a QTimer to ensure the event loop processes asyncio events
-        # This is critical for keeping the loop running
-        timer = QTimer()
-        timer.timeout.connect(lambda: None)  # Empty callback just to wake up the event loop
-        timer.start(16)  # ~60fps - good balance for responsive UI
+        # Set up a dedicated timer to keep the event loop active
+        # This is crucial for reliable event loop operation
+        _keep_alive_timer = QTimer()
+        _keep_alive_timer.setInterval(5)  # 5ms for responsiveness
+        _keep_alive_timer.timeout.connect(_process_all_events)
+        _keep_alive_timer.start()
 
-        # Set the timer as an attribute of the loop to prevent garbage collection
-        if not hasattr(_main_loop, '_keep_alive_timer'):
-            _main_loop._keep_alive_timer = timer
+        # Store the timer as an attribute of the loop AND globally to prevent garbage collection
+        _main_loop._keep_alive_timer = _keep_alive_timer
 
-        # Mark loop as running and installation as complete
+        # Mark as installed and running
         _loop_running = True
         _install_complete = True
 
-        # Add a hook to properly clean up the loop when the application quits
+        # Add a hook to properly clean up when the application quits
         app.aboutToQuit.connect(_cleanup_loop)
+
+        # Create a separate periodic check to ensure the loop stays running
+        _start_loop_status_check()
 
         logger.info(f"qasync event loop successfully installed and running: {id(_main_loop)}")
         return _main_loop
@@ -101,40 +109,105 @@ def install(application=None):
         logger.critical(traceback.format_exc())
         raise
 
+async def _dummy_coroutine():
+    """Dummy coroutine to help initialize the event loop"""
+    await asyncio.sleep(0)
+
+def _process_all_events():
+    """Process both Qt and asyncio events to keep the loop responsive"""
+    if _main_loop and hasattr(_main_loop, '_process_events'):
+        try:
+            # Process the Qt events in the asyncio loop
+            _main_loop._process_events([])
+
+            # Create a dummy task periodically to ensure the loop keeps running
+            if asyncio.get_event_loop_policy().get_event_loop() == _main_loop:
+                asyncio.ensure_future(_dummy_coroutine(), loop=_main_loop)
+        except Exception as e:
+            logger.warning(f"Error in event processing: {str(e)}")
+
+def _start_loop_status_check():
+    """Start a periodic check of event loop status"""
+    status_timer = QTimer()
+    status_timer.setInterval(1000)  # Check every second
+
+    def check_status():
+        """Check and fix event loop if needed"""
+        global _loop_running
+
+        if _main_loop is None:
+            return
+
+        try:
+            # Check if loop is running
+            running = _main_loop.is_running()
+            if not running and _loop_running:
+                logger.warning("Event loop marked as running but is not - attempting recovery")
+                ensure_loop_running()
+            elif not running:
+                logger.warning("Event loop not running - attempting to start")
+                ensure_loop_running()
+
+            _loop_running = running
+        except Exception as e:
+            logger.error(f"Error in loop status check: {str(e)}")
+
+    status_timer.timeout.connect(check_status)
+    status_timer.start()
+
+    # Store reference to prevent garbage collection
+    if _main_loop:
+        _main_loop._status_timer = status_timer
+
 def _cleanup_loop():
     """Clean up the event loop when the application is shutting down"""
-    global _main_loop, _loop_running
+    global _main_loop, _loop_running, _keep_alive_timer
 
     if _main_loop is not None:
         logger.debug(f"Cleaning up qasync event loop: {id(_main_loop)}")
-        if hasattr(_main_loop, '_keep_alive_timer'):
+
+        # Stop the keep-alive timer first
+        if _keep_alive_timer is not None:
             try:
-                _main_loop._keep_alive_timer.stop()
-                if hasattr(_main_loop._keep_alive_timer, 'deleteLater'):
-                    _main_loop._keep_alive_timer.deleteLater()
+                _keep_alive_timer.stop()
+                if hasattr(_keep_alive_timer, 'deleteLater'):
+                    _keep_alive_timer.deleteLater()
+                _keep_alive_timer = None
             except Exception as e:
                 logger.warning(f"Error stopping keep-alive timer: {str(e)}")
 
         try:
-            # Close the event loop if it's still open
-            if not _main_loop.is_closed():
-                pending_tasks = asyncio.all_tasks(loop=_main_loop)
-                if pending_tasks:
-                    logger.debug(f"Cancelling {len(pending_tasks)} pending tasks")
-                    for task in pending_tasks:
-                        task.cancel()
+            # Stop any other timers attached to the loop
+            for attr in dir(_main_loop):
+                if attr.endswith('_timer') and hasattr(_main_loop, attr):
+                    timer = getattr(_main_loop, attr)
+                    if hasattr(timer, 'stop'):
+                        timer.stop()
 
-                # Use a quick synchronous approach to shut down the loop
-                if hasattr(_main_loop, 'shutdown_asyncgens'):
+            # Cancel all pending tasks
+            pending_tasks = asyncio.all_tasks(loop=_main_loop)
+            if pending_tasks:
+                logger.debug(f"Cancelling {len(pending_tasks)} pending tasks")
+                for task in pending_tasks:
                     try:
-                        _main_loop.run_until_complete(_main_loop.shutdown_asyncgens())
-                    except (RuntimeError, asyncio.CancelledError):
+                        task.cancel()
+                    except:
                         pass
 
+            # Clean up asyncgens if needed
+            if not _main_loop.is_closed() and hasattr(_main_loop, 'shutdown_asyncgens'):
                 try:
-                    _main_loop.close()
+                    future = _main_loop.create_task(_main_loop.shutdown_asyncgens())
+                    _main_loop.run_until_complete(future)
                 except Exception as e:
-                    logger.warning(f"Error closing event loop: {str(e)}")
+                    logger.warning(f"Error in shutdown_asyncgens: {str(e)}")
+
+            # Close the loop
+            try:
+                if not _main_loop.is_closed():
+                    _main_loop.close()
+            except Exception as e:
+                logger.warning(f"Error closing event loop: {str(e)}")
         except Exception as e:
             logger.warning(f"Error during event loop cleanup: {str(e)}")
 
@@ -142,18 +215,34 @@ def _cleanup_loop():
         logger.debug("Event loop cleanup complete")
 
 def _exception_handler(loop, context):
-    """Custom exception handler for the event loop"""
+    """Custom exception handler for the event loop with improved diagnostics"""
     exception = context.get('exception')
     message = context.get('message', 'No error message')
+    future = context.get('future')
+    handle = context.get('handle')
 
+    # Detailed logging
     if exception:
         logger.error(f"Async error: {message}", exc_info=exception)
+
+        # Try to extract task information for better debugging
+        if future and hasattr(future, 'get_coro'):
+            try:
+                coro = future.get_coro()
+                logger.error(f"Occurred in coroutine: {coro.__qualname__}")
+            except:
+                pass
     else:
         logger.error(f"Async error: {message}")
 
+    # Don't swallow CancelledError during cleanup
+    if isinstance(exception, asyncio.CancelledError) and not loop.is_closed():
+        # This is likely fine during cleanup
+        logger.debug("Task cancelled")
+
 def get_event_loop():
     """
-    Get the main event loop, creating it if necessary
+    Get the main event loop, creating it if necessary and ensuring it's running.
 
     Returns:
         The qasync event loop
@@ -165,122 +254,124 @@ def get_event_loop():
         return _main_loop
 
     try:
-        # Get the current event loop
+        # Try to get the current event loop
         current_loop = asyncio.get_event_loop()
 
         # Check if it's already a QEventLoop
         if isinstance(current_loop, qasync.QEventLoop):
             _main_loop = current_loop
-            _loop_running = True
-            logger.debug(f"Using existing qasync loop: {id(_main_loop)}")
+
+            # Make sure it's actually running
+            ensure_loop_running()
             return current_loop
         else:
             # We have a non-QEventLoop
-            logger.warning(f"Found non-QEventLoop: {id(current_loop)}")
+            logger.warning(f"Found non-QEventLoop: {type(current_loop)}")
     except RuntimeError:
         # No event loop in this thread
         logger.warning("No event loop found, creating a new one.")
 
-    # Call install() to get a properly set up QEventLoop
+    # Create a new QEventLoop
     return install()
+
+def ensure_loop_running():
+    """
+    Ensure the event loop is actually running.
+
+    This is crucial as sometimes loops can be created but not running.
+    """
+    global _main_loop, _loop_running, _keep_alive_timer
+
+    if _main_loop is None:
+        # No loop yet, install one
+        logger.debug("No event loop exists, installing one")
+        install()
+        return _main_loop
+
+    # Check if the loop is running
+    try:
+        if hasattr(_main_loop, 'is_running') and _main_loop.is_running():
+            # Loop is already running
+            _loop_running = True
+            return _main_loop
+
+        # Loop exists but isn't running
+        logger.debug("Event loop exists but isn't running, attempting to start it")
+
+        # Make sure it's still the active loop for this thread
+        asyncio.set_event_loop(_main_loop)
+
+        # Create a dummy task to kickstart the loop
+        _main_loop.create_task(_dummy_coroutine())
+
+        # Process Qt events to give the loop a chance to run
+        app = QCoreApplication.instance()
+        if app:
+            app.processEvents()
+
+        # Restart the keep-alive timer if needed
+        if not _keep_alive_timer or not _keep_alive_timer.isActive():
+            if _keep_alive_timer:
+                _keep_alive_timer.stop()
+
+            _keep_alive_timer = QTimer()
+            _keep_alive_timer.setInterval(5)
+            _keep_alive_timer.timeout.connect(_process_all_events)
+            _keep_alive_timer.start()
+
+            # Store on the loop to prevent garbage collection
+            _main_loop._keep_alive_timer = _keep_alive_timer
+
+        # Mark as running
+        _loop_running = True
+
+        return _main_loop
+    except Exception as e:
+        logger.error(f"Error ensuring loop is running: {str(e)}")
+        return _main_loop
 
 def ensure_qasync_loop():
     """
     Ensure we're using the qasync event loop and return it.
-    This also ensures the loop is properly running.
+    Also ensures the loop is properly running.
 
     Returns:
         The qasync event loop
     """
-    global _main_loop, _loop_running
+    # Get or create the loop
+    loop = get_event_loop()
 
-    # First, try to get the running loop - this is the cleanest approach if it works
-    try:
-        current_loop = asyncio.get_running_loop()
-        # If we get here, there is a running loop
+    # Double-check that it's actually running
+    if _main_loop and not _main_loop.is_running():
+        ensure_loop_running()
 
-        # Check if it's a qasync loop
-        if isinstance(current_loop, qasync.QEventLoop):
-            if _main_loop is not None and current_loop is not _main_loop:
-                logger.warning(f"Running with different loop than expected: {id(current_loop)} vs main {id(_main_loop)}")
-            _main_loop = current_loop
-            _loop_running = True
-            return current_loop
-        else:
-            logger.warning(f"Current running loop is not a qasync.QEventLoop: {type(current_loop)}")
-            # Replace the loop with a qasync loop
-            return install()
-    except RuntimeError:
-        # No running loop, this is where we'll usually end up
-        pass
-
-    # Try to get the set event loop
-    try:
-        current_loop = asyncio.get_event_loop()
-        if isinstance(current_loop, qasync.QEventLoop):
-            _main_loop = current_loop
-
-            # CRITICAL FIX: If the loop exists but isn't running, start it now
-            if not _loop_running:
-                _start_loop_if_needed(current_loop)
-
-            return current_loop
-        else:
-            logger.warning(f"Current event loop is not a qasync.QEventLoop: {type(current_loop)}")
-            return install()
-    except RuntimeError:
-        # No event loop set
-        logger.warning("No event loop set")
-        pass
-
-    # If we get here, we need a new loop
-    logger.debug("Creating new qasync event loop")
-    return install()
-
-def _start_loop_if_needed(loop):
-    """Helper function to start the loop if it's not already running"""
-    global _loop_running
-
-    if not _loop_running or not loop.is_running():
-        try:
-            # CRITICAL: Make sure the loop is properly connected to the application
-            if hasattr(loop, '_install_app_as_event_processor'):
-                loop._install_app_as_event_processor()
-
-            # Start the loop in a way that works with qasync
-            dummy_task = asyncio.ensure_future(asyncio.sleep(0.01), loop=loop)
-
-            # Process Qt events to give the loop a chance to run
-            app = QCoreApplication.instance()
-            if app:
-                app.processEvents()
-
-            # Set up or restart the keep-alive timer
-            if not hasattr(loop, '_keep_alive_timer') or not loop._keep_alive_timer.isActive():
-                timer = QTimer()
-                timer.timeout.connect(lambda: None)  # Wake up event loop
-                timer.start(16)  # ~60fps
-                loop._keep_alive_timer = timer
-
-            _loop_running = True
-            logger.debug(f"Started event loop: {id(loop)}")
-        except Exception as e:
-            logger.error(f"Error starting loop: {str(e)}")
+    return loop
 
 class RunCoroutineInQt(QObject):
-    """Helper class to run a coroutine from Qt code"""
+    """
+    Enhanced helper class to run a coroutine from Qt code with improved reliability.
 
+    This class provides a safe way to run async code from sync code with:
+    - Robust error handling
+    - Timeouts
+    - Progress tracking
+    - Proper event loop integration
+    """
     # Define signals for communication
     taskCompleted = pyqtSignal(object)
     taskError = pyqtSignal(Exception)
+    taskProgress = pyqtSignal(int)
 
-    def __init__(self, coro, callback=None, error_callback=None):
+    def __init__(self, coro, callback=None, error_callback=None, timeout=None):
         super().__init__()
         self.coro = coro
         self.callback = callback
         self.error_callback = error_callback
         self.future = None
         self.task = None
+        self.timeout = timeout
+        self.timeout_timer = None
+        self.start_time = None
 
         # Connect signals to callbacks if provided
         if callback:
@@ -289,9 +380,9 @@ class RunCoroutineInQt(QObject):
             self.taskError.connect(lambda error: error_callback(error))
 
     def start(self):
-        """Start the coroutine using qasync"""
+        """Start the coroutine using qasync with improved reliability"""
         try:
-            # Always use a consistent event loop - CRITICAL: We ensure it's running
+            # Always use a consistent event loop
             loop = ensure_qasync_loop()
             logger.debug(f"Starting task with loop: {id(loop)}")
 
@@ -299,61 +390,118 @@ class RunCoroutineInQt(QObject):
             if not asyncio.iscoroutine(self.coro):
                 raise TypeError(f"Expected a coroutine, got {type(self.coro)}")
 
-            # CRITICAL FIX: Make sure the loop is in a valid state first
-            _start_loop_if_needed(loop)
+            # Record start time for monitoring
+            self.start_time = time.time()
 
-            # Use create_task directly when we know the loop is running
+            # Set up timeout if specified
+            if self.timeout:
+                self.timeout_timer = QTimer()
+                self.timeout_timer.setSingleShot(True)
+                self.timeout_timer.timeout.connect(self._on_timeout)
+                self.timeout_timer.start(int(self.timeout * 1000))
+
+            # Create the task with our safe execution wrapper
             self.task = loop.create_task(self._safe_execute())
+
+            # Ensure proper cleanup
+            self.task.add_done_callback(self._on_task_done)
+
             return self
         except Exception as e:
             logger.error(f"Error starting coroutine: {str(e)}", exc_info=True)
+
             if self.error_callback:
                 # Use a QTimer to ensure error callback runs on main thread
                 QTimer.singleShot(0, lambda: self.error_callback(e))
+
             return None
 
     def cancel(self):
-        """Cancel the running task"""
+        """Cancel the running task with proper cleanup"""
         if self.task and not self.task.done():
             self.task.cancel()
-            logger.debug("Task cancelled")
+            logger.debug("Task cancelled by request")
+
+        if self.timeout_timer and self.timeout_timer.isActive():
+            self.timeout_timer.stop()
+
+    def _on_timeout(self):
+        """Handle task timeout"""
+        if self.task and not self.task.done():
+            logger.warning(f"Task timed out after {self.timeout} seconds")
+
+            # Create a timeout error
+            error = TimeoutError(f"Task timed out after {self.timeout} seconds")
+
+            # Emit the error signal
+            self.taskError.emit(error)
+
+            # Cancel the task
+            self.task.cancel()
+
+    def _on_task_done(self, future):
+        """Handle task completion or failure"""
+        # Stop the timeout timer if active
+        if self.timeout_timer and self.timeout_timer.isActive():
+            self.timeout_timer.stop()
+
+        # Only process if we haven't already handled this via _safe_execute
+        if not future.cancelled():
+            try:
+                # This will re-raise exceptions if any occurred
+                future.result()
+            except asyncio.CancelledError:
+                logger.debug("Task was cancelled")
+            except Exception as e:
+                # Handle exception if _safe_execute didn't already do it
+                logger.error(f"Task error (from done callback): {str(e)}")
+                self.taskError.emit(e)
 
     async def _safe_execute(self):
-        """Safely execute the coroutine with exception handling"""
+        """Safely execute the coroutine with comprehensive exception handling"""
         try:
+            # Execute the actual coroutine
             result = await self.coro
-            # Emit signal on the main thread
+
+            # Calculate execution time for logging
+            execution_time = time.time() - self.start_time
+            logger.debug(f"Task completed in {execution_time:.3f} seconds")
+
+            # Emit signal on the main thread for the result
             self.taskCompleted.emit(result)
             return result
         except asyncio.CancelledError:
-            logger.debug("Task was cancelled")
+            logger.debug("Task was cancelled during execution")
+            # Let this propagate for proper cancellation
             raise
         except Exception as e:
             logger.error(f"Error executing coroutine: {str(e)}", exc_info=True)
-            # Emit signal on the main thread
-            self.taskError.emit(e)
-            raise
 
+            # Emit error signal on the main thread
+            self.taskError.emit(e)
+
+            # Re-raise to ensure the task is properly marked as failed
+            raise
 
 def run_coroutine(coro: Union[Coroutine, Callable[[], Coroutine]],
                   callback: Optional[Callable[[Any], None]] = None,
-                  error_callback: Optional[Callable[[Exception], None]] = None):
+                  error_callback: Optional[Callable[[Exception], None]] = None,
+                  timeout: Optional[float] = None):
     """
-    Run a coroutine from Qt code with proper event loop handling
+    Run a coroutine from Qt code with comprehensive error handling.
 
     This function is the central mechanism for running async code from sync code.
-    It correctly handles any coroutine to ensure it's executed in the qasync event loop.
+    It properly handles any coroutine to ensure it's executed in the qasync event loop.
 
     Args:
         coro: The coroutine or coroutine function to run
         callback: Optional callback to call with the result
         error_callback: Optional callback to call if an error occurs
+        timeout: Optional timeout in seconds
 
     Returns:
         A runner object that can be used to cancel the task
     """
-    global _loop_running
-
     # Get the coroutine object
     if callable(coro) and not asyncio.iscoroutine(coro):
         try:
@@ -375,22 +523,19 @@ def run_coroutine(coro: Union[Coroutine, Callable[[], Coroutine]],
         return None
 
     # Get a consistent event loop and ensure it's running
-    loop = ensure_qasync_loop()
-    logger.debug(f"Running coroutine with loop: {id(loop)}")
-
-    # CRITICAL: Force the loop to be in a running state
-    _start_loop_if_needed(loop)
+    ensure_qasync_loop()
 
     # Create a runner to manage the coroutine execution
-    runner = RunCoroutineInQt(actual_coro, callback, error_callback)
+    runner = RunCoroutineInQt(actual_coro, callback, error_callback, timeout)
     return runner.start()
 
-
-# Function to run async code synchronously (blocking) - should be used sparingly
 def run_sync(coro):
     """
     Run a coroutine synchronously (will block until complete)
     Only use this during application initialization or in tests.
+
+    This implementation ensures that Qt events continue to be processed
+    while waiting for the coroutine to complete.
 
     Args:
         coro: Coroutine to run
@@ -398,71 +543,91 @@ def run_sync(coro):
     Returns:
         Result of the coroutine
     """
-    # Try to use qasync first
-    try:
-        loop = ensure_qasync_loop()
-        if hasattr(loop, 'run_until_complete'):
-            app = QCoreApplication.instance()
+    # Always ensure we have a running loop
+    loop = ensure_qasync_loop()
+    app = QCoreApplication.instance()
 
-            # Define a helper to periodically process Qt events during the blocking wait
-            def process_events():
-                if app and not app.closingDown():
-                    app.processEvents()
-                    return True
-                return False
+    # Define a custom event processing future to avoid UI freezing
+    class EventProcessingFuture:
+        def __init__(self, coro):
+            self.coro = coro
+            self.result_value = None
+            self.exception = None
+            self.done = False
+            self.start_time = time.time()
 
-            # Create a special runner that processes Qt events while waiting
-            # This is crucial to avoid freezing the UI
-            class EventProcessingRunner:
-                def __init__(self, loop, coro):
-                    self.loop = loop
-                    self.coro = coro
-                    self.task = None
-                    self.result = None
-                    self.done = False
-                    self.exception = None
+        def _process_events(self):
+            """Process Qt events to keep UI responsive"""
+            if app and not app.closingDown():
+                app.processEvents()
+                return True
+            return False
 
-                def _on_task_done(self, task):
-                    try:
-                        self.result = task.result()
-                    except Exception as e:
-                        self.exception = e
+        async def _wrapped_coro(self):
+            """Wrapper around the original coroutine to handle results/exceptions"""
+            try:
+                self.result_value = await self.coro
+            except Exception as e:
+                self.exception = e
+            finally:
+                self.done = True
+
+        def get_result(self):
+            """Block until the coroutine completes, processing Qt events while waiting"""
+            # Create the task
+            if loop.is_running():
+                # If loop is already running, create the task
+                task = loop.create_task(self._wrapped_coro())
+            else:
+                # Loop wasn't running, so we need to start it
+                try:
+                    # Set the loop as the current thread's event loop
+                    asyncio.set_event_loop(loop)
+
+                    # Create and start a task for our wrapped coroutine
+                    task = asyncio.ensure_future(self._wrapped_coro(), loop=loop)
+                except Exception as e:
+                    logger.error(f"Error creating task in run_sync: {str(e)}")
+                    raise
+
+            # Process events while waiting for task completion
+            timeout_seconds = 60  # Safety timeout
+            interval_ms = 10  # Check interval
+            elapsed = 0
+
+            while not self.done and elapsed < timeout_seconds:
+                if not task.done():
+                    # Process Qt events while waiting
+                    self._process_events()
+
+                    # Let the loop run briefly
+                    if hasattr(loop, '_process_events'):
+                        loop._process_events([])
+
+                    # Sleep briefly to avoid hogging CPU
+                    time.sleep(interval_ms / 1000)
+                    elapsed += interval_ms / 1000
+                else:
+                    # Task completed, get result
                     self.done = True
+                    break
 
-                def run(self):
-                    # Create and start the task
-                    self.task = self.loop.create_task(self.coro)
-                    self.task.add_done_callback(self._on_task_done)
+            # Handle timeout
+            if not self.done:
+                task.cancel()
+                raise TimeoutError(f"Operation timed out after {timeout_seconds} seconds")
 
-                    # Process events while waiting for the task to complete
-                    timer = QTimer()
-                    timer.start(1)  # 1ms interval for responsive UI
+            # Check for exceptions
+            if self.exception:
+                raise self.exception
 
-                    while not self.done:
-                        process_events()
-                        if not timer.isActive():
-                            timer.start(1)
+            # Return the result
+            return self.result_value
 
-                    timer.stop()
-
-                    # If there was an exception, raise it
-                    if self.exception:
-                        raise self.exception
-
-                    return self.result
-
-            # Run the coroutine with event processing
-            runner = EventProcessingRunner(loop, coro)
-            return runner.run()
-
-    except Exception as e:
-        logger.warning(f"Error using qasync for run_sync: {str(e)}")
-
-    # Fall back to a new asyncio loop if necessary
-    logger.warning("Falling back to standard asyncio for run_sync")
-    temp_loop = asyncio.new_event_loop()
+    # Run the coroutine synchronously with Qt event processing
     try:
-        asyncio.set_event_loop(temp_loop)
-        return temp_loop.run_until_complete(coro)
-    finally:
-        temp_loop.close()
+        processor = EventProcessingFuture(coro)
+        return processor.get_result()
+    except Exception as e:
+        logger.error(f"Error in run_sync: {str(e)}")
+        raise
