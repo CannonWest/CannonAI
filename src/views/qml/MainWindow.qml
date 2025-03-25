@@ -42,6 +42,8 @@ ApplicationWindow {
 
     signal errorOccurred(string errorMessage)
 
+    signal cleanupRequested()
+
     function initializeApp() {
         try {
             // Try to get all conversations
@@ -218,6 +220,12 @@ ApplicationWindow {
             "process_file",
             [fileUrl]
         );
+    }
+
+    onClosing: function (close) {
+        console.log("Window closing event received")
+        // Emit a signal to Python to start cleanup
+        cleanupRequested()
     }
 
     // Menu bar

@@ -74,31 +74,38 @@ def ensure_qasync_loop():
 
     try:
         # First check if we have a running loop
-        current_loop = asyncio.get_running_loop()
-        # If it's running and it's not our main loop, we can't change it
-        # but we should warn about this situation
-        if _main_loop is not None and current_loop is not _main_loop:
-            logger.warning(f"Running in a different loop than expected: {id(current_loop)} vs main {id(_main_loop)}")
-        return current_loop
-    except RuntimeError:
-        # No running loop, check if we have a main loop
-        if _main_loop is not None:
-            # Set our main loop as the current thread's loop
-            asyncio.set_event_loop(_main_loop)
-            logger.debug(f"Set main loop as current: {id(_main_loop)}")
-            return _main_loop
-
-        # No main loop either, get or create one
         try:
-            loop = asyncio.get_event_loop()
-            logger.debug(f"Using thread's event loop: {id(loop)}")
-            return loop
+            current_loop = asyncio.get_running_loop()
+            # If it's running and it's not our main loop, we can't change it
+            # but we should warn about this situation
+            if _main_loop is not None and current_loop is not _main_loop:
+                logger.warning(f"Running in a different loop than expected: {id(current_loop)} vs main {id(_main_loop)}")
+            return current_loop
         except RuntimeError:
-            # No event loop in this thread, create a new one
-            logger.warning("Creating new event loop - this might indicate an architectural issue")
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            return loop
+            # No running loop, check if we have a main loop
+            if _main_loop is not None:
+                # Set our main loop as the current thread's loop
+                asyncio.set_event_loop(_main_loop)
+                logger.debug(f"Set main loop as current: {id(_main_loop)}")
+                return _main_loop
+
+            # No main loop either, get or create one
+            try:
+                loop = asyncio.get_event_loop()
+                logger.debug(f"Using thread's event loop: {id(loop)}")
+                return loop
+            except RuntimeError:
+                # No event loop in this thread, create a new one
+                logger.warning("Creating new event loop - this might indicate an architectural issue")
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                return loop
+    except Exception as e:
+        logger.error(f"Error in ensure_qasync_loop: {str(e)}")
+        # As a last resort, create a new loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
 
 
 def run_coroutine(coro: Union[Coroutine, Callable[[], Coroutine]],
@@ -193,21 +200,34 @@ class RunCoroutineInQt(QObject):
     async def _wrapped_coro(self, coro):
         """Wrapper around the coroutine to handle callbacks"""
         try:
-            # Double-check we're on the right loop
-            current_loop = asyncio.get_running_loop()
-            logger.debug(f"Task running in loop: {id(current_loop)}")
+            # Make sure we're using a valid event loop
+            loop = ensure_qasync_loop()
 
-            # Add a timeout to detect hanging tasks
             try:
-                # 30 second timeout for potentially long-running tasks
-                result = await asyncio.wait_for(coro, timeout=30.0)
-                logger.debug("Task completed successfully")
-                self.taskCompleted.emit(result)
-                return result
-            except asyncio.TimeoutError:
-                logger.error("Task timed out after 30 seconds")
-                self.taskError.emit(Exception("Task timed out after 30 seconds"))
-                return None
+                # Double-check we're on the right loop
+                logger.debug(f"Task running in loop: {id(loop)}")
+
+                # Add a timeout to detect hanging tasks
+                try:
+                    # 30 second timeout for potentially long-running tasks
+                    result = await asyncio.wait_for(coro, timeout=30.0)
+                    logger.debug("Task completed successfully")
+                    self.taskCompleted.emit(result)
+                    return result
+                except asyncio.TimeoutError:
+                    logger.error("Task timed out after 30 seconds")
+                    self.taskError.emit(Exception("Task timed out after 30 seconds"))
+                    return None
+            except RuntimeError as e:
+                if "no running event loop" in str(e):
+                    # This is a special case - we need to make sure the loop is running
+                    logger.warning("No running event loop detected, attempting to use existing loop")
+                    # Use run_until_complete as fallback
+                    result = loop.run_until_complete(coro)
+                    self.taskCompleted.emit(result)
+                    return result
+                else:
+                    raise  # Re-raise other RuntimeErrors
 
         except asyncio.CancelledError:
             # Task was cancelled, don't emit error
@@ -247,7 +267,7 @@ def run_sync(coro):
                 "Cannot use run_sync inside a running event loop. Use run_coroutine instead."
             )
     except RuntimeError:
-        # No running event loop, good to proceed
+        # No running loop, good to proceed
         pass
 
     # Use a synchronized future with timeout

@@ -211,7 +211,7 @@ class AsyncApplication(QObject):
         self.logger.info("Showing error window")
 
     def run(self):
-        """Run the application with enhanced error handling"""
+        """Run the application with enhanced error handling and proper shutdown support"""
         try:
             self.logger.info("Starting application main loop")
 
@@ -221,15 +221,57 @@ class AsyncApplication(QObject):
             self.startup_check_timer.setSingleShot(True)
             self.startup_check_timer.start(5000)  # Check after 5 seconds
 
-            # Use the event loop directly
+            # Create and start a QML bridge message processor timer
+            # This ensures QML messages are processed in the Qt event loop
+            self.message_processor_timer = QTimer()
+            self.message_processor_timer.timeout.connect(lambda: None)  # Just a dummy function to wake up the event loop
+            self.message_processor_timer.start(50)  # 50ms interval
+
+            # Use the event loop with exec() rather than run_forever
             self.logger.info(f"Running event loop {id(self.event_loop)}")
-            with self.event_loop:
-                return self.event_loop.run_forever()
+
+            # We need to make sure the loop is in 'running' state to avoid the 'no running event loop' errors
+            # This extra step helps ensure the event loop is properly recognized by asyncio.get_running_loop()
+            def ensure_loop_running():
+                from src.utils.qasync_bridge import ensure_qasync_loop
+                ensure_qasync_loop()  # Make sure the loop is set
+                # Schedule a dummy task to keep the loop alive
+                asyncio.ensure_future(asyncio.sleep(0.1), loop=self.event_loop)
+
+            # Call this right away and then periodically
+            ensure_loop_running()
+            ensure_timer = QTimer()
+            ensure_timer.timeout.connect(ensure_loop_running)
+            ensure_timer.start(500)  # Every 500ms
+
+            # Rather than self.event_loop.run_forever(),
+            # use app.exec() which will return when quit() is called
+            return self.app.exec()
 
         except Exception as e:
             self.logger.critical(f"Critical error running application: {e}", exc_info=True)
             traceback.print_exc()
             return 1
+
+    def _handle_event_loop_exception(self, loop, context):
+        """Handle exceptions in the event loop"""
+        exception = context.get('exception')
+        message = context.get('message', 'No error message')
+
+        if exception:
+            self.logger.critical(f"Event loop exception: {message}", exc_info=exception)
+        else:
+            self.logger.critical(f"Event loop error: {message}")
+
+        # In case of fatal errors, try to quit the application
+        if 'Fatal error' in message:
+            try:
+                self.app.quit()
+            except Exception as e:
+                self.logger.critical(f"Error during emergency quit: {e}")
+                # Force exit as last resort
+                import sys
+                sys.exit(1)
 
     def _check_startup(self):
         """Check if the main window was ever shown"""
@@ -238,9 +280,12 @@ class AsyncApplication(QObject):
             self._show_error_window("Application startup timed out")
 
     def _initialize_services(self):
-        """Initialize all services"""
+        """Initialize all services with improved event loop handling"""
         try:
             self.logger.info("Initializing services")
+
+            # Make sure the event loop is set as the current loop
+            asyncio.set_event_loop(self.event_loop)
 
             # Create API service
             self.api_service = AsyncApiService()
@@ -260,18 +305,40 @@ class AsyncApplication(QObject):
             self.file_processor = AsyncFileProcessor()
             self.logger.info("Initialized AsyncFileProcessor")
 
-            # Initialize database tables
-            # Use run_coroutine to ensure it happens with the correct event loop
-            run_coroutine(
-                self.db_service.initialize(),
-                callback=lambda success: self.logger.info("Database initialized successfully" if success else "Database initialization failed"),
-                error_callback=lambda e: self.logger.error(f"Error initializing database: {str(e)}")
-            )
+            # Initialize database tables - use a synchronous approach to avoid issues during startup
+            # This is safer than using run_coroutine during initialization
+            result = self._sync_initialize_database()
+            if result:
+                self.logger.info("Database initialized successfully")
+            else:
+                self.logger.error("Database initialization failed")
 
             self.logger.info("Services initialized")
         except Exception as e:
             self.logger.error(f"Error initializing services: {e}", exc_info=True)
             raise
+
+    def _sync_initialize_database(self):
+        """Initialize database in a synchronous way to avoid event loop issues during startup"""
+        try:
+            # Create a special-purpose event loop just for this initialization
+            init_loop = asyncio.new_event_loop()
+
+            # Set it as the current event loop temporarily
+            old_loop = asyncio.get_event_loop()
+            asyncio.set_event_loop(init_loop)
+
+            try:
+                # Run the initialization synchronously
+                result = init_loop.run_until_complete(self.db_service.initialize())
+                return result
+            finally:
+                # Clean up and restore the original event loop
+                init_loop.close()
+                asyncio.set_event_loop(old_loop)
+        except Exception as e:
+            self.logger.error(f"Error in synchronous database initialization: {str(e)}")
+            return False
 
     def _initialize_viewmodels(self):
         """Initialize and register ViewModels"""
@@ -580,11 +647,6 @@ class AsyncApplication(QObject):
         """Handle error from QML"""
         self.logger.error(f"Error from QML: {error_message}")
 
-    def _setup_cleanup_handlers(self):
-        """Set up cleanup handlers for application exit"""
-        # Connect to app's aboutToQuit signal
-        self.app.aboutToQuit.connect(self._prepare_cleanup)
-
     def _prepare_cleanup(self):
         """Prepare for cleanup - run async cleanup in the event loop"""
         run_coroutine(
@@ -596,24 +658,85 @@ class AsyncApplication(QObject):
         # Give some time for cleanup to complete before app exits
         QTimer.singleShot(500, lambda: None)
 
+    def _setup_cleanup_handlers(self):
+        """Set up cleanup handlers for application exit"""
+        # Connect to app's aboutToQuit signal
+        self.app.aboutToQuit.connect(self._prepare_cleanup)
+
+        # Connect to window's cleanupRequested signal
+        # This is crucial for handling the X button properly
+        if self.engine.rootObjects():
+            main_window = self.engine.rootObjects()[0]
+            main_window.cleanupRequested.connect(self._handle_window_close)
+
+    def _handle_window_close(self):
+        """Handle the window close event (X button)"""
+        self.logger.info("Window close event received, initiating cleanup")
+
+        # Run cleanup in a non-blocking way
+        run_coroutine(
+            self._async_cleanup(),
+            callback=lambda _: self._finish_application_exit(),
+            error_callback=lambda e: self._emergency_exit(str(e))
+        )
+
+    def _finish_application_exit(self):
+        """Finish the application exit after cleanup"""
+        self.logger.info("Cleanup completed, exiting application")
+        # This will trigger the aboutToQuit signal which runs _prepare_cleanup
+        # We'll need to add a guard to prevent duplicate cleanup
+        self.app.quit()
+
+    def _emergency_exit(self, error_msg):
+        """Handle emergency exit in case of cleanup failure"""
+        self.logger.error(f"Error during cleanup: {error_msg}, forcing exit")
+        self.app.exit(1)  # Exit with error code
+
     async def _async_cleanup(self):
         """Perform async cleanup operations before exiting"""
+        # Guard against duplicate cleanup
+        if hasattr(self, '_cleanup_in_progress') and self._cleanup_in_progress:
+            self.logger.info("Cleanup already in progress, skipping")
+            return
+
+        self._cleanup_in_progress = True
+
         try:
-            # Close database connections
-            if hasattr(self, 'db_service'):
-                await self.db_service.close()
+            self.logger.info("Starting async cleanup")
 
-            # Close API connections
-            if hasattr(self, 'api_service') and hasattr(self.api_service, 'close'):
-                await self.api_service.close()
+            # Add a timeout to ensure cleanup doesn't hang
+            async with asyncio.timeout(5.0):  # 5 second timeout for cleanup
+                # Close database connections
+                if hasattr(self, 'db_service'):
+                    self.logger.info("Closing database service")
+                    await self.db_service.close()
 
-            self.logger.info("Async cleanup completed")
+                # Close API connections
+                if hasattr(self, 'api_service') and hasattr(self.api_service, 'close'):
+                    self.logger.info("Closing API service")
+                    await self.api_service.close()
+
+                # Clean up conversation view model
+                if hasattr(self, 'conversation_vm') and hasattr(self.conversation_vm, 'cleanup'):
+                    self.logger.info("Cleaning up conversation view model")
+                    await self.conversation_vm.cleanup()
+
+                # Clean up QML bridge
+                if hasattr(self, 'qml_bridge') and hasattr(self.qml_bridge, 'perform_async_cleanup'):
+                    self.logger.info("Cleaning up QML bridge")
+                    await self.qml_bridge.perform_async_cleanup()
+
+            self.logger.info("Async cleanup completed successfully")
+        except asyncio.TimeoutError:
+            self.logger.error("Cleanup timed out, forcing exit")
         except Exception as e:
             self.logger.error(f"Error during async cleanup: {str(e)}")
-
+        finally:
+            self._cleanup_in_progress = False
 
 def main():
     """Main application entry point with comprehensive error handling"""
+    app_instance = None
     try:
         # Import qasync first to ensure it's available
         import qasync
@@ -628,7 +751,9 @@ def main():
         try:
             app_instance = AsyncApplication()
             logger.info("Application instance created, starting main loop")
-            return app_instance.run()
+            result = app_instance.run()
+            logger.info(f"Application exited with result: {result}")
+            return result
         except Exception as e:
             logger.critical(f"Error creating or running application: {e}", exc_info=True)
 
@@ -663,6 +788,26 @@ def main():
             pass
 
         return 1
+    finally:
+        # Ensure proper shutdown of any lingering resources
+        if app_instance:
+            try:
+                import asyncio
+                if hasattr(app_instance, '_async_cleanup') and callable(app_instance._async_cleanup):
+                    # Try to run cleanup synchronously as a last resort
+                    loop = asyncio.new_event_loop()
+                    try:
+                        loop.run_until_complete(app_instance._async_cleanup())
+                    except Exception as e:
+                        print(f"Error during emergency cleanup: {e}")
+                    finally:
+                        loop.close()
+            except Exception as e:
+                print(f"Error during final cleanup: {e}")
+
+        # Force Python garbage collection
+        import gc
+        gc.collect()
 
 
 if __name__ == "__main__":
