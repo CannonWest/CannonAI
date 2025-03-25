@@ -579,9 +579,43 @@ class AsyncApplication(QObject):
 def main():
     """Main application entry point with enhanced error handling"""
     try:
-        # Create and run the application
-        app = AsyncApplication()
-        return app.run()
+        # Import qasync first, before other imports
+        import qasync
+
+        # Standard imports
+        import sys
+        import os
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtQml import QQmlApplicationEngine
+
+        # Configure logging first to set up logging early
+        from src.utils.logging_utils import configure_logging, get_logger
+        configure_logging()
+        logger = get_logger(__name__)
+
+        # Create QApplication
+        app = QApplication(sys.argv)
+        app.setApplicationName("OpenAI Chat Interface")
+        app.setOrganizationName("OpenAI")
+        app.setOrganizationDomain("openai.com")
+
+        # Set up global exception handler
+        sys.excepthook = lambda exc_type, exc_value, exc_tb: (
+            logger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb)),
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+        )
+
+        # Initialize asyncio loop with qasync
+        loop = qasync.QEventLoop(app)
+        asyncio.set_event_loop(loop)
+
+        app_instance = AsyncApplication()
+
+        # Run the application with qasync
+        with loop:
+            # Exit with the result of app.exec() through loop.run_forever()
+            return loop.run_forever()
+
     except Exception as e:
         logger.critical(f"Application failed to start: {e}", exc_info=True)
         return 1
