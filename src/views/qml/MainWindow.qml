@@ -877,7 +877,7 @@ ApplicationWindow {
 
         contentItem: ColumnLayout {
             spacing: 16
-            width: parent.width
+            width: contentItem.implicitWidth + leftPadding + rightPadding
 
             Text {
                 text: "Enter new conversation name:"
@@ -920,7 +920,7 @@ ApplicationWindow {
 
         contentItem: ColumnLayout {
             spacing: 16
-            width: parent.width
+            width: contentItem.implicitWidth + leftPadding + rightPadding
 
             Text {
                 text: "OpenAI Chat Interface"

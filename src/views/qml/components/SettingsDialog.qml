@@ -365,7 +365,8 @@ Dialog {
                         Slider {
                             id: maxTokensSlider
                             from: 256
-                            to: currentModelInfo.output_limit || 16384
+                            to: (currentModelInfo && typeof currentModelInfo.output_limit !== 'undefined') ?
+                                currentModelInfo.output_limit : 16384
                             stepSize: 256
                             value: currentSettings.max_output_tokens ||
                                 currentSettings.max_tokens ||
