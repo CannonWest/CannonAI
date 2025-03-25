@@ -9,8 +9,7 @@ from typing import List, Dict, Any, Optional, AsyncGenerator, Union
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
-# Update this import to use the new services
-from src.services.database import AsyncConversationService  # New import
+from src.services.database import AsyncConversationService
 from src.services.api import AsyncApiService
 from src.utils.qasync_bridge import run_coroutine
 from src.utils.logging_utils import get_logger
@@ -22,7 +21,7 @@ class FullAsyncConversationViewModel(QObject):
     without reactive programming dependencies.
     """
 
-    # Signal definitions (these must match what QML expects)
+    # Signal definitions
     conversationLoaded = pyqtSignal(object)  # Emitted when a conversation is loaded
     messageAdded = pyqtSignal(object)  # Emitted when a message is added
     messageUpdated = pyqtSignal(object)  # Emitted when a message is updated
@@ -35,14 +34,15 @@ class FullAsyncConversationViewModel(QObject):
     reasoningStepsChanged = pyqtSignal(list)  # Emitted when reasoning steps are available
 
     def __init__(self):
+        """Initialize the ViewModel with async services"""
         super().__init__()
         self.logger = get_logger(__name__)
 
-        # Use the new async service
+        # Initialize services
         self.conversation_service = AsyncConversationService()
         self.api_service = AsyncApiService()
 
-        # State variables (pure Python, no reactive properties)
+        # State variables
         self._current_conversation_id = None
         self._current_branch = []
         self._is_loading = False
@@ -59,12 +59,7 @@ class FullAsyncConversationViewModel(QObject):
         self.api_service.metadataReceived.connect(self._on_metadata_received)
         self.api_service.errorOccurred.connect(self._on_error_occurred)
 
-        # Initialize the service asynchronously
-        from src.utils.qasync_bridge import run_coroutine, ensure_qasync_loop
-
-        # Make sure we're on the right loop before starting
-        ensure_qasync_loop()
-
+        # Initialize the services asynchronously
         run_coroutine(
             self.initialize(),
             callback=lambda _: self.logger.info("ViewModel initialized"),
@@ -73,6 +68,7 @@ class FullAsyncConversationViewModel(QObject):
 
         self.logger.info("FullAsyncConversationViewModel constructor completed")
 
+    # API event handlers
     def _on_request_started(self):
         """Handle API request started"""
         self._is_loading = True
@@ -86,10 +82,7 @@ class FullAsyncConversationViewModel(QObject):
 
     def _on_chunk_received(self, chunk):
         """Handle streaming chunk received"""
-        # Append to the buffer
         self._stream_buffer += chunk
-
-        # Emit the chunk directly for UI updates
         self.messageStreamChunk.emit(chunk)
 
     def _on_metadata_received(self, metadata):
@@ -109,6 +102,19 @@ class FullAsyncConversationViewModel(QObject):
         """Handle API error"""
         self.errorOccurred.emit(error_message)
 
+    # Initialization
+    async def initialize(self):
+        """Initialize services"""
+        if not self._initialized:
+            try:
+                await self.conversation_service.initialize()
+                self._initialized = True
+                self.logger.info("Services initialized")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize services: {str(e)}")
+                self.errorOccurred.emit(f"Failed to initialize services: {str(e)}")
+
+    # Conversation management methods
     @pyqtSlot(str)
     def load_conversation(self, conversation_id):
         """Load a conversation by ID (public slot)"""
@@ -117,10 +123,8 @@ class FullAsyncConversationViewModel(QObject):
 
         self._current_conversation_id = conversation_id
 
-        # Use run_coroutine to handle the async operation
         run_coroutine(
             self._load_conversation_async(conversation_id),
-            callback=lambda _: None,  # Signals are already emitted in the coroutine
             error_callback=lambda e: self.errorOccurred.emit(f"Error loading conversation: {str(e)}")
         )
 
@@ -178,71 +182,6 @@ class FullAsyncConversationViewModel(QObject):
             self.logger.error(f"Error creating conversation: {str(e)}")
             self.errorOccurred.emit(f"Error creating conversation: {str(e)}")
             return None
-
-    @pyqtSlot(str, str, result=str)
-    def search_conversations_task(self, search_term, conversation_id=None):
-        """
-        Start an async search task and return a task ID for tracking
-
-        Args:
-            search_term: Text to search for
-            conversation_id: Optional conversation ID to limit search
-
-        Returns:
-            Task ID for tracking the search operation
-        """
-        if not search_term:
-            return ""
-
-        task_id = f"search_{uuid.uuid4()}"
-        self.logger.debug(f"Starting search task {task_id} for term: {search_term}")
-
-        # Use run_coroutine to handle the async operation
-        run_coroutine(
-            self._search_conversations_async(search_term, conversation_id),
-            callback=lambda results: self._handle_search_results(task_id, results),
-            error_callback=lambda e: self._handle_search_error(task_id, e)
-        )
-
-        return task_id
-
-    async def _search_conversations_async(self, search_term, conversation_id=None) -> List[Dict[str, Any]]:
-        """
-        Async implementation of search_conversations
-
-        Args:
-            search_term: Text to search for
-            conversation_id: Optional conversation ID to limit search
-
-        Returns:
-            List of matching message dictionaries
-        """
-        try:
-            # Ensure initialized
-            if not self._initialized:
-                await self.initialize()
-
-            self.logger.debug(f"Performing async search for: {search_term}")
-            return await self.conversation_service.search_conversations(search_term, conversation_id)
-        except Exception as e:
-            self.logger.error(f"Error searching conversations: {str(e)}")
-            raise
-
-    def _handle_search_results(self, task_id, results):
-        """Handle search results"""
-        self.logger.debug(f"Search task {task_id} completed with {len(results)} results")
-        # Emit result through QML bridge if available
-        if hasattr(self, 'qml_bridge') and self.qml_bridge:
-            self.qml_bridge.taskFinished.emit(task_id, results)
-
-    def _handle_search_error(self, task_id, error):
-        """Handle search error"""
-        error_msg = str(error)
-        self.logger.error(f"Search task {task_id} failed: {error_msg}")
-        self.errorOccurred.emit(f"Error searching conversations: {error_msg}")
-        # Emit error through QML bridge if available
-        if hasattr(self, 'qml_bridge') and self.qml_bridge:
-            self.qml_bridge.taskError.emit(task_id, error_msg)
 
     @pyqtSlot(str, str)
     def rename_conversation(self, conversation_id, new_name):
@@ -507,6 +446,161 @@ class FullAsyncConversationViewModel(QObject):
             self.logger.error(f"Error retrying message: {str(e)}")
             self.errorOccurred.emit(f"Error retrying message: {str(e)}")
 
+    # Search methods
+    @pyqtSlot(str, str, result=list)
+    def search_conversations(self, search_term, conversation_id=None):
+        """Search for messages containing the search term"""
+        try:
+            if not search_term:
+                return []
+
+            # Execute search asynchronously but in a blocking way for QML
+            from qasync import QEventLoop
+            loop = asyncio.get_event_loop()
+            if not isinstance(loop, QEventLoop):
+                self.logger.warning("Not running in QEventLoop - search may be unstable")
+
+            future = asyncio.run_coroutine_threadsafe(
+                self._search_conversations_async(search_term, conversation_id),
+                loop
+            )
+
+            # Wait for result with timeout
+            try:
+                return future.result(timeout=10)
+            except asyncio.TimeoutError:
+                self.logger.error("Search timed out")
+                self.errorOccurred.emit("Search timed out")
+                return []
+
+        except Exception as e:
+            self.logger.error(f"Error executing search: {str(e)}")
+            self.errorOccurred.emit(f"Error searching conversations: {str(e)}")
+            return []
+
+    async def _search_conversations_async(self, search_term, conversation_id=None) -> List[Dict[str, Any]]:
+        """
+        Async implementation of search_conversations
+
+        Args:
+            search_term: Text to search for
+            conversation_id: Optional conversation ID to limit search
+
+        Returns:
+            List of matching message dictionaries
+        """
+        try:
+            # Ensure initialized
+            if not self._initialized:
+                await self.initialize()
+
+            self.logger.debug(f"Performing async search for: {search_term}")
+            return await self.conversation_service.search_conversations(search_term, conversation_id)
+        except Exception as e:
+            self.logger.error(f"Error searching conversations: {str(e)}")
+            raise
+
+    # Duplicate conversation
+    @pyqtSlot(str, str, result=str)
+    def duplicate_conversation(self, conversation_id: str, new_name: str = None) -> str:
+        """Duplicate a conversation, making it the active conversation"""
+        try:
+            from qasync import QEventLoop
+            loop = asyncio.get_event_loop()
+            if not isinstance(loop, QEventLoop):
+                self.logger.warning("Not running in QEventLoop - operation may be unstable")
+
+            future = asyncio.run_coroutine_threadsafe(
+                self._duplicate_conversation_async(conversation_id, new_name),
+                loop
+            )
+
+            # Wait for result with timeout
+            try:
+                return future.result(timeout=30) or ""
+            except asyncio.TimeoutError:
+                self.logger.error("Duplication timed out")
+                self.errorOccurred.emit("Duplication timed out")
+                return ""
+
+        except Exception as e:
+            self.logger.error(f"Error duplicating conversation: {str(e)}")
+            self.errorOccurred.emit(f"Error duplicating conversation: {str(e)}")
+            return ""
+
+    async def _duplicate_conversation_async(self, conversation_id: str, new_name: str = None) -> Optional[str]:
+        """Async implementation of duplicate_conversation"""
+        try:
+            # Ensure initialized
+            if not self._initialized:
+                await self.initialize()
+
+            new_conversation = await self.conversation_service.duplicate_conversation(conversation_id, new_name)
+
+            if new_conversation:
+                # Set the current conversation ID
+                self._current_conversation_id = new_conversation.id
+                # Load the conversation
+                await self._load_conversation_async(new_conversation.id)
+                return new_conversation.id
+            else:
+                self.errorOccurred.emit("Failed to duplicate conversation")
+                return None
+        except Exception as e:
+            self.logger.error(f"Error duplicating conversation: {str(e)}")
+            raise
+
+    # API methods used by QML
+    @pyqtSlot(result=list)
+    def get_all_conversations(self):
+        """Get all conversations for display in UI"""
+        try:
+            from qasync import QEventLoop
+            loop = asyncio.get_event_loop()
+            if not isinstance(loop, QEventLoop):
+                self.logger.warning("Not running in QEventLoop - operation may be unstable")
+
+            future = asyncio.run_coroutine_threadsafe(
+                self._get_all_conversations_async(),
+                loop
+            )
+
+            # Wait for result with timeout
+            try:
+                return future.result(timeout=10) or []
+            except asyncio.TimeoutError:
+                self.logger.error("Get all conversations timed out")
+                self.errorOccurred.emit("Get all conversations timed out")
+                return []
+
+        except Exception as e:
+            self.logger.error(f"Error getting all conversations: {str(e)}")
+            self.errorOccurred.emit(f"Error getting all conversations: {str(e)}")
+            return []
+
+    async def _get_all_conversations_async(self):
+        """Async implementation of get_all_conversations"""
+        try:
+            # Ensure initialized
+            if not self._initialized:
+                await self.initialize()
+
+            conversations = await self.conversation_service.get_all_conversations()
+
+            # Convert to list of dicts for QML
+            return [
+                {
+                    'id': conv.id,
+                    'name': conv.name,
+                    'created_at': conv.created_at.isoformat(),
+                    'modified_at': conv.modified_at.isoformat()
+                }
+                for conv in conversations
+            ]
+        except Exception as e:
+            self.logger.error(f"Error loading conversations: {str(e)}")
+            raise
+
     async def cleanup(self):
         """Clean up resources"""
         self.logger.debug("Cleaning up FullAsyncConversationViewModel resources")
@@ -516,107 +610,3 @@ class FullAsyncConversationViewModel(QObject):
             await self.conversation_service.close()
 
         self.logger.info("FullAsyncConversationViewModel resources cleaned up")
-
-
-    async def initialize(self):
-        """Initialize services"""
-        if not self._initialized:
-            try:
-                # Make sure we're on the right event loop
-                from src.utils.qasync_bridge import ensure_qasync_loop
-                ensure_qasync_loop()
-
-                # Initialize the conversation service
-                await self.conversation_service.initialize()
-                self._initialized = True
-                self.logger.info("Services initialized")
-            except Exception as e:
-                self.logger.error(f"Failed to initialize services: {str(e)}")
-                # Don't re-raise - allow the application to continue
-                # Just log and emit error
-                self.errorOccurred.emit(f"Failed to initialize services: {str(e)}")
-
-    # 3. Add the _run_sync helper method:
-    def _run_sync(self, coro):
-        """Run a coroutine synchronously and return the result"""
-        from src.utils.qasync_bridge import run_sync
-        try:
-            return run_sync(coro)
-        except Exception as e:
-            self.logger.error(f"Error in _run_sync: {str(e)}")
-            self.errorOccurred.emit(f"Error running async operation: {str(e)}")
-            return None
-
-    # 4. Update get_all_conversations method:
-    @pyqtSlot(result=list)
-    def get_all_conversations(self):
-        """Get all conversations for display in UI"""
-        try:
-            async def fetch_conversations():
-                # Ensure initialized
-                if not self._initialized:
-                    await self.initialize()
-
-                conversations = await self.conversation_service.get_all_conversations()
-
-                # Convert to list of dicts for QML
-                return [
-                    {
-                        'id': conv.id,
-                        'name': conv.name,
-                        'created_at': conv.created_at.isoformat(),
-                        'modified_at': conv.modified_at.isoformat()
-                    }
-                    for conv in conversations
-                ]
-
-            # Use our helper to run the async function synchronously
-            return self._run_sync(fetch_conversations()) or []
-        except Exception as e:
-            self.logger.error(f"Error loading conversations: {str(e)}")
-            self.errorOccurred.emit(f"Error loading conversations: {str(e)}")
-            return []
-
-    # 5. Update search_conversations method:
-    @pyqtSlot(str, str, result=list)
-    def search_conversations(self, search_term, conversation_id=None):
-        """Search for messages containing the search term"""
-        try:
-            async def perform_search():
-                if not self._initialized:
-                    await self.initialize()
-                return await self.conversation_service.search_conversations(search_term, conversation_id)
-
-            return self._run_sync(perform_search()) or []
-        except Exception as e:
-            self.logger.error(f"Error searching conversations: {str(e)}")
-            self.errorOccurred.emit(f"Error searching conversations: {str(e)}")
-            return []
-
-    # 6. Update duplicate_conversation method:
-    @pyqtSlot(str, str, result=str)
-    def duplicate_conversation(self, conversation_id: str, new_name: str = None) -> str:
-        """Duplicate a conversation, making it the active conversation"""
-        try:
-            async def perform_duplication():
-                if not self._initialized:
-                    await self.initialize()
-
-                new_conversation = await self.conversation_service.duplicate_conversation(conversation_id, new_name)
-
-                if new_conversation:
-                    # Set the current conversation ID
-                    self._current_conversation_id = new_conversation.id
-                    # Load the conversation (this won't block since we're in an async context)
-                    await self._load_conversation_async(new_conversation.id)
-                    return new_conversation.id
-                else:
-                    self.errorOccurred.emit(f"Failed to duplicate conversation")
-                    return None
-
-            result = self._run_sync(perform_duplication())
-            return result or None
-        except Exception as e:
-            self.logger.error(f"Error duplicating conversation: {str(e)}")
-            self.errorOccurred.emit(f"Error duplicating conversation: {str(e)}")
-            return None

@@ -2,7 +2,7 @@
 Fully asynchronous conversation service using SQLAlchemy 2.0 with asyncio support.
 Replaces the previous AsyncConversationService that used thread pools.
 """
-
+import traceback
 from typing import Dict, List, Any, Optional, Union, Tuple
 from datetime import datetime
 import uuid
@@ -209,7 +209,7 @@ class AsyncConversationService:
 
     async def delete_conversation(self, id: str) -> bool:
         """
-        Delete a conversation
+        Delete a conversation with improved handling for circular dependencies
 
         Args:
             id: Conversation ID
@@ -218,33 +218,39 @@ class AsyncConversationService:
             True if successful, False otherwise
         """
         self.logger.debug(f"Deleting conversation: {id}")
-        
+
         # Ensure the service is initialized
         if not self._initialized:
             await self.initialize()
-        
+
         async with self.db_manager.get_session() as session:
             try:
-                # Get the conversation
+                # First, clear the current_node_id reference to break circular dependency
                 query = select(Conversation).where(Conversation.id == id)
                 result = await session.execute(query)
-                c = result.scalars().first()
-                
-                if not c:
+                conversation = result.scalars().first()
+
+                if not conversation:
                     self.logger.warning(f"Conversation {id} not found for deletion")
                     return False
-                
-                # Delete the conversation
-                await session.delete(c)
-                
+
+                # Important: Clear the current_node_id reference first
+                conversation.current_node_id = None
+                await session.flush()
+
+                # Now delete the conversation (cascade will handle messages)
+                await session.delete(conversation)
+
                 # Commit changes
                 await session.commit()
-                
+
                 self.logger.info(f"Deleted conversation {id}")
                 return True
             except Exception as e:
                 await session.rollback()
                 self.logger.error(f"Error deleting conversation {id}: {str(e)}")
+                self.logger.error(f"Exception details: {e.__class__.__name__}")
+                self.logger.error(traceback.format_exc())
                 return False
 
     async def duplicate_conversation(self, conversation_id: str, new_name: Optional[str] = None) -> Optional[Conversation]:

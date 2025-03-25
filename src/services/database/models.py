@@ -1,5 +1,6 @@
 """
 SQLAlchemy 2.0 compatible ORM models for async database operations.
+With fixed circular dependency between Conversation and Message models.
 """
 
 from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Boolean, JSON
@@ -19,13 +20,25 @@ class Conversation(Base):
     name = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     modified_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    current_node_id = Column(String, ForeignKey('messages.id'))
+    current_node_id = Column(String, ForeignKey('messages.id', ondelete="SET NULL"), nullable=True)
     system_message = Column(Text, nullable=False, default="You are a helpful assistant.")
 
-    messages = relationship("Message", back_populates="conversation",
-                            cascade="all, delete-orphan",
-                            foreign_keys="Message.conversation_id")
-    current_node = relationship("Message", foreign_keys=[current_node_id])
+    # Modified relationship to avoid circular dependency during deletion
+    messages = relationship(
+        "Message",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        foreign_keys="Message.conversation_id",
+        passive_deletes=True
+    )
+
+    # Modified to use overlaps=False to prevent circular dependency during deletion
+    current_node = relationship(
+        "Message",
+        foreign_keys=[current_node_id],
+        post_update=True,  # Important! Use post_update to break the circular dependency
+        overlaps="messages"  # Tell SQLAlchemy this relationship overlaps with messages
+    )
 
     def __init__(self, name="New Conversation", system_message="You are a helpful assistant.", **kwargs):
         self.id = str(uuid.uuid4())
@@ -44,29 +57,42 @@ class Message(Base):
     __tablename__ = 'messages'
 
     id = Column(String, primary_key=True)
-    conversation_id = Column(String, ForeignKey('conversations.id'), nullable=False)
-    parent_id = Column(String, ForeignKey('messages.id'))
+    conversation_id = Column(String, ForeignKey('conversations.id', ondelete="CASCADE"), nullable=False)
+    parent_id = Column(String, ForeignKey('messages.id', ondelete="SET NULL"), nullable=True)
     role = Column(String, nullable=False)
     content = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow)
-    response_id = Column(String)
+    response_id = Column(String, nullable=True)
 
-    conversation = relationship("Conversation", back_populates="messages",
-                                foreign_keys=[conversation_id])
-    children = relationship("Message",
-                            backref="parent",
-                            remote_side=[id],
-                            cascade="all, delete-orphan",
-                            single_parent=True)
+    # Modified relationship with conversation to work with deletion
+    conversation = relationship(
+        "Conversation",
+        back_populates="messages",
+        foreign_keys=[conversation_id]
+    )
+
+    # Self-referential relationship for message threading
+    children = relationship(
+        "Message",
+        backref="parent",
+        remote_side=[id],
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        single_parent=True
+    )
 
     # Store JSON-serializable metadata
-    model_info = Column(JSON)
-    parameters = Column(JSON)
-    token_usage = Column(JSON)
-    reasoning_steps = Column(JSON)
+    model_info = Column(JSON, nullable=True)
+    parameters = Column(JSON, nullable=True)
+    token_usage = Column(JSON, nullable=True)
+    reasoning_steps = Column(JSON, nullable=True)
 
-    file_attachments = relationship("FileAttachment", back_populates="message",
-                                    cascade="all, delete-orphan")
+    file_attachments = relationship(
+        "FileAttachment",
+        back_populates="message",
+        cascade="all, delete-orphan",
+        passive_deletes=True
+    )
 
     def __init__(self, role, content, conversation_id=None, parent_id=None, **kwargs):
         self.id = str(uuid.uuid4())
@@ -85,17 +111,17 @@ class FileAttachment(Base):
     __tablename__ = 'file_attachments'
 
     id = Column(String, primary_key=True)
-    message_id = Column(String, ForeignKey('messages.id'), nullable=False)
+    message_id = Column(String, ForeignKey('messages.id', ondelete="CASCADE"), nullable=False)
     file_name = Column(String, nullable=False)
-    display_name = Column(String)
+    display_name = Column(String, nullable=True)
     mime_type = Column(String, nullable=False, default='text/plain')
     token_count = Column(Integer, default=0)
     file_size = Column(Integer, default=0)
-    file_hash = Column(String)
+    file_hash = Column(String, nullable=True)
     storage_type = Column(String, default='database')
-    content_preview = Column(Text)
-    storage_path = Column(String)
-    content = Column(Text)
+    content_preview = Column(Text, nullable=True)
+    storage_path = Column(String, nullable=True)
+    content = Column(Text, nullable=True)
 
     message = relationship("Message", back_populates="file_attachments")
 
