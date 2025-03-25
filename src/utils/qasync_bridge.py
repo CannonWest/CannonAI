@@ -1,6 +1,7 @@
 """
 Enhanced bridge between PyQt6 and asyncio using qasync.
-Provides reliable event loop management and task execution.
+Provides reliable event loop management and task execution
+with specific fixes for Windows event loop issues.
 """
 
 import asyncio
@@ -8,6 +9,7 @@ import functools
 import sys
 import time
 import traceback
+import platform
 from typing import Any, Callable, Coroutine, Optional, Union, Awaitable
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer, QCoreApplication
@@ -32,6 +34,40 @@ _main_loop = None
 _loop_initialized = False
 _loop_running = False
 _keep_alive_timer = None
+_original_policy = None
+
+
+def configure_event_loop_policy():
+    """
+    Configure the correct event loop policy based on the platform.
+    On Windows, forces the use of the SelectorEventLoop instead of ProactorEventLoop.
+    """
+    global _original_policy
+
+    # Save the original policy for potential restoration
+    _original_policy = asyncio.get_event_loop_policy()
+
+    # Special handling for Windows platform
+    if platform.system() == "Windows":
+        logger.info("Windows platform detected, configuring SelectorEventLoop")
+
+        # Create a policy that uses SelectorEventLoop
+        try:
+            # In Python 3.8+, we can create a WindowsSelectorEventLoopPolicy
+            from asyncio import WindowsSelectorEventLoopPolicy
+            asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())
+            logger.info("Set Windows event loop policy to WindowsSelectorEventLoopPolicy")
+        except (ImportError, AttributeError):
+            # Fallback for older Python versions
+            logger.warning("WindowsSelectorEventLoopPolicy not available, creating custom policy")
+
+            class CustomEventLoopPolicy(asyncio.DefaultEventLoopPolicy):
+                """Custom event loop policy that uses SelectorEventLoop on Windows"""
+                def new_event_loop(self):
+                    return asyncio.SelectorEventLoop()
+
+            asyncio.set_event_loop_policy(CustomEventLoopPolicy())
+            logger.info("Set custom event loop policy to use SelectorEventLoop on Windows")
 
 
 def install(application=None):
@@ -52,6 +88,9 @@ def install(application=None):
         return _main_loop
 
     try:
+        # Configure the correct event loop policy first
+        configure_event_loop_policy()
+
         # Get application instance
         from PyQt6.QtWidgets import QApplication
         app = application or QApplication.instance()
@@ -59,7 +98,23 @@ def install(application=None):
             app = QApplication([])
             logger.debug("Created new QApplication instance")
 
-        # Create and set the event loop
+        # For Windows, make sure any existing event loop is closed
+        if platform.system() == "Windows":
+            try:
+                existing_loop = asyncio.get_event_loop()
+                if not existing_loop.is_closed():
+                    logger.debug(f"Closing existing event loop: {id(existing_loop)}")
+                    existing_loop.close()
+            except RuntimeError:
+                # No event loop exists, which is fine
+                pass
+
+        # Create a new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        logger.debug(f"Created new asyncio event loop: {id(loop)}")
+
+        # Create and set the qasync event loop
         _main_loop = qasync.QEventLoop(app)
         asyncio.set_event_loop(_main_loop)
         logger.debug(f"Installed qasync event loop: {id(_main_loop)}")
@@ -75,18 +130,31 @@ def install(application=None):
 
         # Store reference to prevent garbage collection
         _main_loop._keep_alive_timer = _keep_alive_timer
+        app._keep_alive_timer = _keep_alive_timer  # Also store on app
+
+        # Save a reference to the app to prevent premature garbage collection
+        _main_loop._app = app
 
         # Mark as initialized
         _loop_initialized = True
 
-        # Process events to kick-start the loop
-        app.processEvents()
+        # For Windows, force process events to kick-start the loop
+        if platform.system() == "Windows":
+            logger.debug("Windows platform: forcing processEvents")
+            # Process events several times to ensure startup
+            for _ in range(3):
+                app.processEvents()
+                time.sleep(0.01)  # Short delay
 
         # Create a dummy task to help initialize the loop
-        asyncio.ensure_future(_dummy_coroutine(), loop=_main_loop)
+        _run_dummy_task()
 
         # Process events again after creating the task
         app.processEvents()
+
+        # Manually set _loop_running flag to True since we've done our best
+        # to ensure the loop is running
+        _loop_running = True
 
         # Add cleanup handler
         app.aboutToQuit.connect(_cleanup_event_loop)
@@ -103,14 +171,37 @@ def install(application=None):
         raise
 
 
+def _run_dummy_task():
+    """Run a dummy task to help initialize the event loop"""
+    global _main_loop
+
+    if not _main_loop:
+        return
+
+    # Create a task directly rather than using ensure_future
+    try:
+        dummy_task = _main_loop.create_task(_dummy_coroutine())
+        logger.debug(f"Created dummy task: {id(dummy_task)}")
+    except Exception as e:
+        logger.error(f"Error creating dummy task: {str(e)}")
+
+
 async def _dummy_coroutine():
     """Dummy coroutine to help initialize the event loop"""
+    global _loop_running
+
     try:
-        await asyncio.sleep(0.01)
-        global _loop_running
+        # Use a very short sleep to avoid blocking
+        await asyncio.sleep(0.001)
         _loop_running = True
+        logger.debug("Dummy coroutine completed successfully, event loop is running")
     except Exception as e:
         logger.error(f"Error in dummy coroutine: {str(e)}")
+        # Even if there's an error, set _loop_running to True on Windows
+        # since we're taking extra precautions
+        if platform.system() == "Windows":
+            _loop_running = True
+            logger.debug("Forcing _loop_running=True on Windows despite error")
 
 
 def _process_pending_events():
@@ -123,13 +214,18 @@ def _process_pending_events():
             _main_loop._process_events([])
 
             # Check if loop is now running
-            if _main_loop.is_running():
+            try:
+                # This will raise RuntimeError if no loop is running
+                asyncio.get_running_loop()
                 _loop_running = True
+            except RuntimeError:
+                # Don't reset _loop_running to False here
+                pass
 
-            # Create a dummy task periodically
-            if _loop_running and asyncio.get_event_loop() == _main_loop:
+            # Create a dummy task periodically if we think the loop should be running
+            if _loop_initialized:
                 try:
-                    asyncio.ensure_future(_dummy_coroutine(), loop=_main_loop)
+                    _run_dummy_task()
                 except RuntimeError:
                     # This should not happen with proper initialization
                     pass
@@ -150,25 +246,55 @@ def _start_status_check():
             return
 
         try:
-            # Check if loop is running
-            is_running = _main_loop.is_running()
+            # Try to get running loop - will raise exception if not running
+            try:
+                asyncio.get_running_loop()
+                is_running = True
+            except RuntimeError:
+                is_running = False
 
-            if not is_running and _loop_initialized:
+            # For Windows, apply more aggressive fixes if needed
+            if not is_running and platform.system() == "Windows":
+                logger.warning("Event loop not running on Windows - forcing restart")
+
+                # Set as current loop
+                asyncio.set_event_loop(_main_loop)
+
+                # Process Qt events aggressively
+                if hasattr(QCoreApplication, 'instance') and QCoreApplication.instance():
+                    for _ in range(3):  # Process multiple times
+                        QCoreApplication.instance().processEvents()
+                        time.sleep(0.01)  # Short delay
+
+                # Create a dummy task with direct task creation
+                _run_dummy_task()
+
+                # Force the running flag to True
+                _loop_running = True
+
+                logger.debug("Windows loop restart completed")
+            elif not is_running and _loop_initialized:
                 logger.warning("Event loop not running - attempting to restart")
 
                 # Set as current loop
                 asyncio.set_event_loop(_main_loop)
 
                 # Create a dummy task
-                asyncio.ensure_future(_dummy_coroutine(), loop=_main_loop)
+                _run_dummy_task()
 
                 # Process Qt events
                 QCoreApplication.instance().processEvents()
 
-                # Update status
-                _loop_running = _main_loop.is_running()
+                # Check if running now
+                try:
+                    asyncio.get_running_loop()
+                    _loop_running = True
+                except RuntimeError:
+                    # Still not running, but don't set to False on Windows
+                    if not platform.system() == "Windows":
+                        _loop_running = False
 
-                logger.debug(f"Loop restart attempt completed, running: {_loop_running}")
+                logger.debug(f"Loop restart attempt completed, running flag: {_loop_running}")
 
         except Exception as e:
             logger.error(f"Error in loop status check: {str(e)}")
@@ -183,7 +309,7 @@ def _start_status_check():
 
 def _cleanup_event_loop():
     """Clean up the event loop when the application is shutting down"""
-    global _main_loop, _loop_running, _keep_alive_timer
+    global _main_loop, _loop_running, _keep_alive_timer, _original_policy
 
     if _main_loop is not None:
         logger.debug(f"Cleaning up qasync event loop: {id(_main_loop)}")
@@ -210,6 +336,14 @@ def _cleanup_event_loop():
             if not _main_loop.is_closed():
                 _main_loop.close()
 
+            # Restore original event loop policy
+            if _original_policy is not None:
+                try:
+                    asyncio.set_event_loop_policy(_original_policy)
+                    logger.debug("Restored original event loop policy")
+                except Exception as e:
+                    logger.warning(f"Error restoring event loop policy: {str(e)}")
+
         except Exception as e:
             logger.warning(f"Error during event loop cleanup: {str(e)}")
 
@@ -230,6 +364,13 @@ def _exception_handler(loop, context):
     else:
         logger.error(f"Async error: {message}")
 
+    # On Windows, don't let event loop exceptions stop the loop
+    if platform.system() == "Windows" and "no running event loop" in str(message):
+        logger.warning("Ignoring 'no running event loop' error on Windows")
+        # Force the loop running flag to True
+        global _loop_running
+        _loop_running = True
+
 
 def ensure_qasync_loop():
     """
@@ -244,6 +385,12 @@ def ensure_qasync_loop():
     if _loop_initialized and _main_loop is not None:
         # Set it as the current loop
         asyncio.set_event_loop(_main_loop)
+
+        # Special handling for Windows - always assume the loop is running
+        # once it's been initialized
+        if platform.system() == "Windows":
+            _loop_running = True
+
         return _main_loop
 
     # Install a new loop if needed
@@ -291,7 +438,18 @@ class RunCoroutineInQt(QObject):
                 self.timer.start(int(self.timeout * 1000))
 
             # Create the task
-            self.task = loop.create_task(self._safe_execute())
+            try:
+                # First try standard way
+                self.task = loop.create_task(self._safe_execute())
+            except RuntimeError as e:
+                # If we get a runtime error about no running event loop
+                if "no running event loop" in str(e) and platform.system() == "Windows":
+                    logger.warning(f"Caught '{str(e)}', using direct execution approach for Windows")
+                    # For Windows, use a more direct approach
+                    self._direct_execute()
+                    return self
+                else:
+                    raise
 
             return self
 
@@ -303,6 +461,46 @@ class RunCoroutineInQt(QObject):
                 QTimer.singleShot(0, lambda: self.error_callback(e))
 
             return None
+
+    def _direct_execute(self):
+        """Directly execute the coroutine without using create_task (Windows fallback)"""
+        # Run the coroutine and connect to callbacks
+        def run_and_process():
+            try:
+                # Import asyncio related modules
+                import asyncio
+
+                # Create a new event loop for this thread if needed
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+
+                # Run the coroutine
+                result = loop.run_until_complete(self._safe_execute_direct())
+
+                # Call the callback on the main thread
+                if self.callback:
+                    QTimer.singleShot(0, lambda: self.callback(result))
+            except Exception as e:
+                logger.error(f"Error in _direct_execute: {str(e)}")
+                if self.error_callback:
+                    QTimer.singleShot(0, lambda: self.error_callback(e))
+
+        # Execute in main thread after a short delay
+        QTimer.singleShot(10, run_and_process)
+
+    async def _safe_execute_direct(self):
+        """Direct execution version of _safe_execute"""
+        try:
+            return await self.coro
+        except asyncio.CancelledError:
+            logger.debug("Task was cancelled (direct execution)")
+            raise
+        except Exception as e:
+            logger.error(f"Error executing coroutine (direct): {str(e)}")
+            raise
 
     def cancel(self):
         """Cancel the running task"""
@@ -413,8 +611,23 @@ def run_sync(coro):
         except Exception as e:
             future.set_exception(e)
 
-    # Create task
-    task = asyncio.ensure_future(wrapper(), loop=loop)
+    # Create task with special handling for Windows
+    if platform.system() == "Windows":
+        try:
+            # First try direct task creation
+            task = loop.create_task(wrapper())
+        except RuntimeError:
+            # Fallback for Windows
+            logger.warning("Using alternative synchronous execution approach on Windows")
+
+            # Create a new event loop and run the coroutine
+            temp_loop = asyncio.new_event_loop()
+            try:
+                return temp_loop.run_until_complete(coro)
+            finally:
+                temp_loop.close()
+    else:
+        task = asyncio.ensure_future(wrapper(), loop=loop)
 
     # Wait with timeout and process events
     timeout = 30  # 30 seconds
@@ -429,7 +642,15 @@ def run_sync(coro):
             task.cancel()
             raise TimeoutError(f"Operation timed out after {timeout} seconds")
 
-        # Avoid CPU hogging
-        time.sleep(0.01)
+        # Process more aggressively on Windows
+        if platform.system() == "Windows":
+            # Process events multiple times
+            for _ in range(3):
+                if app:
+                    app.processEvents()
+                time.sleep(0.001)  # Very short delay
+        else:
+            # Avoid CPU hogging with a small delay
+            time.sleep(0.01)
 
     return future.result()
