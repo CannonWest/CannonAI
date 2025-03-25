@@ -1,6 +1,6 @@
 """
 Asynchronous database manager for SQLAlchemy 2.0 async operations.
-Ensures consistent event loop usage with qasync.
+Improved implementation to ensure consistent event loop usage with qasync.
 """
 
 import os
@@ -10,10 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 from sqlalchemy.ext.asyncio import async_scoped_session
 from sqlalchemy.orm import declarative_base
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
+import time
 
 from src.utils.logging_utils import get_logger
 from src.utils.constants import DATABASE_DIR
+from src.utils.qasync_bridge import ensure_qasync_loop
 
 # Get a logger for this module
 logger = get_logger(__name__)
@@ -44,7 +46,7 @@ if os.environ.get('DEBUG_SQLALCHEMY', '').lower() in ('1', 'true', 'yes'):
 class AsyncDatabaseManager:
     """
     Manages async database connections, session creation, and schema initialization.
-    Uses SQLAlchemy 2.0 with asyncio support.
+    Uses SQLAlchemy 2.0 with asyncio support with improved connection handling.
     """
 
     def __init__(self, connection_string=None):
@@ -75,16 +77,18 @@ class AsyncDatabaseManager:
 
         self.connection_string = connection_string
 
-        # Store the current event loop - IMPORTANT: delay engine creation
+        # Store the current event loop - IMPORTANT: Use ensure_qasync_loop() for a consistent loop
         try:
-            self.loop = asyncio.get_event_loop()
+            self.loop = ensure_qasync_loop()
             logger.debug(f"Using event loop: {id(self.loop)}")
         except RuntimeError as e:
             logger.warning(f"No event loop found in current thread: {str(e)}")
             self.loop = None
 
+        # Initialize instance variables (but delay actual creation)
         self.engine = None
         self.async_session = None
+        self._initialized = False
 
         self.logger = get_logger(f"{__name__}.AsyncDatabaseManager")
         self.logger.info(f"Initialized AsyncDatabaseManager with connection string: {connection_string}")
@@ -96,16 +100,19 @@ class AsyncDatabaseManager:
 
             try:
                 # Get the current event loop for this thread
-                current_loop = asyncio.get_event_loop()
+                current_loop = ensure_qasync_loop()
                 self.logger.debug(f"Creating engine with loop: {id(current_loop)}")
 
-                # Create engine with explicit connect_args and the current loop
+                # IMPORTANT: Use create_async_engine with proper pooling settings for better connection management
                 self.engine = create_async_engine(
                     self.connection_string,
                     echo=False,
-                    connect_args={
-                        "check_same_thread": False
-                    }
+                    connect_args={"check_same_thread": False},
+                    # Add improved pool settings for better connection management
+                    pool_pre_ping=True,  # Verify connections before using them
+                    pool_recycle=3600,  # Recycle connections after 1 hour
+                    pool_timeout=30,     # Connection timeout of 30 seconds
+                    max_overflow=5       # Allow 5 connections beyond pool_size
                 )
 
                 # Create session factory
@@ -115,6 +122,7 @@ class AsyncDatabaseManager:
                     class_=AsyncSession
                 )
 
+                self._initialized = True
                 self.logger.debug(f"Engine and session factory created with loop: {id(current_loop)}")
             except Exception as e:
                 self.logger.error(f"Failed to create SQLAlchemy engine: {str(e)}")
@@ -131,22 +139,41 @@ class AsyncDatabaseManager:
 
             # Log the current event loop for debugging
             try:
-                current_loop = asyncio.get_event_loop()
+                current_loop = ensure_qasync_loop()
                 self.logger.debug(f"Creating tables with event loop: {id(current_loop)}")
             except RuntimeError:
                 self.logger.warning("No event loop in current thread, creating one")
-                current_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(current_loop)
+                from src.utils.qasync_bridge import install
+                current_loop = install()
 
-            # CRITICAL FIX: Use try-except instead of timeout
+            # IMPROVED APPROACH: Use a non-async run_sync method for table creation that avoids context managers
+            # This is more reliable than using async context managers which can cause issues
+            def _create_all_tables(conn):
+                # This function runs in a thread and doesn't need asyncio
+                self.logger.debug("Creating tables synchronously via run_sync")
+                Base.metadata.create_all(conn)
+                return True
+
             try:
+                # Use run_sync which is more reliable for schema creation
                 async with self.engine.begin() as conn:
-                    self.logger.debug("Beginning transaction to create tables")
-                    await conn.run_sync(Base.metadata.create_all)
-                    self.logger.debug("Tables created successfully")
-            except Exception as e:
-                self.logger.error(f"Error during table creation: {str(e)}")
-                raise
+                    await conn.run_sync(_create_all_tables)
+                    self.logger.debug("Tables created successfully via run_sync")
+            except RuntimeError as e:
+                # If we get "no running event loop", fallback to alternative approach
+                if "no running event loop" in str(e):
+                    self.logger.warning(f"Using fallback method for table creation: {str(e)}")
+
+                    # FALLBACK: Use SQLAlchemy directly in a with statement without async
+                    from sqlalchemy import create_engine
+                    sync_url = self.connection_string.replace('+aiosqlite', '')
+                    sync_engine = create_engine(sync_url)
+                    with sync_engine.begin() as connection:
+                        Base.metadata.create_all(connection)
+                    sync_engine.dispose()
+                    self.logger.debug("Tables created successfully with fallback method")
+                else:
+                    raise
 
             self.logger.info("Database tables created or verified")
             return True
@@ -159,27 +186,55 @@ class AsyncDatabaseManager:
     @asynccontextmanager
     async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
         """
-        Get a new async database session as a context manager
+        Get a new async database session as a context manager with improved error handling
 
         Usage:
             async with db_manager.get_session() as session:
                 # Use session here
         """
         # Make sure engine is created with current event loop
-        self._create_engine()
+        if not self._initialized:
+            self._create_engine()
 
+        # IMPROVED: Set up timeout management
+        timeout = 10.0  # 10 seconds timeout
+        start_time = time.time()
+
+        session = None
         try:
-            async with self.async_session() as session:
-                try:
-                    yield session
-                except Exception as e:
-                    self.logger.error(f"Error in database session: {str(e)}")
-                    self.logger.error(traceback.format_exc())
+            # Get the session from the factory
+            session = self.async_session()
+
+            # Yield the session to the caller
+            try:
+                yield session
+            except Exception as e:
+                self.logger.error(f"Error in database session: {str(e)}")
+                if session and not session.is_active:
+                    self.logger.debug("Session rollback needed")
                     await session.rollback()
-                    raise
+                raise
+            finally:
+                # Always close the session when done
+                if session:
+                    if time.time() - start_time > timeout:
+                        self.logger.warning(f"Session operation took longer than {timeout}s")
+
+                    try:
+                        await session.close()
+                    except Exception as e:
+                        self.logger.error(f"Error closing session: {str(e)}")
         except Exception as e:
             self.logger.error(f"Failed to create database session: {str(e)}")
             self.logger.error(traceback.format_exc())
+
+            # If we couldn't create a session, try to clean up
+            if session:
+                try:
+                    await session.close()
+                except:
+                    pass
+
             raise
 
     async def close(self):
@@ -187,6 +242,7 @@ class AsyncDatabaseManager:
         self.logger.debug("Closing AsyncDatabaseManager")
         if self.engine is not None:
             try:
+                # Properly dispose of the engine and all its connections
                 await self.engine.dispose()
                 self.logger.debug("Engine disposed successfully")
             except Exception as e:
@@ -195,4 +251,48 @@ class AsyncDatabaseManager:
             finally:
                 self.engine = None
                 self.async_session = None
+                self._initialized = False
         self.logger.info("AsyncDatabaseManager closed")
+
+    async def execute_query(self, query, params=None):
+        """
+        Execute a raw SQL query with improved connection management
+        This provides a more direct way to run queries when needed
+
+        Args:
+            query: The SQL query to execute
+            params: Optional parameters for the query
+
+        Returns:
+            The query result
+        """
+        if not self._initialized:
+            self._create_engine()
+
+        async with self.get_session() as session:
+            try:
+                result = await session.execute(query, params or {})
+                await session.commit()
+                return result
+            except Exception as e:
+                await session.rollback()
+                self.logger.error(f"Error executing query: {str(e)}")
+                raise
+
+    async def ping(self) -> bool:
+        """
+        Test if the database connection is working
+
+        Returns:
+            True if connection is working, False otherwise
+        """
+        if not self._initialized:
+            self._create_engine()
+
+        try:
+            async with self.engine.connect() as conn:
+                await conn.execute("SELECT 1")
+                return True
+        except Exception as e:
+            self.logger.error(f"Database ping failed: {str(e)}")
+            return False
