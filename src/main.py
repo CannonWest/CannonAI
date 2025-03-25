@@ -4,6 +4,7 @@ Implements improved error handling and complete asyncio integration.
 """
 
 import asyncio
+import threading
 from datetime import datetime
 import sys
 import os
@@ -89,101 +90,6 @@ class AsyncApplication(QObject):
         except Exception as e:
             self.logger.critical(f"Error during application initialization: {e}", exc_info=True)
             self._show_error_window(str(e))
-
-    def _complete_initialization(self):
-        """Complete initialization after the event loop is running"""
-        try:
-            self.logger.info("Completing initialization")
-
-            # Load main QML file
-            self._load_qml()
-
-            # Trigger view initialization
-            QTimer.singleShot(10, self._initialize_views)
-
-        except Exception as e:
-            self.logger.critical(f"Error completing initialization: {e}", exc_info=True)
-            self._show_error_window(str(e))
-
-    def _initialize_views(self):
-        """Initialize views after QML is loaded"""
-        try:
-            self.logger.info("Initializing views")
-
-            # Get the main window
-            root_objects = self.engine.rootObjects()
-            if root_objects:
-                main_window = root_objects[0]
-
-                # Show the main window
-                self.logger.info("Showing main window")
-                main_window.show()
-                self.main_window_shown = True
-                self.logger.info("Main window shown")
-
-                # Start async data loading
-                QTimer.singleShot(100, self._load_initial_data)
-            else:
-                self.logger.error("No root objects found, cannot show main window")
-                self._show_error_window("Failed to create main window")
-
-        except Exception as e:
-            self.logger.critical(f"Error initializing views: {e}", exc_info=True)
-            self._show_error_window(str(e))
-
-    def _load_initial_data(self):
-        """Load initial data after the UI is shown"""
-        try:
-            self.logger.info("Loading initial data")
-
-            # Load conversations asynchronously
-            run_coroutine(
-                self._load_conversations(),
-                callback=lambda result: self.logger.info(f"Loaded {len(result) if result else 0} conversations"),
-                error_callback=lambda e: self.logger.error(f"Error loading conversations: {str(e)}")
-            )
-
-        except Exception as e:
-            self.logger.error(f"Error loading initial data: {e}")
-
-    async def _load_conversations(self):
-        """Asynchronously load conversations"""
-        try:
-            # Ensure the database is initialized
-            await self.db_service.initialize()
-
-            # Get all conversations
-            conversations = await self.db_service.get_all_conversations()
-
-            if conversations:
-                # Convert to list of dicts for the model
-                conv_dicts = []
-                for conv in conversations:
-                    conv_dicts.append({
-                        "id": conv.id,
-                        "name": conv.name,
-                        "created_at": conv.created_at.isoformat(),
-                        "modified_at": conv.modified_at.isoformat()
-                    })
-
-                # Update the QML model
-                root_objects = self.engine.rootObjects()
-                if root_objects:
-                    self.qml_bridge.call_qml_method("mainWindow", "updateConversationsModel", conv_dicts)
-
-                    # Load the first conversation if available
-                    if conv_dicts:
-                        await asyncio.sleep(0.1)  # Small delay
-                        self.conversation_vm.load_conversation(conv_dicts[0]['id'])
-
-                return conv_dicts
-            else:
-                # No conversations - create a new one
-                await self.conversation_vm._create_new_conversation_async("New Conversation")
-                return []
-        except Exception as e:
-            self.logger.error(f"Error loading conversations: {str(e)}")
-            raise
 
     def _show_error_window(self, error_message):
         """Create an error window to display critical errors"""
@@ -733,6 +639,207 @@ class AsyncApplication(QObject):
             self.logger.error(f"Error during async cleanup: {str(e)}")
         finally:
             self._cleanup_in_progress = False
+
+    async def _load_conversations(self):
+        """Asynchronously load conversations with improved error handling"""
+        try:
+            # Get all conversations
+            conversations = await self.db_service.get_all_conversations()
+
+            if conversations:
+                # Convert to list of dicts for the model
+                conv_dicts = []
+                for conv in conversations:
+                    conv_dicts.append({
+                        "id": conv.id,
+                        "name": conv.name,
+                        "created_at": conv.created_at.isoformat(),
+                        "modified_at": conv.modified_at.isoformat()
+                    })
+                return conv_dicts
+            return []
+        except Exception as e:
+            self.logger.error(f"Error loading conversations: {str(e)}")
+            # Return an empty list rather than raising an exception
+            return []
+
+    """
+    Improved initialization sequence for the OpenAI Chat application.
+    This addresses event loop management issues and ensures proper initialization flow.
+    """
+
+    import asyncio
+    import threading
+    from PyQt6.QtCore import QTimer
+
+    def _complete_initialization(self):
+        """Complete initialization after the event loop is running
+        with improved async handling.
+        """
+        try:
+            self.logger.info("Completing initialization")
+
+            # Load main QML file
+            self._load_qml()
+
+            # Use a timer to create a proper separation of initialization steps
+            # This ensures the QML engine has time to process events
+            QTimer.singleShot(50, self._initialize_views)
+
+        except Exception as e:
+            self.logger.critical(f"Error completing initialization: {str(e)}")
+            self._show_error_window(str(e))
+
+    def _initialize_views(self):
+        """Initialize views after QML is loaded with improved async handling"""
+        try:
+            self.logger.info("Initializing views")
+
+            # Get the root object (MainWindow)
+            root_objects = self.engine.rootObjects()
+            if not root_objects:
+                self.logger.error("No root objects found, cannot show main window")
+                self._show_error_window("Failed to create main window")
+                return
+
+            main_window = root_objects[0]
+
+            # Show the main window
+            self.logger.info("Showing main window")
+            main_window.show()
+            self.main_window_shown = True
+            self.logger.info("Main window shown")
+
+            # Delay data loading to allow UI to stabilize
+            QTimer.singleShot(200, self._load_initial_data)
+
+        except Exception as e:
+            self.logger.critical(f"Error initializing views: {str(e)}")
+            self._show_error_window(str(e))
+
+    def _load_initial_data(self):
+        """Load initial data after the UI is shown, using thread-based approach"""
+        try:
+            self.logger.info("Loading initial data")
+
+            # Start initialization in a background thread to avoid event loop issues
+            thread = threading.Thread(target=self._init_database_thread)
+            thread.daemon = True
+            thread.start()
+
+        except Exception as e:
+            self.logger.error(f"Error loading initial data: {str(e)}")
+
+    def _init_database_thread(self):
+        """Initialize database in a background thread"""
+        try:
+            # Create and set event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            # Initialize database
+            result = loop.run_until_complete(self.db_service.initialize())
+
+            # Clean up
+            loop.close()
+
+            # Report result on main thread
+            QTimer.singleShot(0, lambda: self._handle_db_init_complete(result))
+        except Exception as e:
+            self.logger.error(f"Error in database initialization thread: {str(e)}")
+            # Report error on main thread
+            QTimer.singleShot(0, lambda: self._handle_db_init_error(str(e)))
+
+    def _handle_db_init_complete(self, success):
+        """Handle database initialization completion on main thread"""
+        if success:
+            self.logger.info("Database initialized, loading conversations")
+
+            # Start conversation loading thread
+            thread = threading.Thread(target=self._load_conversations_thread)
+            thread.daemon = True
+            thread.start()
+        else:
+            self.logger.error("Database initialization failed")
+
+    def _handle_db_init_error(self, error_message):
+        """Handle database initialization error on main thread"""
+        self.logger.error(f"Database initialization error: {error_message}")
+
+    def _load_conversations_thread(self):
+        """Load conversations in a background thread"""
+        try:
+            # Create and set event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            # Load conversations
+            conversations = loop.run_until_complete(self._load_conversations_impl())
+
+            # Clean up
+            loop.close()
+
+            # Report result on main thread
+            QTimer.singleShot(0, lambda: self._handle_conversations_loaded(conversations))
+        except Exception as e:
+            self.logger.error(f"Error in conversations loading thread: {str(e)}")
+            # Report error on main thread
+            QTimer.singleShot(0, lambda: self._handle_load_error(str(e)))
+
+    async def _load_conversations_impl(self):
+        """Implementation of loading conversations"""
+        try:
+            # Get all conversations
+            conversations = await self.db_service.get_all_conversations()
+
+            if conversations:
+                # Convert to list of dicts for the model
+                conv_dicts = []
+                for conv in conversations:
+                    conv_dicts.append({
+                        "id": conv.id,
+                        "name": conv.name,
+                        "created_at": conv.created_at.isoformat(),
+                        "modified_at": conv.modified_at.isoformat()
+                    })
+                return conv_dicts
+            return []
+        except Exception as e:
+            self.logger.error(f"Error loading conversations: {str(e)}")
+            # Return an empty list rather than raising an exception
+            return []
+
+    def _handle_conversations_loaded(self, conversations):
+        """Handle loaded conversations on main thread"""
+        count = len(conversations) if conversations else 0
+        self.logger.info(f"Loaded {count} conversations")
+
+        # Process conversations if any were loaded
+        if conversations and count > 0:
+            # Update the QML model
+            root_objects = self.engine.rootObjects()
+            if root_objects:
+                self.qml_bridge.call_qml_method(
+                    "mainWindow", "updateConversationsModel", conversations
+                )
+
+                # Load the first conversation after a short delay
+                if count > 0:
+                    first_id = conversations[0]['id']
+                    QTimer.singleShot(100, lambda: self.conversation_vm.load_conversation(first_id))
+        else:
+            # Create a new conversation if none exists
+            self.logger.info("No conversations found, creating new one")
+            # Use a direct function call instead of run_coroutine to avoid event loop issues
+            self.conversation_vm.create_new_conversation("New Conversation")
+
+    def _handle_load_error(self, error_message):
+        """Handle conversation loading error on main thread"""
+        self.logger.error(f"Error loading conversations: {error_message}")
+
+        # Despite error, try to create a new conversation
+        self.logger.info("Creating fallback conversation due to loading error")
+        self.conversation_vm.create_new_conversation("New Conversation")
 
 def main():
     """Main application entry point with comprehensive error handling"""

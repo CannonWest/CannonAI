@@ -7,9 +7,10 @@ import asyncio
 import traceback
 import functools
 import sys
+import threading
 from typing import Any, Callable, Coroutine, Optional, Union
 
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer
 
 try:
     # Add this to make sure qasync is fully imported
@@ -20,11 +21,9 @@ except ImportError:
 # Import logger
 try:
     from src.utils.logging_utils import get_logger
-
     logger = get_logger(__name__)
 except ImportError:
     import logging
-
     logger = logging.getLogger(__name__)
 
 # Global reference to the main event loop
@@ -114,17 +113,37 @@ def run_coroutine(coro: Union[Coroutine, Callable[[], Coroutine]],
     """
     Run a coroutine from Qt code with proper event loop handling
 
+    This version avoids using create_task which requires a running event loop
+
     Args:
         coro: The coroutine or coroutine function to run
         callback: Optional callback to call with the result
         error_callback: Optional callback to call if an error occurs
     """
+    # Get the coroutine object
+    if callable(coro) and not asyncio.iscoroutine(coro):
+        try:
+            actual_coro = coro()
+        except Exception as e:
+            logger.error(f"Error calling coroutine function: {str(e)}")
+            if error_callback:
+                error_callback(e)
+            return None
+    elif asyncio.iscoroutine(coro):
+        actual_coro = coro
+    else:
+        error = TypeError(f"Expected a coroutine or coroutine function, got {type(coro)}")
+        logger.error(str(error))
+        if error_callback:
+            error_callback(error)
+        return None
+
     # Get a consistent event loop
     loop = ensure_qasync_loop()
     logger.debug(f"Running coroutine with loop: {id(loop)}")
 
     # Create a runner and run it
-    runner = RunCoroutineInQt(coro, callback, error_callback)
+    runner = RunCoroutineInQt(actual_coro, callback, error_callback)
     return runner.start()
 
 
@@ -140,7 +159,7 @@ class RunCoroutineInQt(QObject):
         self.coro = coro
         self.callback = callback
         self.error_callback = error_callback
-        self.task = None
+        self.future = None
 
         # Connect signals to callbacks
         if callback:
@@ -149,27 +168,32 @@ class RunCoroutineInQt(QObject):
             self.taskError.connect(lambda error: error_callback(error))
 
     def start(self):
-        """Start the coroutine"""
+        """Start the coroutine using a safer approach"""
         try:
             # Always use a consistent event loop
             loop = ensure_qasync_loop()
             logger.debug(f"Starting task with loop: {id(loop)}")
 
-            # Get the coroutine object
-            if callable(self.coro) and not asyncio.iscoroutine(self.coro):
-                actual_coro = self.coro()
-            elif asyncio.iscoroutine(self.coro):
-                actual_coro = self.coro
-            else:
-                raise TypeError(f"Expected a coroutine or coroutine function, got {type(self.coro)}")
+            # Safety check - verify we have a valid coroutine
+            if not asyncio.iscoroutine(self.coro):
+                raise TypeError(f"Expected a coroutine, got {type(self.coro)}")
 
-            # Create a task using the loop
-            self.task = loop.create_task(self._wrapped_coro(actual_coro))
-
-            # Add a done callback to ensure we catch any unhandled exceptions
-            self.task.add_done_callback(self._on_task_done)
-
-            return self.task
+            # Use a thread-based approach if we can't run in the current context
+            try:
+                # This should work if we have a valid loop that's accessible
+                if isinstance(loop, qasync.QEventLoop):
+                    # For qasync, we'll use ensure_future which is more reliable
+                    self.future = asyncio.ensure_future(self._safe_execute(), loop=loop)
+                    return self.future
+                else:
+                    # For standard loop, try the same approach
+                    self.future = asyncio.ensure_future(self._safe_execute(), loop=loop)
+                    return self.future
+            except RuntimeError:
+                # If we can't use ensure_future, use a thread-based approach
+                logger.warning("Falling back to thread-based coroutine execution")
+                self._run_in_thread()
+                return self
 
         except Exception as e:
             logger.error(f"Error starting coroutine: {str(e)}", exc_info=True)
@@ -177,68 +201,40 @@ class RunCoroutineInQt(QObject):
                 self.error_callback(e)
             return None
 
-    def _on_task_done(self, task):
-        """Handle task completion/failure even if _wrapped_coro doesn't catch everything"""
-        try:
-            # Check if there was an exception that wasn't handled
-            if task.exception() and not task.cancelled():
-                # This should generally not happen since _wrapped_coro should catch exceptions
-                # But it's a safety measure
-                exception = task.exception()
-                logger.error(f"Unhandled task exception: {str(exception)}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
-
-                # Emit the error signal if there's an error callback
-                if self.error_callback:
-                    self.taskError.emit(exception)
-        except asyncio.CancelledError:
-            # Task was cancelled - that's normal
-            pass
-        except Exception as e:
-            logger.error(f"Error in task.done callback: {str(e)}")
-
-    async def _wrapped_coro(self, coro):
-        """Wrapper around the coroutine to handle callbacks"""
-        try:
-            # Make sure we're using a valid event loop
-            loop = ensure_qasync_loop()
-
+    def _run_in_thread(self):
+        """Run the coroutine in a separate thread"""
+        def target():
             try:
-                # Double-check we're on the right loop
-                logger.debug(f"Task running in loop: {id(loop)}")
+                # Create a new event loop for this thread
+                thread_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(thread_loop)
 
-                # Add a timeout to detect hanging tasks
                 try:
-                    # 30 second timeout for potentially long-running tasks
-                    result = await asyncio.wait_for(coro, timeout=30.0)
-                    logger.debug("Task completed successfully")
-                    self.taskCompleted.emit(result)
-                    return result
-                except asyncio.TimeoutError:
-                    logger.error("Task timed out after 30 seconds")
-                    self.taskError.emit(Exception("Task timed out after 30 seconds"))
-                    return None
-            except RuntimeError as e:
-                if "no running event loop" in str(e):
-                    # This is a special case - we need to make sure the loop is running
-                    logger.warning("No running event loop detected, attempting to use existing loop")
-                    # Use run_until_complete as fallback
-                    result = loop.run_until_complete(coro)
-                    self.taskCompleted.emit(result)
-                    return result
-                else:
-                    raise  # Re-raise other RuntimeErrors
+                    # Run the coroutine
+                    result = thread_loop.run_until_complete(self.coro)
 
-        except asyncio.CancelledError:
-            # Task was cancelled, don't emit error
-            logger.debug("Async task was cancelled")
-            raise
+                    # Use QTimer to safely emit the signal from the main thread
+                    QTimer.singleShot(0, lambda: self.taskCompleted.emit(result))
+                finally:
+                    thread_loop.close()
+            except Exception as e:
+                logger.error(f"Error in thread coroutine: {str(e)}", exc_info=True)
+                # Use QTimer to safely emit the signal from the main thread
+                QTimer.singleShot(0, lambda: self.taskError.emit(e))
+
+        # Start the thread
+        thread = threading.Thread(target=target)
+        thread.daemon = True
+        thread.start()
+
+    async def _safe_execute(self):
+        """Safely execute the coroutine with exception handling"""
+        try:
+            result = await self.coro
+            self.taskCompleted.emit(result)
+            return result
         except Exception as e:
-            # Log detailed error information
-            logger.error(f"Error in async task: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-
-            # Emit error signal
+            logger.error(f"Error executing coroutine: {str(e)}", exc_info=True)
             self.taskError.emit(e)
             raise
 
@@ -254,43 +250,9 @@ def run_sync(coro):
     Returns:
         Result of the coroutine
     """
-    # Ensure we have a consistent event loop
-    loop = ensure_qasync_loop()
-    logger.debug(f"Running coroutine synchronously with loop: {id(loop)}")
-
-    # Check if we're already in an event loop
+    # Create a helper event loop for synchronous execution
+    temp_loop = asyncio.new_event_loop()
     try:
-        running_loop = asyncio.get_running_loop()
-        if running_loop is loop:
-            # We're already in the event loop, can't use run_until_complete
-            raise RuntimeError(
-                "Cannot use run_sync inside a running event loop. Use run_coroutine instead."
-            )
-    except RuntimeError:
-        # No running loop, good to proceed
-        pass
-
-    # Use a synchronized future with timeout
-    from concurrent.futures import Future
-    future = Future()
-
-    def on_complete(result):
-        if not future.done():
-            future.set_result(result)
-
-    def on_error(error):
-        if not future.done():
-            future.set_exception(error)
-
-    # Run the coroutine
-    run_coroutine(coro, callback=on_complete, error_callback=on_error)
-
-    try:
-        # Wait for completion with timeout (will block)
-        return future.result(timeout=30)  # 30 second timeout
-    except Exception as e:
-        logger.error(f"Error or timeout in run_sync: {str(e)}")
-        # If it's a timeout, give a more helpful message
-        if "timeout" in str(e).lower():
-            logger.error("Task appears to be hanging - possible deadlock or infinite loop")
-        raise
+        return temp_loop.run_until_complete(coro)
+    finally:
+        temp_loop.close()
