@@ -39,12 +39,40 @@ class AsyncConversationService:
         self._initialized = False
         self.logger.info("AsyncConversationService created")
 
-    async def initialize(self):
-        """Initialize database tables"""
+    async def initialize(self) -> bool:
+        """
+        Initialize database tables
+
+        Returns:
+            True if successful, False if an error occurred
+        """
         if not self._initialized:
-            await self.db_manager.create_tables()
-            self._initialized = True
-            self.logger.info("AsyncConversationService initialized")
+            try:
+                # Log the current event loop
+                loop = asyncio.get_event_loop()
+                self.logger.debug(f"Initializing with event loop: {id(loop)}")
+
+                await self.db_manager.create_tables()
+                self._initialized = True
+                self.logger.info("AsyncConversationService initialized")
+                return True
+            except Exception as e:
+                self.logger.error(f"Failed to initialize database: {str(e)}")
+                # Don't re-raise, allow reduced functionality
+                return False
+        return True
+
+    async def ensure_initialized(self) -> bool:
+        """
+        Ensure the service is initialized before performing operations
+
+        Returns:
+            True if already initialized or initialization was successful,
+            False if initialization failed
+        """
+        if not self._initialized:
+            return await self.initialize()
+        return True
 
     async def create_conversation(self, name="New Conversation", system_message="You are a helpful assistant."):
         """

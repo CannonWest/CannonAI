@@ -1,17 +1,17 @@
-#!/usr/bin/env python3
 """
 Main entry point for the fully asynchronous OpenAI Chat application.
 Implements improved error handling and complete asyncio integration.
 """
 
 import asyncio
+from datetime import datetime
 import sys
 import os
+import traceback
 from typing import Dict, Any, List, Optional
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget
 from PyQt6.QtQml import QQmlApplicationEngine
-from PyQt6.QtCore import QUrl, QObject, pyqtSlot, QTimer, QCoreApplication
-
+from PyQt6.QtCore import QUrl, QObject, QTimer, pyqtSlot, QCoreApplication
 
 # Import logging utilities first to set up logging early
 from src.utils.logging_utils import configure_logging, get_logger
@@ -49,42 +49,231 @@ class AsyncApplication(QObject):
         """Initialize the application with comprehensive error handling"""
         super().__init__()
         self.logger = get_logger("AsyncApplication")
+        self.main_window_shown = False
 
-        # Initialize application
-        self.app = QApplication(sys.argv)
-        self.app.setApplicationName("OpenAI Chat Interface")
-        self.app.setOrganizationName("OpenAI")
-        self.app.setOrganizationDomain("openai.com")
+        try:
+            # Initialize application
+            self.app = QApplication(sys.argv)
+            self.app.setApplicationName("OpenAI Chat Interface")
+            self.app.setOrganizationName("OpenAI")
+            self.app.setOrganizationDomain("openai.com")
 
-        # Set up application-wide error handling
-        sys.excepthook = self._global_exception_handler
+            # Set up application-wide error handling
+            sys.excepthook = self._global_exception_handler
 
-        # Load environment variables with better error handling
-        self._load_env()
+            # Load environment variables with better error handling
+            self._load_env()
 
-        # Initialize qasync with the QApplication instance
-        # This is critical for proper async integration
-        self.event_loop = install_qasync(self.app)
+            # Initialize qasync with the QApplication instance
+            self.logger.info("Initializing qasync event loop")
+            self.event_loop = install_qasync(self.app)
+            asyncio.set_event_loop(self.event_loop)
+            self.logger.info(f"Main event loop initialized: {id(self.event_loop)}")
 
-        # Set up periodic task processor for event loop integration
-        self.task_processor_timer = setup_async_task_processor()
+            # Set up periodic task processor for event loop integration
+            self.task_processor_timer = setup_async_task_processor()
 
-        self.logger.info("Initialized qasync event loop")
+            # Initialize QML engine with proper setup
+            self.initialize_qml_engine()
 
-        # Initialize QML engine with proper setup
-        self.initialize_qml_engine()
+            # Initialize services synchronously to ensure they use the same event loop
+            self._initialize_services_sync()
 
-        # Initialize services
-        self.initialize_services()
+            # Create and register ViewModels
+            self.initialize_viewmodels()
 
-        # Create and register ViewModels
-        self.initialize_viewmodels()
+            # Schedule the rest of the initialization for after the event loop starts
+            # This is critical to avoid blocking the main thread
+            QTimer.singleShot(0, self._complete_initialization)
 
-        # Load main QML file
-        self.load_qml()
+            # Set up cleanup handlers
+            self._setup_cleanup_handlers()
 
-        # Set up cleanup handlers
-        self._setup_cleanup_handlers()
+        except Exception as e:
+            self.logger.critical(f"Error during application initialization: {e}", exc_info=True)
+            # Create a fallback window to show the error
+            self._create_error_window(str(e))
+
+    def _complete_initialization(self):
+        """Complete initialization after the event loop is running"""
+        try:
+            self.logger.info("Completing initialization")
+
+            # Load main QML file
+            self.load_qml()
+
+            # Trigger view initialization
+            QTimer.singleShot(10, self._initialize_views)
+
+        except Exception as e:
+            self.logger.critical(f"Error completing initialization: {e}", exc_info=True)
+            self._create_error_window(str(e))
+
+    def _initialize_views(self):
+        """Initialize views after QML is loaded"""
+        try:
+            self.logger.info("Initializing views")
+
+            # Get the main window
+            root_objects = self.engine.rootObjects()
+            if root_objects:
+                main_window = root_objects[0]
+
+                # Show the main window
+                self.logger.info("Showing main window")
+                main_window.show()
+                self.main_window_shown = True
+                self.logger.info("Main window shown")
+
+                # Start async data loading
+                QTimer.singleShot(100, self._load_initial_data)
+            else:
+                self.logger.error("No root objects found, cannot show main window")
+                self._create_error_window("Failed to create main window")
+
+        except Exception as e:
+            self.logger.critical(f"Error initializing views: {e}", exc_info=True)
+            self._create_error_window(str(e))
+
+    def _load_initial_data(self):
+        """Load initial data after the UI is shown"""
+        try:
+            self.logger.info("Loading initial data")
+
+            # Use run_coroutine to load conversations asynchronously
+            run_coroutine(
+                self._async_load_conversations(),
+                callback=lambda result: self.logger.info(f"Loaded {len(result) if result else 0} conversations"),
+                error_callback=lambda e: self.logger.error(f"Error loading conversations: {str(e)}")
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error loading initial data: {e}")
+            # Don't show error window here, just log it since the main window is already shown
+
+    async def _async_load_conversations(self):
+        """Asynchronously load conversations"""
+        # Ensure the database is initialized
+        await self.db_service.ensure_initialized()
+
+        # Get all conversations
+        conversations = await self.db_service.get_all_conversations()
+
+        if conversations:
+            # Convert to list of dicts for the model
+            conv_dicts = []
+            for conv in conversations:
+                conv_dicts.append({
+                    "id": conv.id,
+                    "name": conv.name,
+                    "created_at": conv.created_at.isoformat(),
+                    "modified_at": conv.modified_at.isoformat()
+                })
+
+            # Update the QML model
+            root_objects = self.engine.rootObjects()
+            if root_objects:
+                self.qml_bridge.call_qml_method("mainWindow", "updateConversationsModel", conv_dicts)
+
+                # Load the first conversation if available
+                if conv_dicts:
+                    await asyncio.sleep(0.1)  # Small delay
+                    self.conversation_vm.load_conversation(conv_dicts[0]['id'])
+
+            return conv_dicts
+        else:
+            # No conversations - create a new one
+            await self.conversation_vm.create_new_conversation_async("New Conversation")
+            return []
+
+    def _create_error_window(self, error_message):
+        """Create an error window to display critical errors"""
+        window = QMainWindow()
+        window.setWindowTitle("CannonAI - Error")
+        window.resize(800, 600)
+
+        central_widget = QWidget()
+        layout = QVBoxLayout(central_widget)
+
+        error_label = QLabel(f"Critical Error: {error_message}")
+        error_label.setStyleSheet("color: red; font-size: 16px; padding: 20px;")
+        error_label.setWordWrap(True)
+        layout.addWidget(error_label)
+
+        details_label = QLabel("Please check the logs for more details. The application may not function correctly.")
+        details_label.setStyleSheet("color: black; font-size: 14px; padding: 10px;")
+        details_label.setWordWrap(True)
+        layout.addWidget(details_label)
+
+        window.setCentralWidget(central_widget)
+        window.show()
+
+        self.error_window = window
+        self.logger.info("Showing error window")
+
+    def run(self):
+        """Run the application with enhanced error handling"""
+        try:
+            self.logger.info("Starting application main loop")
+
+            # Create a timer to check if the main window ever appears
+            self.startup_check_timer = QTimer()
+            self.startup_check_timer.timeout.connect(self._check_startup)
+            self.startup_check_timer.setSingleShot(True)
+            self.startup_check_timer.start(5000)  # Check after 5 seconds
+
+            # Use the event loop directly
+            self.logger.info(f"Running event loop {id(self.event_loop)}")
+            with self.event_loop:
+                return self.event_loop.run_forever()
+
+        except Exception as e:
+            self.logger.critical(f"Critical error running application: {e}", exc_info=True)
+            traceback.print_exc()
+            return 1
+
+    def _check_startup(self):
+        """Check if the main window was ever shown"""
+        if not self.main_window_shown:
+            self.logger.critical("Application startup timed out - main window never appeared")
+            self._create_error_window("Application startup timed out")
+
+    def _initialize_services_sync(self):
+        """Initialize services synchronously to ensure proper event loop usage"""
+        try:
+            self.logger.info("Initializing services synchronously")
+
+            # Create API service
+            self.api_service = AsyncApiService()
+            self.logger.info("Initialized AsyncApiService")
+
+            # Set API key from environment if available
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+            if api_key:
+                self.api_service.set_api_key(api_key)
+                self.logger.info("Set API key from environment")
+
+            # Create conversation service - but don't initialize it yet
+            self.db_service = AsyncConversationService()
+            self.logger.info("Created AsyncConversationService")
+
+            # Create file processor
+            self.file_processor = AsyncFileProcessor()
+            self.logger.info("Initialized AsyncFileProcessor")
+
+            # Initialize database tables
+            # Use run_sync to ensure it happens on the main thread
+            # with the correct event loop
+            from src.utils.qasync_bridge import run_sync
+            success = run_sync(self.db_service.initialize())
+            if success:
+                self.logger.info("Database initialized successfully")
+
+            self.logger.info("Services initialized")
+        except Exception as e:
+            self.logger.error(f"Error initializing services: {e}", exc_info=True)
+            # Don't re-raise, allow app to continue with reduced functionality
+            self.errorOccurred.emit(f"Error initializing services: {str(e)}")
 
     def _on_object_created(self, obj, url):
         """Handle QML object creation events with safer error handling"""
@@ -109,40 +298,6 @@ class AsyncApplication(QObject):
                             self.logger.error(f"Original error: {error}")
 
                 sys.exit(-1)
-
-    def _on_qml_warning(self, warning):
-        """Handle QML warnings with improved detail extraction"""
-        try:
-            # Determine the type of warning
-            if isinstance(warning, list):
-                # Handle list of warnings
-                details = []
-                for w in warning:
-                    if hasattr(w, "toString"):
-                        details.append(w.toString())
-                    elif hasattr(w, "description"):
-                        details.append(w.description())
-                    elif hasattr(w, "message"):
-                        details.append(w.message())
-                    else:
-                        details.append(str(w))
-                detail = "\n".join(details)
-            else:
-                # Handle single warning
-                if hasattr(warning, "toString"):
-                    detail = warning.toString()
-                elif hasattr(warning, "description"):
-                    detail = warning.description()
-                elif hasattr(warning, "message"):
-                    detail = warning.message()
-                else:
-                    detail = str(warning)
-
-            # Log the detailed warning
-            self.logger.warning(f"QML Warning detail: {detail}")
-        except Exception as e:
-            self.logger.warning(f"Error processing QML warning: {e}")
-            self.logger.warning(f"Original warning: {warning}")
 
     def _load_env(self):
         """Load environment variables from .env file with better error handling"""
@@ -191,32 +346,66 @@ class AsyncApplication(QObject):
             # Convert to QUrl
             qml_url = QUrl.fromLocalFile(qml_path)
 
-            # Load the QML file
+            # Clear any previous root objects
+            if self.engine.rootObjects():
+                self.logger.info("Clearing previous root objects")
+                for obj in self.engine.rootObjects():
+                    if hasattr(obj, "deleteLater"):
+                        obj.deleteLater()
+
+            # Load the QML file with a better error checking approach
+            self.engine.objectCreated.connect(self._on_object_created)
             self.engine.load(qml_url)
 
-            # Check if loading was successful
-            if not self.engine.rootObjects():
-                self.logger.critical("Failed to load QML file")
+            # Wait briefly for QML to load
+            QTimer.singleShot(10, self._check_qml_loaded)
 
-                # Get a list of all QML errors
-                qml_errors = self.engine.errors() if hasattr(self.engine, 'errors') else []
-                if qml_errors:
-                    for i, error in enumerate(qml_errors):
-                        if hasattr(error, 'line') and hasattr(error, 'column') and hasattr(error, 'description'):
-                            error_msg = f"QML Error {i + 1}: Line {error.line()}, Column {error.column()}: {error.description()}"
-                        else:
-                            error_msg = f"QML Error {i + 1}: {error}"
-                        self.logger.error(error_msg)
-
-                raise RuntimeError("Failed to load QML file")
-
-            self.logger.info("QML file loaded successfully")
-
-            # Connect to root QML object for direct interaction
-            self._connect_to_root_object()
         except Exception as e:
             self.logger.critical(f"Error loading QML: {e}", exc_info=True)
             raise
+
+    def _check_qml_loaded(self):
+        """Verify QML objects were loaded properly"""
+        if not self.engine.rootObjects():
+            self.logger.critical("Failed to load QML file")
+
+            # Get a list of all QML errors
+            qml_errors = self.engine.errors() if hasattr(self.engine, 'errors') else []
+            if qml_errors:
+                for i, error in enumerate(qml_errors):
+                    if hasattr(error, 'line') and hasattr(error, 'column') and hasattr(error, 'description'):
+                        error_msg = f"QML Error {i + 1}: Line {error.line()}, Column {error.column()}: {error.description()}"
+                    else:
+                        error_msg = f"QML Error {i + 1}: {error}"
+                    self.logger.error(error_msg)
+
+            self.logger.info("Attempting emergency fallback window")
+            self._create_fallback_window()
+        else:
+            self.logger.info("QML file loaded successfully")
+            # Connect to root QML object for direct interaction
+            self._connect_to_root_object()
+
+    def _create_fallback_window(self):
+        """Create a fallback window if QML loading fails"""
+        from PyQt6.QtWidgets import QMainWindow, QLabel, QVBoxLayout, QWidget
+
+        window = QMainWindow()
+        window.setWindowTitle("CannonAI - Error")
+        window.resize(600, 400)
+
+        central_widget = QWidget()
+        layout = QVBoxLayout(central_widget)
+
+        error_label = QLabel("Failed to load QML interface. Please check logs for details.")
+        error_label.setStyleSheet("color: red; font-size: 16px;")
+        layout.addWidget(error_label)
+
+        window.setCentralWidget(central_widget)
+        window.show()
+
+        self.fallback_window = window
+        self.logger.info("Showing fallback window")
 
     def _connect_to_root_object(self):
         """Connect to the root QML object for direct interaction with improved error handling"""
@@ -279,6 +468,63 @@ class AsyncApplication(QObject):
         # then start the async initialization
         QTimer.singleShot(100, self._start_async_initialization)
 
+    def _on_qml_warning(self, warning):
+        """Handle QML warnings with improved detail extraction"""
+        try:
+            # Determine the type of warning
+            if isinstance(warning, list):
+                # Handle list of warnings
+                details = []
+                for w in warning:
+                    if hasattr(w, "toString"):
+                        details.append(w.toString())
+                    elif hasattr(w, "description"):
+                        details.append(w.description())
+                    elif hasattr(w, "message"):
+                        details.append(w.message())
+                    else:
+                        details.append(str(w))
+                detail = "\n".join(details)
+            else:
+                # Handle single warning
+                if hasattr(warning, "toString"):
+                    detail = warning.toString()
+                elif hasattr(warning, "description"):
+                    detail = warning.description()
+                elif hasattr(warning, "message"):
+                    detail = warning.message()
+                else:
+                    detail = str(warning)
+
+            # Log the detailed warning
+            self.logger.warning(f"QML Warning detail: {detail}")
+
+            # Track common issues
+            if "Binding loop detected" in detail:
+                self.logger.warning("QML binding loop detected - this can cause performance issues")
+            elif "TypeError" in detail:
+                self.logger.error(f"QML TypeError detected: {detail}")
+                # This could be serious enough to require intervention
+                if not hasattr(self, 'qml_error_count'):
+                    self.qml_error_count = 0
+                self.qml_error_count += 1
+
+                # If we have too many errors, we might need to show the fallback window
+                if self.qml_error_count > 5:
+                    self.logger.error("Too many QML errors, considering fallback")
+                    QTimer.singleShot(500, self._check_qml_health)
+        except Exception as e:
+            self.logger.warning(f"Error processing QML warning: {e}")
+            self.logger.warning(f"Original warning: {warning}")
+
+    def _check_qml_health(self):
+        """Check if the QML UI is healthy or needs fallback"""
+        # Only run if we haven't shown the main window yet
+        if not hasattr(self, 'main_window_shown') or not self.main_window_shown:
+            root_objects = self.engine.rootObjects()
+            if not root_objects or not root_objects[0].isVisible():
+                self.logger.error("QML health check failed - showing fallback")
+                self._create_fallback_window()
 
     # File handling helper
     def _handle_file_request(self, file_url):
@@ -632,67 +878,64 @@ class AsyncApplication(QObject):
         # Give some time for cleanup to complete before app exits
         QTimer.singleShot(500, lambda: None)
 
-    def run(self):
-        """Run the application with enhanced error handling"""
-        try:
-            self.logger.info("Starting application")
-
-            # Show the main window
-            window = self.engine.rootObjects()[0]
-            if window:
-                window.show()
-
-            # Run the application
-            return self.app.exec()
-        except Exception as e:
-            self.logger.critical(f"Critical error running application: {e}", exc_info=True)
-            return 1
-
 
 def main():
-    """Main application entry point with enhanced error handling"""
+    """Main application entry point with comprehensive error handling"""
     try:
-        # Import qasync first, before other imports
+        # Import qasync first to ensure it's available
         import qasync
-
-        # Standard imports
-        import sys
-        import os
-        from PyQt6.QtWidgets import QApplication
-        from PyQt6.QtQml import QQmlApplicationEngine
 
         # Configure logging first to set up logging early
         from src.utils.logging_utils import configure_logging, get_logger
         configure_logging()
         logger = get_logger(__name__)
+        logger.info("Starting CannonAI application")
 
-        # Create QApplication
-        app = QApplication(sys.argv)
-        app.setApplicationName("OpenAI Chat Interface")
-        app.setOrganizationName("OpenAI")
-        app.setOrganizationDomain("openai.com")
+        # Create and run the application
+        try:
+            app_instance = AsyncApplication()
+            logger.info("Application instance created, starting main loop")
+            return app_instance.run()
+        except Exception as e:
+            logger.critical(f"Error creating or running application: {e}", exc_info=True)
 
-        # Set up global exception handler
-        sys.excepthook = lambda exc_type, exc_value, exc_tb: (
-            logger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb)),
-            sys.__excepthook__(exc_type, exc_value, exc_tb)
-        )
+            # Create emergency fallback to show error
+            from PyQt6.QtWidgets import QApplication, QMessageBox
+            if QApplication.instance() is None:
+                app = QApplication(sys.argv)
+            else:
+                app = QApplication.instance()
 
-        # Initialize asyncio loop with qasync
-        loop = qasync.QEventLoop(app)
-        asyncio.set_event_loop(loop)
-
-        app_instance = AsyncApplication()
-
-        # Run the application with qasync
-        with loop:
-            # Exit with the result of app.exec() through loop.run_forever()
-            return loop.run_forever()
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Icon.Critical)
+            msg.setWindowTitle("CannonAI - Critical Error")
+            msg.setText("The application could not be started due to a critical error.")
+            msg.setDetailedText(f"Error: {str(e)}\n\nPlease check the logs for more details.")
+            msg.exec()
+            return 1
 
     except Exception as e:
-        logger.critical(f"Application failed to start: {e}", exc_info=True)
+        # Final fallback for truly catastrophic errors
+        import traceback
+        print(f"CRITICAL ERROR: Application failed to start: {e}")
+        traceback.print_exc()
+
+        try:
+            # Try to write to a log file directly
+            with open("critical_error.log", "a") as f:
+                f.write(f"\n{'-' * 50}\n")
+                f.write(f"{datetime.now().isoformat()} - CRITICAL ERROR: {str(e)}\n")
+                f.write(traceback.format_exc())
+        except:
+            pass
+
         return 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as e:
+        print(f"Unhandled exception in main thread: {e}")
+        traceback.print_exc()
+        sys.exit(1)
