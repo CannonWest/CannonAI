@@ -22,7 +22,7 @@ configure_logging()
 logger = get_logger(__name__)
 
 # Import utilities for async support
-from src.utils.qasync_bridge import install as install_qasync, run_coroutine, ensure_qasync_loop, run_sync
+from src.utils.qasync_bridge import install as install_qasync, run_coroutine, ensure_qasync_loop, run_sync, install
 from src.utils.async_qml_bridge import AsyncQmlBridge
 
 # Import the fully async ViewModels
@@ -74,56 +74,38 @@ class AsyncApplication(QObject):
             # Load environment variables with better error handling
             self._load_env()
 
-            # CRITICAL FIX: Initialize qasync with proper event loop setup
+            # IMPROVED: qasync initialization with proper event loop setup
             self.logger.info("Initializing qasync event loop")
 
-            # First get and close any existing event loop
-            try:
-                old_loop = asyncio.get_event_loop()
-                if not isinstance(old_loop, asyncio.AbstractEventLoop):
-                    old_loop.close()
-            except RuntimeError:
-                pass
-
-            # Now install qasync with the application
-            self.event_loop = install_qasync(self.app)
+            # Install qasync with the application - USE THE IMPROVED VERSION
+            self.event_loop = install(self.app)
 
             # Set it as the default loop
             asyncio.set_event_loop(self.event_loop)
 
-            # CRITICAL FIX: Verify the event loop is running
-            # Create and run a simple task to ensure the event loop is activated
-            async def verify_loop():
-                return True
+            # Verify the event loop is running properly
+            if not self.event_loop.is_running():
+                self.logger.warning("Event loop not running after initialization, attempting to start it")
+                # Start the loop and process events to activate it
+                asyncio.ensure_future(asyncio.sleep(0.01), loop=self.event_loop)
+                self.app.processEvents()
 
-            future = asyncio.ensure_future(verify_loop(), loop=self.event_loop)
-
-            # Process events to give the loop a chance to run
-            self.app.processEvents()
-
-            # Set up a timer to process asyncio events regularly
+            # Set up a timer to process asyncio events regularly - IMPROVED APPROACH
             self.event_timer = QTimer()
             self.event_timer.timeout.connect(lambda: None)  # Wake up the event loop
-            self.event_timer.start(10)  # 10ms
+            self.event_timer.start(16)  # 60fps (16ms) for smooth UI
 
             # Store the timer on the event loop to prevent garbage collection
             self.event_loop._event_timer = self.event_timer
 
-            # Force the event loop to be considered "running"
-            if hasattr(self.event_loop, '_process_events'):
-                self.event_loop._process_events([])
-
-            # Process Qt events again to ensure the loop is active
-            self.app.processEvents()
-
-            self.logger.info(f"Main event loop initialized: {id(self.event_loop)}")
+            # Log the event loop status
+            self.logger.info(f"Main event loop initialized: {id(self.event_loop)}, running={self.event_loop.is_running()}")
 
             # Initialize QML engine with proper setup
             self._initialize_qml_engine()
 
-            # Initialize services and viewmodels using a blocking approach for initialization
-            # This ensures database tables are created before proceeding
-            self._initialize_services_sync()
+            # Initialize services and viewmodels with the improved qasync approach
+            self._initialize_services()
             self._initialize_viewmodels()
 
             # Set up a timer to complete initialization after the event loop starts running
@@ -135,6 +117,110 @@ class AsyncApplication(QObject):
         except Exception as e:
             self.logger.critical(f"Error during application initialization: {e}", exc_info=True)
             raise
+
+    def _initialize_services(self):
+        """Initialize services using the improved qasync approach"""
+        try:
+            self.logger.info("Initializing services")
+
+            # Make sure the event loop is set as the current loop and running
+            ensure_qasync_loop()
+
+            # Create API service
+            self.api_service = AsyncApiService()
+            self.logger.info("Initialized AsyncApiService")
+
+            # Set API key from environment if available
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+            if api_key:
+                self.api_service.set_api_key(api_key)
+                self.logger.info("Set API key from environment")
+
+            # Create conversation service
+            self.db_service = AsyncConversationService()
+            self.logger.info("Created AsyncConversationService")
+
+            # Create file processor
+            self.file_processor = AsyncFileProcessor()
+            self.logger.info("Initialized AsyncFileProcessor")
+
+            # Initialize database tables using run_sync - IMPROVED APPROACH
+            try:
+                # Use the improved run_sync that processes Qt events while waiting
+                success = run_sync(self.db_service.initialize())
+                self.logger.info(f"Database initialized synchronously: {success}")
+            except Exception as e:
+                self.logger.error(f"Error initializing database synchronously: {str(e)}")
+
+                # Fall back to async initialization with proper error handling
+                def on_init_complete(result):
+                    self.logger.info(f"Database initialized asynchronously: {result}")
+
+                def on_init_error(error):
+                    self.logger.error(f"Database initialization error: {str(error)}")
+
+                # Use the improved run_coroutine function
+                run_coroutine(
+                    self.db_service.initialize(),
+                    callback=on_init_complete,
+                    error_callback=on_init_error
+                )
+
+            self.logger.info("Services initialized")
+        except Exception as e:
+            self.logger.error(f"Error initializing services: {e}", exc_info=True)
+            raise
+
+    def _load_initial_data(self):
+        """Load initial data after the UI is shown, using improved qasync approach"""
+        try:
+            self.logger.info("Loading initial data")
+
+            # Check if the event loop is running before proceeding
+            loop = ensure_qasync_loop()
+            if not loop.is_running():
+                self.logger.error("Cannot load initial data - event loop not running")
+                return False
+
+            # Use run_coroutine with improved error handling
+            def on_success(success):
+                self.logger.info(f"Initial data load {'succeeded' if success else 'failed'}")
+
+            def on_error(e):
+                self.logger.error(f"Error loading initial data: {str(e)}")
+                # Try to recover with a new conversation
+                self._initialize_fallback_conversation()
+
+            # Use the improved run_coroutine function
+            run_coroutine(
+                self._load_initial_data_async(),
+                callback=on_success,
+                error_callback=on_error
+            )
+
+            return True
+        except Exception as e:
+            self.logger.error(f"Error setting up initial data load: {str(e)}")
+            return False
+
+    def _initialize_fallback_conversation(self):
+        """Create a fallback conversation in case of data loading errors"""
+        self.logger.warning("Attempting to create fallback conversation")
+
+        def on_success(result):
+            self.logger.info(f"Fallback conversation created: {result}")
+
+        def on_error(e):
+            self.logger.error(f"Failed to create fallback conversation: {str(e)}")
+            # Show error to user
+            self._show_error_window("Failed to create conversation - please restart the application")
+
+        # Use the improved run_coroutine function
+        run_coroutine(
+            self._initialize_new_conversation(),
+            callback=on_success,
+            error_callback=on_error
+        )
 
     def _complete_initialization(self):
         """Complete initialization after the event loop is running
@@ -662,27 +748,6 @@ class AsyncApplication(QObject):
         """Handle error from QML"""
         self.logger.error(f"Error from QML: {error_message}")
 
-    def _load_initial_data(self):
-        """Load initial data after the UI is shown, using improved qasync approach"""
-        try:
-            self.logger.info("Loading initial data")
-
-            # Check if the event loop is running before proceeding
-            if not self._check_event_loop():
-                self.logger.error("Cannot load initial data - event loop not running")
-                return False
-
-            # Use run_coroutine with improved error handling
-            run_coroutine(
-                self._load_initial_data_async(),
-                callback=lambda success: self.logger.info(f"Initial data load {'succeeded' if success else 'failed'}"),
-                error_callback=lambda e: self.logger.error(f"Error loading initial data: {str(e)}")
-            )
-
-            return True
-        except Exception as e:
-            self.logger.error(f"Error setting up initial data load: {str(e)}")
-            return False
 
     async def _load_initial_data_async(self):
         """Async implementation of loading initial data with improved error handling"""
