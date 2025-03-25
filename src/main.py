@@ -60,7 +60,7 @@ class AsyncApplication(QObject):
             self._show_error_window(str(e))
 
     def _initialize(self):
-        """Core initialization logic with improved event loop handling"""
+        """Initialize the application with comprehensive error handling"""
         try:
             # Initialize application
             self.app = QApplication(sys.argv)
@@ -76,11 +76,30 @@ class AsyncApplication(QObject):
 
             # CRITICAL FIX: Initialize qasync with better setup
             self.logger.info("Initializing qasync event loop")
+
+            # First get the event loop before installing qasync
+            try:
+                old_loop = asyncio.get_event_loop()
+                if hasattr(old_loop, 'close'):
+                    old_loop.close()
+            except RuntimeError:
+                pass
+
+            # Now install qasync with the application
             self.event_loop = install_qasync(self.app)
+
+            # Set it as the default loop
             asyncio.set_event_loop(self.event_loop)
 
-            # Force the loop to be "running" by scheduling a dummy task
-            asyncio.ensure_future(asyncio.sleep(0.1), loop=self.event_loop)
+            # CRITICAL FIX: Pre-start the event loop to ensure it's marked as running
+            if hasattr(self.event_loop, '_process_events'):
+                self.event_loop._process_events([])
+
+            # Force the event loop to be "running" by scheduling a wake-up event
+            self.event_loop.call_soon(lambda: None)
+
+            # Use app.processEvents to trigger event processing
+            self.app.processEvents()
 
             self.logger.info(f"Main event loop initialized: {id(self.event_loop)}")
 
@@ -99,7 +118,7 @@ class AsyncApplication(QObject):
 
         except Exception as e:
             self.logger.critical(f"Error during application initialization: {e}", exc_info=True)
-            raise  # Re-raise for handling in __init__
+            raise
 
     def _complete_initialization(self):
         """Complete initialization after the event loop is running
@@ -175,7 +194,7 @@ class AsyncApplication(QObject):
             self.message_processor_timer.start(50)  # 50ms interval
 
             # Log the event loop state
-            self.logger.info(f"Running event loop {id(self.event_loop)}, is_running={self.event_loop._is_running}")
+            self.logger.info(f"Running event loop {id(self.event_loop)}, is_running={self.event_loop.is_running()}")
 
             # Schedule an initial task to make the loop "running"
             self._ensure_loop_running()
@@ -191,11 +210,25 @@ class AsyncApplication(QObject):
     def _ensure_loop_running(self):
         """Helper method to ensure the event loop is running"""
         try:
-            # This will create a task in the event loop, making it "running"
+            # Check if the loop is already running
+            if hasattr(self.event_loop, 'is_running') and self.event_loop.is_running():
+                # Loop is already running, just log and return
+                self.logger.debug(f"Event loop already running: {id(self.event_loop)}")
+                return
+
+            # For qasync loops - process events to activate
+            if hasattr(self.event_loop, '_process_events'):
+                self.event_loop._process_events([])
+
+            # Create a dummy task to help the loop recognize it's "running"
             asyncio.ensure_future(asyncio.sleep(0.1), loop=self.event_loop)
 
+            # Also process Qt events
+            self.app.processEvents()
+
             # For debugging, check the loop status
-            self.logger.debug(f"Event loop check: id={id(self.event_loop)}, running={self.event_loop._is_running}")
+            running_status = hasattr(self.event_loop, 'is_running') and self.event_loop.is_running()
+            self.logger.debug(f"Event loop check: id={id(self.event_loop)}, running={running_status}")
         except Exception as e:
             self.logger.error(f"Error ensuring loop is running: {str(e)}")
 
@@ -802,6 +835,7 @@ class AsyncApplication(QObject):
         except Exception as e:
             self.logger.critical(f"Error initializing views: {str(e)}")
             self._show_error_window(str(e))
+
 
 def main():
     """Main application entry point with comprehensive error handling"""

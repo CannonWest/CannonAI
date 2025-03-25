@@ -71,6 +71,7 @@ def get_event_loop():
         asyncio.set_event_loop(new_loop)
         return new_loop
 
+
 def ensure_qasync_loop():
     """
     Ensure we're using the qasync event loop and return it.
@@ -89,14 +90,26 @@ def ensure_qasync_loop():
             return current_loop
         except RuntimeError:
             # No running loop, use the get_event_loop instead
-            loop = asyncio.get_event_loop()
+            if _main_loop is not None:
+                loop = _main_loop
+            else:
+                loop = asyncio.get_event_loop()
 
-            # CRITICAL FIX: call run_forever in non-blocking mode
-            # to make the loop "running" for asyncio.create_task() calls
+            # CRITICAL FIX: Properly start the loop in a way compatible with qasync
             if not loop.is_running():
                 logger.debug(f"Starting event loop: {id(loop)}")
-                # Schedule the loop to run in a non-blocking way
-                QTimer.singleShot(0, lambda: _start_loop_if_needed(loop))
+
+                # Create and schedule a dummy task to ensure the loop is marked as running
+                dummy_task = loop.create_task(asyncio.sleep(0))
+
+                # For qasync specifically, we need to process events to activate the loop
+                if hasattr(loop, '_process_events'):
+                    loop._process_events([])
+
+                # For Qt integration, make sure any pending events are processed
+                from PyQt6.QtCore import QCoreApplication
+                if QCoreApplication.instance():
+                    QCoreApplication.instance().processEvents()
 
             return loop
     except Exception as e:
@@ -219,9 +232,33 @@ def run_coroutine(coro: Union[Coroutine, Callable[[], Coroutine]],
     loop = ensure_qasync_loop()
     logger.debug(f"Running coroutine with loop: {id(loop)}")
 
-    # Create a runner and run it
-    runner = RunCoroutineInQt(actual_coro, callback, error_callback)
-    return runner.start()
+    # CRITICAL FIX: Use a different approach for qasync event loops
+    try:
+        # For qasync-specific event loops
+        if hasattr(loop, '_queue_task'):
+            # Use qasync's internal method to properly queue tasks
+            task = loop._queue_task(actual_coro)
+
+            # Set up callbacks manually
+            if callback:
+                task.add_done_callback(
+                    lambda t: callback(t.result()) if not t.cancelled() and not t.exception() else None
+                )
+            if error_callback:
+                task.add_done_callback(
+                    lambda t: error_callback(t.exception()) if not t.cancelled() and t.exception() else None
+                )
+
+            return task
+        else:
+            # Create a runner and run it for standard event loops
+            runner = RunCoroutineInQt(actual_coro, callback, error_callback)
+            return runner.start()
+    except Exception as e:
+        logger.error(f"Error running coroutine: {str(e)}")
+        if error_callback:
+            error_callback(e)
+        return None
 
 
 # Function to run async code synchronously (blocking) - should be used sparingly
