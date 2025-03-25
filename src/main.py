@@ -16,7 +16,6 @@ from PyQt6.QtCore import QUrl, QObject, QTimer, pyqtSlot, QCoreApplication
 
 # Import logging utilities first to set up logging early
 from src.utils.logging_utils import configure_logging, get_logger
-from src.utils.qasync_utilities import setup_async_task_processor
 
 # Configure logging for the application
 configure_logging()
@@ -70,9 +69,6 @@ class AsyncApplication(QObject):
             self.event_loop = install_qasync(self.app)
             asyncio.set_event_loop(self.event_loop)
             self.logger.info(f"Main event loop initialized: {id(self.event_loop)}")
-
-            # Set up periodic task processor for event loop integration
-            self.task_processor_timer = setup_async_task_processor()
 
             # Initialize QML engine with proper setup
             self._initialize_qml_engine()
@@ -513,13 +509,13 @@ class AsyncApplication(QObject):
         run_coroutine(self._process_file_async(file_path))
 
     async def _process_file_async(self, file_path):
-        """Process file asynchronously"""
         try:
-            # Use async file processing
+            # Use existing async file utilities but with proper qasync integration
+            from src.utils.async_file_utils import get_file_info_async
+
             file_info = await get_file_info_async(
                 file_path,
-                progress_callback=lambda progress: self._update_file_progress(os.path.basename(file_path), progress),
-                error_callback=lambda error: self._handle_file_error(os.path.basename(file_path), error)
+                progress_callback=lambda progress: self._update_file_progress(os.path.basename(file_path), progress)
             )
 
             if file_info:
@@ -662,15 +658,6 @@ class AsyncApplication(QObject):
             self.logger.error(f"Error loading conversations: {str(e)}")
             # Return an empty list rather than raising an exception
             return []
-
-    """
-    Improved initialization sequence for the OpenAI Chat application.
-    This addresses event loop management issues and ensures proper initialization flow.
-    """
-
-    import asyncio
-    import threading
-    from PyQt6.QtCore import QTimer
 
     def _complete_initialization(self):
         """Complete initialization after the event loop is running

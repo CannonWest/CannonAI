@@ -1,5 +1,5 @@
 """
-Enhanced QML bridge with async support for better integration with asyncio.
+Enhanced QML bridge with qasync support for better integration with PyQt.
 """
 
 import asyncio
@@ -8,20 +8,20 @@ from datetime import datetime
 from PyQt6.QtCore import QObject, pyqtSlot, pyqtSignal, pyqtProperty, QVariant, Qt, QModelIndex, QByteArray
 from PyQt6.QtQml import QQmlApplicationEngine, QQmlContext, QJSValue
 
-from src.utils.qasync_bridge import run_coroutine
+from src.utils.qasync_bridge import run_coroutine, ensure_qasync_loop
 from src.utils.logging_utils import get_logger
 
 
 class AsyncQmlBridge(QObject):
     """
-    Enhanced bridge class to expose Python objects to QML with async support
-    
+    Enhanced bridge class to expose Python objects to QML with qasync support
+
     This class adds support for calling async methods from QML and handling
     the results with callbacks or events.
     """
     # Add error signal
     errorOccurred = pyqtSignal(str, str)
-    
+
     # Add task signals
     taskStarted = pyqtSignal(str)
     taskFinished = pyqtSignal(str, 'QVariant')
@@ -33,10 +33,10 @@ class AsyncQmlBridge(QObject):
         self.root_context = engine.rootContext()
         self.view_models = {}
         self.logger = get_logger(__name__)
-        
+
         # Dictionary to track running tasks
         self._tasks = {}
-        
+
         # Set up cleanup
         self._async_cleanup_pending = False
 
@@ -118,13 +118,13 @@ class AsyncQmlBridge(QObject):
     @pyqtSlot(str, str, 'QVariant', result=str)
     def call_async_method(self, object_name: str, method_name: str, args=None) -> str:
         """
-        Call an async method on a Python object from QML
-        
+        Call an async method on a Python object from QML using qasync
+
         Args:
             object_name: The name of the object (e.g., "conversationViewModel")
             method_name: The method to call
             args: Arguments to pass to the method
-            
+
         Returns:
             Task ID that can be used to track the task
         """
@@ -132,23 +132,23 @@ class AsyncQmlBridge(QObject):
             # Generate a unique task ID
             import uuid
             task_id = str(uuid.uuid4())
-            
+
             # Get the object
             obj = self.view_models.get(object_name)
             if not obj:
                 obj = self.get_qml_object(object_name)
-                
+
             if not obj:
                 raise ValueError(f"Object '{object_name}' not found")
-                
+
             # Get the method
             method = getattr(obj, method_name, None)
             if not method:
                 raise ValueError(f"Method '{method_name}' not found on object '{object_name}'")
-                
+
             # Process arguments
             processed_args = self._process_qml_args(args)
-            
+
             # Check if the method is a coroutine function
             if asyncio.iscoroutinefunction(method):
                 # It's an async method, run it with run_coroutine
@@ -157,48 +157,48 @@ class AsyncQmlBridge(QObject):
                 # It's a regular method, run it directly and emit result
                 result = method(*processed_args)
                 self.taskFinished.emit(task_id, result)
-                
+
             return task_id
-            
+
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Error calling async method {method_name}: {str(e)}")
             self.errorOccurred.emit("MethodCallError", f"Error calling {method_name}: {str(e)}")
             return ""
-    
+
     def _run_async_method(self, task_id: str, method: Callable, args: List):
-        """Run an async method and handle the result"""
+        """Run an async method using qasync and handle the result"""
         self.taskStarted.emit(task_id)
-        
+
         def on_success(result):
             self.taskFinished.emit(task_id, result)
             if task_id in self._tasks:
                 del self._tasks[task_id]
-                
+
         def on_error(error):
             error_msg = str(error)
             self.logger.error(f"Task {task_id} failed: {error_msg}")
             self.taskError.emit(task_id, error_msg)
             if task_id in self._tasks:
                 del self._tasks[task_id]
-        
-        # Run the coroutine
+
+        # Run the coroutine using run_coroutine instead of creating threads
         try:
             coro = method(*args)
-            runner = run_coroutine(coro, on_success, on_error)
-            self._tasks[task_id] = runner
+            task = run_coroutine(coro, on_success, on_error)
+            self._tasks[task_id] = task
         except Exception as e:
             on_error(e)
-    
+
     def _process_qml_args(self, args):
         """Process arguments from QML to Python"""
         if args is None:
             return []
-            
+
         # If it's a single value, make it a list
         if not isinstance(args, list):
             args = [args]
-            
+
         # Convert QJSValue to Python
         processed_args = []
         for arg in args:
@@ -206,7 +206,7 @@ class AsyncQmlBridge(QObject):
                 processed_args.append(arg.toVariant())
             else:
                 processed_args.append(arg)
-                
+
         return processed_args
 
     @pyqtSlot(str)
@@ -214,11 +214,11 @@ class AsyncQmlBridge(QObject):
         """Cancel a running task"""
         if task_id in self._tasks:
             self.logger.debug(f"Cancelling task {task_id}")
-            runner = self._tasks[task_id]
-            if hasattr(runner, 'cancel'):
-                runner.cancel()
+            task = self._tasks[task_id]
+            if hasattr(task, 'cancel'):
+                task.cancel()
             del self._tasks[task_id]
-            
+
     def call_qml_method(self, object_name: str, method_name: str, *args) -> Any:
         """
         Call a method on a QML object
@@ -365,28 +365,28 @@ class AsyncQmlBridge(QObject):
                 return f"{size:.1f} {unit}"
             size /= 1024.0
         return f"{size:.1f} PB"
-        
+
     async def perform_async_cleanup(self):
         """
         Clean up async resources
-        
+
         This method should be called before application shutdown
         """
         if self._async_cleanup_pending:
             return
-            
+
         self._async_cleanup_pending = True
-        
+
         # Clean up running tasks
-        for task_id, runner in list(self._tasks.items()):
+        for task_id, task in list(self._tasks.items()):
             try:
-                if hasattr(runner, 'cancel'):
-                    runner.cancel()
+                if hasattr(task, 'cancel'):
+                    task.cancel()
             except Exception as e:
                 self.logger.error(f"Error cancelling task {task_id}: {str(e)}")
-                
+
         self._tasks.clear()
-        
+
         # Clean up view models
         for name, vm in list(self.view_models.items()):
             try:
@@ -397,5 +397,5 @@ class AsyncQmlBridge(QObject):
                         vm.cleanup()
             except Exception as e:
                 self.logger.error(f"Error cleaning up view model {name}: {str(e)}")
-                
+
         self.logger.info("AsyncQmlBridge cleanup completed")

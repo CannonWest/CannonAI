@@ -7,7 +7,6 @@ import asyncio
 import traceback
 import functools
 import sys
-import threading
 from typing import Any, Callable, Coroutine, Optional, Union
 
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer
@@ -113,12 +112,16 @@ def run_coroutine(coro: Union[Coroutine, Callable[[], Coroutine]],
     """
     Run a coroutine from Qt code with proper event loop handling
 
-    This version avoids using create_task which requires a running event loop
+    This function is the central mechanism for running async code from sync code.
+    It correctly handles any coroutine to ensure it's executed in the qasync event loop.
 
     Args:
         coro: The coroutine or coroutine function to run
         callback: Optional callback to call with the result
         error_callback: Optional callback to call if an error occurs
+
+    Returns:
+        A runner object that can be used to cancel the task
     """
     # Get the coroutine object
     if callable(coro) and not asyncio.iscoroutine(coro):
@@ -160,15 +163,16 @@ class RunCoroutineInQt(QObject):
         self.callback = callback
         self.error_callback = error_callback
         self.future = None
+        self.task = None
 
-        # Connect signals to callbacks
+        # Connect signals to callbacks if provided
         if callback:
             self.taskCompleted.connect(lambda result: callback(result))
         if error_callback:
             self.taskError.connect(lambda error: error_callback(error))
 
     def start(self):
-        """Start the coroutine using a safer approach"""
+        """Start the coroutine using qasync"""
         try:
             # Always use a consistent event loop
             loop = ensure_qasync_loop()
@@ -178,71 +182,43 @@ class RunCoroutineInQt(QObject):
             if not asyncio.iscoroutine(self.coro):
                 raise TypeError(f"Expected a coroutine, got {type(self.coro)}")
 
-            # Use a thread-based approach if we can't run in the current context
-            try:
-                # This should work if we have a valid loop that's accessible
-                if isinstance(loop, qasync.QEventLoop):
-                    # For qasync, we'll use ensure_future which is more reliable
-                    self.future = asyncio.ensure_future(self._safe_execute(), loop=loop)
-                    return self.future
-                else:
-                    # For standard loop, try the same approach
-                    self.future = asyncio.ensure_future(self._safe_execute(), loop=loop)
-                    return self.future
-            except RuntimeError:
-                # If we can't use ensure_future, use a thread-based approach
-                logger.warning("Falling back to thread-based coroutine execution")
-                self._run_in_thread()
-                return self
-
+            # Create and schedule the task
+            self.task = asyncio.create_task(self._safe_execute())
+            return self
         except Exception as e:
             logger.error(f"Error starting coroutine: {str(e)}", exc_info=True)
             if self.error_callback:
                 self.error_callback(e)
             return None
 
-    def _run_in_thread(self):
-        """Run the coroutine in a separate thread"""
-        def target():
-            try:
-                # Create a new event loop for this thread
-                thread_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(thread_loop)
-
-                try:
-                    # Run the coroutine
-                    result = thread_loop.run_until_complete(self.coro)
-
-                    # Use QTimer to safely emit the signal from the main thread
-                    QTimer.singleShot(0, lambda: self.taskCompleted.emit(result))
-                finally:
-                    thread_loop.close()
-            except Exception as e:
-                logger.error(f"Error in thread coroutine: {str(e)}", exc_info=True)
-                # Use QTimer to safely emit the signal from the main thread
-                QTimer.singleShot(0, lambda: self.taskError.emit(e))
-
-        # Start the thread
-        thread = threading.Thread(target=target)
-        thread.daemon = True
-        thread.start()
+    def cancel(self):
+        """Cancel the running task"""
+        if self.task and not self.task.done():
+            self.task.cancel()
+            logger.debug("Task cancelled")
 
     async def _safe_execute(self):
         """Safely execute the coroutine with exception handling"""
         try:
             result = await self.coro
+            # Emit signal on the main thread
             self.taskCompleted.emit(result)
             return result
+        except asyncio.CancelledError:
+            logger.debug("Task was cancelled")
+            raise
         except Exception as e:
             logger.error(f"Error executing coroutine: {str(e)}", exc_info=True)
+            # Emit signal on the main thread
             self.taskError.emit(e)
             raise
 
 
-# Function to run async code synchronously (blocking)
+# Function to run async code synchronously (blocking) - should be used sparingly
 def run_sync(coro):
     """
     Run a coroutine synchronously (will block until complete)
+    Only use this during application initialization or in tests.
 
     Args:
         coro: Coroutine to run
@@ -250,9 +226,28 @@ def run_sync(coro):
     Returns:
         Result of the coroutine
     """
-    # Create a helper event loop for synchronous execution
-    temp_loop = asyncio.new_event_loop()
+    # Use a helper event loop for synchronous execution
+    old_loop = None
     try:
+        # Save the current event loop if any
+        try:
+            old_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            pass
+
+        # Create a new event loop
+        temp_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(temp_loop)
+
+        # Run the coroutine
         return temp_loop.run_until_complete(coro)
     finally:
-        temp_loop.close()
+        # Clean up
+        try:
+            temp_loop.close()
+        except:
+            pass
+
+        # Restore the old loop if any
+        if old_loop:
+            asyncio.set_event_loop(old_loop)
