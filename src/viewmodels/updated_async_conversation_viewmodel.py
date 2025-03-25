@@ -1,16 +1,20 @@
 """
 ViewModel for managing conversation interactions using qasync for PyQt integration.
 """
-import concurrent
-
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer
+# Standard library imports
 import asyncio
+import concurrent.futures  # Use the full module name for clarity
 
-from src.services.database import AsyncConversationService
-from src.services.api import AsyncApiService
+# Third-party imports
+from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer
+
+# Application-specific imports - utilities first
 from src.utils.logging_utils import get_logger
 from src.utils.qasync_bridge import run_coroutine, ensure_qasync_loop
 
+# Application-specific imports - services
+from src.services.api import AsyncApiService
+from src.services.database import AsyncConversationService
 
 class FullAsyncConversationViewModel(QObject):
     """

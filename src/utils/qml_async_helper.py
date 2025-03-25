@@ -3,15 +3,18 @@ Enhanced helper module for integrating QML with async Python code using qasync.
 Provides reliable utilities for running async code from QML signals.
 """
 
+# Standard library imports
 import asyncio
+import time
 import traceback
 import uuid
-import time
-from typing import Any, Callable, Dict, Optional, List, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QVariant, QTimer
+# Third-party imports
+from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QTimer, QVariant
 
-from src.utils.qasync_bridge import run_coroutine, ensure_qasync_loop
+# Local application imports
+from src.utils.qasync_bridge import ensure_qasync_loop, run_coroutine
 from src.utils.logging_utils import get_logger
 
 # Get a logger for this module

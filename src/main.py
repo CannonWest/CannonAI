@@ -3,42 +3,40 @@ Main entry point for the fully asynchronous OpenAI Chat application.
 Implements improved error handling and complete asyncio integration with qasync.
 """
 
-import asyncio
-from datetime import datetime
+# 1. Standard library imports
 import sys
 import os
 import traceback
+from datetime import datetime
+import asyncio
+
+# 2. Third-party library imports (non-Qt)
+from dotenv import load_dotenv
+
+# 3. Logging setup (must be before other app imports)
+from src.utils.logging_utils import configure_logging, get_logger
+configure_logging()
+logger = get_logger(__name__)
+
+# 4. Qt imports
 from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget
 from PyQt6.QtQml import QQmlApplicationEngine
 from PyQt6.QtCore import QUrl, QObject, QTimer, pyqtSlot, QCoreApplication
 
-# Import logging utilities first to set up logging early
-from src.utils.logging_utils import configure_logging, get_logger
-
-# Configure logging for the application
-configure_logging()
-
-# Get a logger for this module
-logger = get_logger(__name__)
-
-# Import utilities for async support
+# 5. asyncio/qasync integration (must be after Qt imports but before other app imports)
 from src.utils.qasync_bridge import install as install_qasync, run_coroutine, ensure_qasync_loop, run_sync, install
 from src.utils.async_qml_bridge import AsyncQmlBridge
 
-# Import the fully async ViewModels
-from src.viewmodels.updated_async_conversation_viewmodel import FullAsyncConversationViewModel
-from src.viewmodels.async_settings_viewmodel import AsyncSettingsViewModel
-
-# Import services
+# 6. App-specific service imports
 from src.services.database import AsyncConversationService
 from src.services.api.async_api_service import AsyncApiService
 
-# Import async file utilities
+# 7. ViewModel imports
+from src.viewmodels.updated_async_conversation_viewmodel import FullAsyncConversationViewModel
+from src.viewmodels.async_settings_viewmodel import AsyncSettingsViewModel
+
+# 8. Utility imports
 from src.utils.async_file_utils import AsyncFileProcessor, get_file_info_async
-
-# Import the environment variable loader
-from dotenv import load_dotenv
-
 
 class AsyncApplication(QObject):
     """Main application class using fully asynchronous architecture"""

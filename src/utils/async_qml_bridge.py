@@ -1,20 +1,17 @@
-"""
-Enhanced QML bridge with qasync support for better integration with PyQt.
-Provides reliable async operations from QML with proper error handling.
-"""
-
+# Standard library imports
 import asyncio
+import time
 import traceback
 import uuid
-import time
-from typing import Any, Dict, List, Optional, Callable, Union, Type, Awaitable
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, Union
 
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, QVariant, Qt, QModelIndex, QByteArray, QTimer
-from PyQt6.QtQml import QQmlApplicationEngine, QQmlContext, QJSValue
+# Third-party imports
+from PyQt6.QtCore import QByteArray, QModelIndex, QObject, QTimer, Qt, QVariant, pyqtSignal, pyqtSlot
+from PyQt6.QtQml import QJSValue, QQmlApplicationEngine, QQmlContext
 
-from src.utils.qasync_bridge import run_coroutine, ensure_qasync_loop
+# Local application imports
 from src.utils.logging_utils import get_logger
-
+from src.utils.qasync_bridge import ensure_qasync_loop, run_coroutine
 
 class AsyncQmlBridge(QObject):
     """

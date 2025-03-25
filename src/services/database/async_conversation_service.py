@@ -2,19 +2,22 @@
 Fully asynchronous conversation service using SQLAlchemy 2.0 with asyncio support.
 Replaces the previous AsyncConversationService that used thread pools.
 """
-import traceback
-from typing import Dict, List, Any, Optional, Union, Tuple
-from datetime import datetime
-import uuid
+# Standard library imports
 import asyncio
+import traceback
+import uuid
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+# Third-party library imports
+from sqlalchemy import delete, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import or_, update, delete
-from sqlalchemy.orm import selectinload, joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
+# Local application imports
 from src.services.database.async_manager import AsyncDatabaseManager
-from src.services.database.models import Conversation, Message, FileAttachment
+from src.services.database.models import Conversation, FileAttachment, Message
 from src.utils.logging_utils import get_logger
 
 # Get a logger for this module

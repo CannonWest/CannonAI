@@ -1,17 +1,15 @@
-"""
-Asynchronous ViewModel for application settings.
-Handles API key validation and manages setting values.
-"""
-
+# Standard library imports
 import asyncio
 from typing import Dict, Any, List, Optional, Tuple
 
+# Third-party imports
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, pyqtProperty, QVariant
 
-from src.services.storage import SettingsManager
+# Application-specific imports
 from src.services.api.async_api_service import AsyncApiService
-from src.utils.qasync_bridge import run_coroutine
+from src.services.storage import SettingsManager
 from src.utils.logging_utils import get_logger
+from src.utils.qasync_bridge import run_coroutine
 
 # Get logger for this module
 logger = get_logger(__name__)

@@ -1,15 +1,14 @@
-"""
-Asynchronous API service for interacting with OpenAI API.
-"""
-
+# Standard library imports
 import asyncio
 import json
-from typing import Dict, List, Any, Optional, AsyncGenerator, Union
+from typing import Any, AsyncGenerator, Dict, List, Optional, Union
+
+# Third-party library imports
 import aiohttp
 from PyQt6.QtCore import QObject, pyqtSignal
 
+# Local application imports
 from src.utils.logging_utils import get_logger
-
 
 class AsyncApiService(QObject):
     """

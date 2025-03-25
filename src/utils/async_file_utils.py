@@ -3,16 +3,19 @@ Asynchronous utility functions for handling files in the OpenAI Chat application
 Optimized for asyncio integration and large file handling.
 """
 
-import os
-import mimetypes
+# Standard library imports
 import asyncio
-import hashlib
 import concurrent.futures
-from typing import Dict, Optional, Callable, Tuple, List, Any, Union
+import hashlib
+import mimetypes
+import os
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+# Third-party imports
 import tiktoken
 from PyQt6.QtCore import QObject, pyqtSignal
 
+# Local application imports
 from src.utils.logging_utils import get_logger, log_exception
 
 # Get a logger for this module

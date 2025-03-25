@@ -4,7 +4,6 @@ Improved implementation to ensure consistent event loop usage with qasync.
 """
 
 import os
-import asyncio
 import traceback
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
