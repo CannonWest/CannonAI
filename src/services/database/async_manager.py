@@ -130,19 +130,23 @@ class AsyncDatabaseManager:
             self._create_engine()
 
             # Log the current event loop for debugging
-            current_loop = asyncio.get_event_loop()
-            self.logger.debug(f"Creating tables with event loop: {id(current_loop)}")
-
-            # Timeout for database operations
             try:
-                async with asyncio.timeout(10.0):  # 10 second timeout
-                    async with self.engine.begin() as conn:
-                        self.logger.debug("Beginning transaction to create tables")
-                        await conn.run_sync(Base.metadata.create_all)
-                        self.logger.debug("Tables created successfully")
-            except asyncio.TimeoutError:
-                self.logger.error("Timeout while creating database tables")
-                raise RuntimeError("Database operation timed out") from None
+                current_loop = asyncio.get_event_loop()
+                self.logger.debug(f"Creating tables with event loop: {id(current_loop)}")
+            except RuntimeError:
+                self.logger.warning("No event loop in current thread, creating one")
+                current_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(current_loop)
+
+            # CRITICAL FIX: Use try-except instead of timeout
+            try:
+                async with self.engine.begin() as conn:
+                    self.logger.debug("Beginning transaction to create tables")
+                    await conn.run_sync(Base.metadata.create_all)
+                    self.logger.debug("Tables created successfully")
+            except Exception as e:
+                self.logger.error(f"Error during table creation: {str(e)}")
+                raise
 
             self.logger.info("Database tables created or verified")
             return True
