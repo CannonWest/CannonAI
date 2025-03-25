@@ -7,7 +7,6 @@ import os
 import asyncio
 import traceback
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.ext.asyncio import async_scoped_session
 from sqlalchemy.orm import declarative_base
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
@@ -23,24 +22,12 @@ logger = get_logger(__name__)
 # Base class for ORM models
 Base = declarative_base()
 
-import logging
-
 # Set environment variable to enable SQLAlchemy engine debug
 if os.environ.get('DEBUG_SQLALCHEMY', '').lower() in ('1', 'true', 'yes'):
+    import logging
     logging.getLogger('sqlalchemy.engine').setLevel(logging.INFO)
     logging.getLogger('sqlalchemy.pool').setLevel(logging.DEBUG)
     logging.getLogger('aiosqlite').setLevel(logging.DEBUG)
-
-    # Create a formatted handler for SQLAlchemy logs
-    import sys
-
-    sql_handler = logging.StreamHandler(sys.stdout)
-    sql_handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    ))
-    logging.getLogger('sqlalchemy.engine').addHandler(sql_handler)
-    logging.getLogger('sqlalchemy.pool').addHandler(sql_handler)
-    logging.getLogger('aiosqlite').addHandler(sql_handler)
 
 
 class AsyncDatabaseManager:
@@ -71,13 +58,13 @@ class AsyncDatabaseManager:
             connection_string = f'sqlite+aiosqlite:///{db_path}'
             logger.debug(f"Using default connection string: {connection_string}")
 
-        # Validate the connection string has the correct format
+        # Validate the connection string
         if not connection_string.startswith(('sqlite+aiosqlite://', 'mysql+aiomysql://', 'postgresql+asyncpg://')):
             logger.warning(f"Connection string may not be compatible with async SQLAlchemy: {connection_string}")
 
         self.connection_string = connection_string
 
-        # Store the current event loop - IMPORTANT: Use ensure_qasync_loop() for a consistent loop
+        # Get the current event loop - use ensure_qasync_loop for reliability
         try:
             self.loop = ensure_qasync_loop()
             logger.debug(f"Using event loop: {id(self.loop)}")
@@ -103,19 +90,19 @@ class AsyncDatabaseManager:
                 current_loop = ensure_qasync_loop()
                 self.logger.debug(f"Creating engine with loop: {id(current_loop)}")
 
-                # IMPORTANT: Use create_async_engine with proper pooling settings for better connection management
+                # IMPORTANT: Improved engine creation with better connection management
                 self.engine = create_async_engine(
                     self.connection_string,
                     echo=False,
-                    connect_args={"check_same_thread": False},
-                    # Add improved pool settings for better connection management
-                    pool_pre_ping=True,  # Verify connections before using them
-                    pool_recycle=3600,  # Recycle connections after 1 hour
-                    pool_timeout=30,     # Connection timeout of 30 seconds
-                    max_overflow=5       # Allow 5 connections beyond pool_size
+                    future=True,  # Use SQLAlchemy 2.0 style
+                    pool_pre_ping=True,  # Verify connections before using
+                    pool_recycle=3600,   # Recycle connections after 1 hour
+                    pool_size=5,         # Maintain 5 connections in the pool
+                    max_overflow=10,     # Allow 10 connections beyond pool_size
+                    pool_timeout=30      # Connection timeout of 30 seconds
                 )
 
-                # Create session factory
+                # Use async_sessionmaker for proper session creation
                 self.async_session = async_sessionmaker(
                     self.engine,
                     expire_on_commit=False,
@@ -142,34 +129,31 @@ class AsyncDatabaseManager:
                 current_loop = ensure_qasync_loop()
                 self.logger.debug(f"Creating tables with event loop: {id(current_loop)}")
             except RuntimeError:
-                self.logger.warning("No event loop in current thread, creating one")
-                from src.utils.qasync_bridge import install
-                current_loop = install()
+                self.logger.warning("No event loop in current thread")
+                return False
 
-            # IMPROVED APPROACH: Use a non-async run_sync method for table creation that avoids context managers
-            # This is more reliable than using async context managers which can cause issues
-            def _create_all_tables(conn):
-                # This function runs in a thread and doesn't need asyncio
-                self.logger.debug("Creating tables synchronously via run_sync")
-                Base.metadata.create_all(conn)
-                return True
-
+            # Create all tables using engine.begin() context manager
             try:
-                # Use run_sync which is more reliable for schema creation
+                # This approach is more reliable than run_sync
                 async with self.engine.begin() as conn:
-                    await conn.run_sync(_create_all_tables)
-                    self.logger.debug("Tables created successfully via run_sync")
-            except RuntimeError as e:
-                # If we get "no running event loop", fallback to alternative approach
-                if "no running event loop" in str(e):
+                    # Create all tables
+                    await conn.run_sync(Base.metadata.create_all)
+                    self.logger.debug("Tables created successfully")
+            except Exception as e:
+                self.logger.error(f"Error creating tables: {str(e)}")
+
+                # Fall back to sync approach if async fails
+                if "no running event loop" in str(e) or "Task" in str(e):
                     self.logger.warning(f"Using fallback method for table creation: {str(e)}")
 
-                    # FALLBACK: Use SQLAlchemy directly in a with statement without async
+                    # Use SQLAlchemy directly without async
                     from sqlalchemy import create_engine
                     sync_url = self.connection_string.replace('+aiosqlite', '')
                     sync_engine = create_engine(sync_url)
+
                     with sync_engine.begin() as connection:
                         Base.metadata.create_all(connection)
+
                     sync_engine.dispose()
                     self.logger.debug("Tables created successfully with fallback method")
                 else:
@@ -180,7 +164,6 @@ class AsyncDatabaseManager:
         except Exception as e:
             self.logger.error(f"Error creating database tables: {str(e)}")
             self.logger.error(traceback.format_exc())
-            # Re-raise the exception but with a clearer message
             raise RuntimeError(f"Failed to create database tables: {str(e)}") from e
 
     @asynccontextmanager
@@ -196,7 +179,7 @@ class AsyncDatabaseManager:
         if not self._initialized:
             self._create_engine()
 
-        # IMPROVED: Set up timeout management
+        # Create session with proper timeout management
         timeout = 10.0  # 10 seconds timeout
         start_time = time.time()
 
@@ -217,8 +200,11 @@ class AsyncDatabaseManager:
             finally:
                 # Always close the session when done
                 if session:
-                    if time.time() - start_time > timeout:
-                        self.logger.warning(f"Session operation took longer than {timeout}s")
+                    execution_time = time.time() - start_time
+
+                    # Log slow queries
+                    if execution_time > 1.0:  # Log queries taking more than 1 second
+                        self.logger.warning(f"Slow database operation: {execution_time:.3f}s")
 
                     try:
                         await session.close()
@@ -228,7 +214,7 @@ class AsyncDatabaseManager:
             self.logger.error(f"Failed to create database session: {str(e)}")
             self.logger.error(traceback.format_exc())
 
-            # If we couldn't create a session, try to clean up
+            # Clean up if we couldn't create a session
             if session:
                 try:
                     await session.close()
@@ -253,31 +239,6 @@ class AsyncDatabaseManager:
                 self.async_session = None
                 self._initialized = False
         self.logger.info("AsyncDatabaseManager closed")
-
-    async def execute_query(self, query, params=None):
-        """
-        Execute a raw SQL query with improved connection management
-        This provides a more direct way to run queries when needed
-
-        Args:
-            query: The SQL query to execute
-            params: Optional parameters for the query
-
-        Returns:
-            The query result
-        """
-        if not self._initialized:
-            self._create_engine()
-
-        async with self.get_session() as session:
-            try:
-                result = await session.execute(query, params or {})
-                await session.commit()
-                return result
-            except Exception as e:
-                await session.rollback()
-                self.logger.error(f"Error executing query: {str(e)}")
-                raise
 
     async def ping(self) -> bool:
         """
