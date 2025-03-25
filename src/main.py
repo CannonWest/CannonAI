@@ -279,49 +279,6 @@ class AsyncApplication(QObject):
         # then start the async initialization
         QTimer.singleShot(100, self._start_async_initialization)
 
-    async def _async_initialize_view_data(self):
-        """Asynchronously initialize view data"""
-        try:
-            # Asynchronously load conversations
-            self.logger.debug("Starting to load conversations asynchronously")
-            conversations = await self.db_service.get_all_conversations()
-            self.logger.debug(f"Loaded {len(conversations) if conversations else 0} conversations")
-
-            if conversations:
-                # Convert conversations to list of dicts for the model
-                conv_dicts = []
-                for conv in conversations:
-                    conv_dicts.append({
-                        "id": conv.id,
-                        "name": conv.name,
-                        "created_at": conv.created_at.isoformat(),
-                        "modified_at": conv.modified_at.isoformat()
-                    })
-
-                # Update model in QML by calling a method on the mainWindow
-                self.logger.debug("Updating QML conversation model")
-                self.qml_bridge.call_qml_method("mainWindow", "updateConversationsModel", conv_dicts)
-                self.logger.info(f"Loaded {len(conv_dicts)} conversations into model")
-
-                # Load the first conversation if available
-                if conv_dicts:
-                    self.logger.debug(f"Loading first conversation: {conv_dicts[0]['id']}")
-                    await asyncio.sleep(0.1)  # Small delay to ensure UI is ready
-                    self.conversation_vm.load_conversation(conv_dicts[0]['id'])
-            else:
-                # No conversations - create a new one
-                self.logger.info("No existing conversations found, creating new conversation")
-                await asyncio.sleep(0.1)  # Small delay to ensure UI is ready
-                self.conversation_vm.create_new_conversation("New Conversation")
-
-            return True  # Signal successful completion
-        except Exception as e:
-            # Comprehensive error logging
-            import traceback
-            self.logger.error(f"Error initializing view data: {str(e)}")
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-            # Re-raise to ensure error propagation
-            raise
 
     # File handling helper
     def _handle_file_request(self, file_url):
@@ -534,18 +491,134 @@ class AsyncApplication(QObject):
     def _start_async_initialization(self):
         """Start the async initialization process"""
         try:
-            # Make sure we're passing a coroutine object, not a coroutine function
-            # The missing parentheses were likely causing the issue
+            # Ensure we're using the right event loop
+            from src.utils.qasync_bridge import run_coroutine, ensure_qasync_loop
+            ensure_qasync_loop()
+
+            # Use run_coroutine with proper error handling
             run_coroutine(
-                self._async_initialize_view_data(),  # Note the () to call the coroutine function
+                self._async_initialize_view_data(),
                 callback=lambda result: self.logger.info("View data initialization completed"),
-                error_callback=lambda e: self.logger.error(f"Error initializing view data: {str(e)}", exc_info=True)
+                error_callback=lambda e: self._handle_async_init_error(e)
             )
         except Exception as e:
             # Improve error logging
             import traceback
             self.logger.error(f"Error starting async initialization: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
+
+    # 2. Add a dedicated error handler method
+    def _handle_async_init_error(self, error):
+        """Handle errors during async initialization"""
+        import traceback
+        error_msg = str(error)
+        self.logger.error(f"Error initializing view data: {error_msg}")
+
+        # Get the full traceback
+        tb = getattr(error, "__traceback__", None)
+        if tb:
+            tb_str = "".join(traceback.format_tb(tb))
+            self.logger.error(f"Traceback: {tb_str}")
+
+        # Create a more user-friendly error message
+        user_msg = "Failed to initialize application data."
+        if "loop" in error_msg.lower():
+            user_msg += " Event loop configuration issue detected."
+        elif "database" in error_msg.lower():
+            user_msg += " Database connection issue detected."
+
+        # Show error to user but continue with the application
+        if hasattr(self, 'engine') and self.engine:
+            root_objects = self.engine.rootObjects()
+            if root_objects:
+                # Find error dialog object
+                for obj in root_objects:
+                    if hasattr(obj, "showError"):
+                        obj.showError(user_msg)
+                        break
+
+    # 3. Update _async_initialize_view_data method
+    async def _async_initialize_view_data(self):
+        """Asynchronously initialize view data"""
+        try:
+            # Ensure we're using the right event loop
+            from src.utils.qasync_bridge import ensure_qasync_loop
+            ensure_qasync_loop()
+
+            # Asynchronously load conversations
+            self.logger.debug("Starting to load conversations asynchronously")
+
+            # Ensure the database service is initialized
+            await self.db_service.initialize()
+
+            # Now get all conversations
+            conversations = await self.db_service.get_all_conversations()
+            self.logger.debug(f"Loaded {len(conversations) if conversations else 0} conversations")
+
+            if conversations:
+                # Convert conversations to list of dicts for the model
+                conv_dicts = []
+                for conv in conversations:
+                    conv_dicts.append({
+                        "id": conv.id,
+                        "name": conv.name,
+                        "created_at": conv.created_at.isoformat(),
+                        "modified_at": conv.modified_at.isoformat()
+                    })
+
+                # Update model in QML by calling a method on the mainWindow
+                self.logger.debug("Updating QML conversation model")
+                self.qml_bridge.call_qml_method("mainWindow", "updateConversationsModel", conv_dicts)
+                self.logger.info(f"Loaded {len(conv_dicts)} conversations into model")
+
+                # Load the first conversation if available
+                if conv_dicts:
+                    self.logger.debug(f"Loading first conversation: {conv_dicts[0]['id']}")
+                    await asyncio.sleep(0.1)  # Small delay to ensure UI is ready
+
+                    # Use run_coroutine instead of directly calling to ensure proper loop usage
+                    from src.utils.qasync_bridge import run_coroutine
+                    run_coroutine(
+                        self._load_first_conversation(conv_dicts[0]['id']),
+                        error_callback=lambda e: self.logger.error(f"Error loading first conversation: {str(e)}")
+                    )
+            else:
+                # No conversations - create a new one
+                self.logger.info("No existing conversations found, creating new conversation")
+                await asyncio.sleep(0.1)  # Small delay to ensure UI is ready
+                from src.utils.qasync_bridge import run_coroutine
+                run_coroutine(
+                    self._create_initial_conversation(),
+                    error_callback=lambda e: self.logger.error(f"Error creating initial conversation: {str(e)}")
+                )
+
+            return True  # Signal successful completion
+        except Exception as e:
+            # Log error and re-raise to ensure proper error handling
+            import traceback
+            self.logger.error(f"Error initializing view data: {str(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            # Re-raise to be handled by the error callback
+            raise
+
+    # 4. Add helper methods for loading/creating initial conversations
+    async def _load_first_conversation(self, conversation_id):
+        """Helper to load the first conversation"""
+        # Ensure we're using the right event loop
+        from src.utils.qasync_bridge import ensure_qasync_loop
+        ensure_qasync_loop()
+
+        # Load the conversation
+        self.conversation_vm.load_conversation(conversation_id)
+
+    async def _create_initial_conversation(self):
+        """Helper to create initial conversation"""
+        # Ensure we're using the right event loop
+        from src.utils.qasync_bridge import ensure_qasync_loop
+        ensure_qasync_loop()
+
+        # Create a new conversation
+        self.conversation_vm.create_new_conversation("New Conversation")
 
     def _prepare_cleanup(self):
         """Prepare for cleanup - run async cleanup in the event loop"""
