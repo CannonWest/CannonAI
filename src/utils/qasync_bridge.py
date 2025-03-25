@@ -375,6 +375,9 @@ class RunCoroutineInQt(QObject):
         self.timer = None
         self.start_time = None
 
+        # Initialize logger
+        self.logger = get_logger(__name__ + ".RunCoroutineInQt")
+
         # Connect signals to callbacks if provided
         if callback:
             self.taskCompleted.connect(lambda result: callback(result))
@@ -415,7 +418,13 @@ class RunCoroutineInQt(QObject):
 
             return self
         except Exception as e:
-            self.logger.error(f"Error starting coroutine: {str(e)}", exc_info=True)
+            # Defensive error handling if logger isn't available
+            if hasattr(self, 'logger') and self.logger:
+                self.logger.error(f"Error starting coroutine: {str(e)}", exc_info=True)
+            else:
+                print(f"Error starting coroutine: {str(e)}")
+                import traceback
+                traceback.print_exc()
 
             if self.error_callback:
                 # Use QTimer to ensure callback runs on main thread
