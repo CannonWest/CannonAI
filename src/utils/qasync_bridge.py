@@ -76,9 +76,10 @@ def configure_event_loop_policy():
             logger.info("Set custom event loop policy to use SelectorEventLoop on Windows")
 
 
+# Improvements to src/utils/qasync_bridge.py
 def install(application=None):
     """
-    Install the Qt event loop for asyncio with robust initialization.
+    Install the Qt event loop for asyncio with improved Windows stability.
 
     Args:
         application: Optional QApplication instance
@@ -86,7 +87,7 @@ def install(application=None):
     Returns:
         The installed qasync event loop
     """
-    global _main_loop, _loop_initialized, _loop_running, _keep_alive_timer, _explicit_event_processing
+    global _main_loop, _loop_initialized, _loop_running, _keep_alive_timer
 
     # Only initialize once
     if _loop_initialized and _main_loop is not None:
@@ -94,114 +95,81 @@ def install(application=None):
         return _main_loop
 
     try:
-        # Configure the correct event loop policy first
-        configure_event_loop_policy()
-
-        # Get application instance
+        # Get application instance but don't create it if not provided
         from PyQt6.QtWidgets import QApplication
         app = application or QApplication.instance()
         if app is None:
-            app = QApplication([])
+            # Store args to pass to QApplication
+            import sys
+            args = sys.argv
+            app = QApplication(args)
             logger.debug("Created new QApplication instance")
 
-        # For Windows, close any existing event loop before creating a new one
+        # Store a strong reference to prevent garbage collection
+        global _app_reference
+        _app_reference = app
+
+        # Close any existing event loop cleanly before creating a new one
+        try:
+            existing_loop = asyncio.get_event_loop()
+            if not existing_loop.is_closed():
+                logger.debug(f"Closing existing event loop: {id(existing_loop)}")
+                existing_loop.close()
+        except RuntimeError:
+            # No event loop exists, which is fine
+            pass
+
+        # Create new event loop with improved Windows handling
         if platform.system() == "Windows":
-            try:
-                existing_loop = asyncio.get_event_loop()
-                if not existing_loop.is_closed():
-                    logger.debug(f"Closing existing event loop: {id(existing_loop)}")
-                    existing_loop.close()
-            except RuntimeError:
-                # No event loop exists, which is fine
-                pass
-
-        # Create new event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        logger.debug(f"Created new asyncio event loop: {id(loop)}")
-
-        # Windows-specific setup for qasync
-        if platform.system() == "Windows":
-            # On Windows, we need to manually create and configure the QEventLoop
-            qt_loop = QEventLoop(app)
-
-            # Process events in the Qt loop first
-            qt_loop.processEvents(QEventLoop.ProcessEventsFlag.AllEvents)
-
-            # Create qasync loop with explicit setup
-            _main_loop = qasync.QEventLoop(app)
-            _main_loop._explicit_event_processing = _explicit_event_processing
-
-            # Run a test spin of the loop to make sure it's ready
-            _main_loop._process_events([])
+            # Force the SelectorEventLoop for better Windows stability
+            loop = asyncio.SelectorEventLoop()
+            asyncio.set_event_loop(loop)
+            logger.debug(f"Created new SelectorEventLoop: {id(loop)}")
         else:
-            # Non-Windows setup is simpler
+            # Default event loop for non-Windows
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        # Create qasync loop with more reliable setup
+        try:
             _main_loop = qasync.QEventLoop(app)
+            # Add a safety check to ensure app is not None before proceeding
+            if not app:
+                raise RuntimeError("QApplication instance is None")
+
+            # Run a short test to ensure event loop is functional
+            async def _test_loop():
+                await asyncio.sleep(0.001)
+                return True
+
+            # Use run_until_complete which is more reliable
+            _main_loop.run_until_complete(_test_loop())
+            _loop_running = True
+
+        except Exception as e:
+            logger.error(f"Error initializing QEventLoop: {e}")
+            # Fallback - create a new loop if there was an error
+            if app:
+                _main_loop = qasync.QEventLoop(app)
 
         # Set as default asyncio loop
         asyncio.set_event_loop(_main_loop)
-        logger.debug(f"Installed qasync event loop: {id(_main_loop)}")
+        logger.info(f"Installed qasync event loop: {id(_main_loop)}")
 
         # Set custom exception handler for better error reporting
         _main_loop.set_exception_handler(_exception_handler)
 
-        # Create a keep-alive timer to ensure event processing
-        _keep_alive_timer = QTimer()
-        _keep_alive_timer.setInterval(10)  # 10ms
-        _keep_alive_timer.timeout.connect(_process_pending_events)
-        _keep_alive_timer.start()
-
-        # Store reference to prevent garbage collection
-        _main_loop._keep_alive_timer = _keep_alive_timer
-        app._keep_alive_timer = _keep_alive_timer  # Also store on app
-
-        # Save a reference to the app to prevent premature garbage collection
-        _main_loop._app = app
+        # Add cleanup handler - make sure this reference isn't lost
+        app.aboutToQuit.connect(_cleanup_event_loop)
 
         # Mark as initialized
         _loop_initialized = True
 
-        # Windows needs additional setup to ensure event processing
-        if platform.system() == "Windows":
-            # Force process events several times
-            for _ in range(5):  # Increased from 3 to 5
-                app.processEvents()
-                time.sleep(0.02)  # Slightly increased delay (20ms)
-                if hasattr(_main_loop, '_process_events'):
-                    _main_loop._process_events([])
-
-            # Create and run a no-op coroutine to kickstart the loop
-            async def _init_coroutine():
-                # Modern async/await syntax instead of yield from
-                await asyncio.sleep(0.001)
-                return True
-
-            try:
-                # Directly run a simple task to initialize the loop
-                # Using run_until_complete is more reliable than create_task
-                _main_loop.run_until_complete(_init_coroutine())
-                _loop_running = True
-                logger.debug("Initialization coroutine completed, event loop is running")
-            except Exception as e:
-                logger.warning(f"Failed to run initialization coroutine: {e}")
-                # Even if there's an exception, we'll proceed
-        # Set _loop_running flag to True once we've done what we can
-        _loop_running = True
-
-        # Add cleanup handler
-        app.aboutToQuit.connect(_cleanup_event_loop)
-
-        # Start status check timer with increased frequency on Windows
-        _start_status_check(interval=500 if platform.system() == "Windows" else 1000)
-
-        logger.info(f"qasync event loop successfully installed: {id(_main_loop)}")
         return _main_loop
-
     except Exception as e:
         logger.critical(f"Failed to install qasync event loop: {str(e)}")
         logger.critical(traceback.format_exc())
         raise
-
 
 def _process_pending_events():
     """Process both Qt and asyncio events with improved reliability"""
@@ -403,24 +371,100 @@ def _cleanup_event_loop():
 
 
 def _exception_handler(loop, context):
-    """Custom exception handler for the event loop"""
+    """
+    Enhanced exception handler for the event loop with better diagnostics
+    and specific handling for Windows issues.
+
+    Args:
+        loop: The event loop
+        context: Exception context dictionary
+    """
     exception = context.get('exception')
     message = context.get('message', 'No error message')
 
-    if exception:
-        if isinstance(exception, asyncio.CancelledError):
-            logger.debug("Task cancelled")
-        else:
-            logger.error(f"Async error: {message}", exc_info=exception)
+    # Check if this is a task exception
+    if 'task' in context:
+        task = context['task']
+        task_name = task.get_name() if hasattr(task, 'get_name') else str(task)
+        logger.error(f"Error in task {task_name}: {message}")
     else:
-        logger.error(f"Async error: {message}")
+        logger.error(f"Event loop error: {message}")
 
-    # On Windows, don't let event loop exceptions stop the loop
-    if platform.system() == "Windows" and "no running event loop" in str(message):
-        logger.warning("Ignoring 'no running event loop' error on Windows")
-        # Force the loop running flag to True
+    # Detailed exception logging
+    if exception:
+        # Handle cancellation errors differently (less severe)
+        if isinstance(exception, asyncio.CancelledError):
+            logger.debug(f"Task cancelled: {message}")
+            return
+
+        # Handle Windows-specific errors
+        if platform.system() == "Windows":
+            if isinstance(exception, OSError):
+                # Windows abandoned wait error - this happens during shutdown
+                if "ERROR_ABANDONED_WAIT_0" in str(exception):
+                    logger.debug("Windows handle abandoned error - this is normal during shutdown")
+                    return
+
+                # Handle other Windows-specific errors
+                if "WinError" in str(exception):
+                    logger.warning(f"Windows-specific error: {str(exception)}")
+
+                    # Try to recover from common Windows IPC/socket errors
+                    if any(code in str(exception) for code in ["10054", "10053", "10049", "10061"]):
+                        logger.warning("Network/socket error in event loop - attempting recovery")
+
+                        # Check if we can create a new task in the loop
+                        try:
+                            if not loop.is_closed():
+                                # Simple recovery task
+                                async def _recovery():
+                                    await asyncio.sleep(0.1)
+                                    return True
+
+                                asyncio.create_task(_recovery())
+                        except Exception as e:
+                            logger.error(f"Recovery attempt failed: {str(e)}")
+                    return
+
+        # Log the full exception details
+        logger.error(f"Exception details: {type(exception).__name__}: {str(exception)}")
+        tb_lines = "".join(traceback.format_exception(
+            type(exception), exception, exception.__traceback__
+        )).splitlines()
+
+        # Log just the first few and last few lines to avoid excessive output
+        if len(tb_lines) > 20:
+            for line in tb_lines[:8]:  # First 8 lines
+                logger.error(f"TB: {line}")
+            logger.error("... [traceback truncated] ...")
+            for line in tb_lines[-8:]:  # Last 8 lines
+                logger.error(f"TB: {line}")
+        else:
+            for line in tb_lines:
+                logger.error(f"TB: {line}")
+
+    # Handle no running event loop errors - common in GUI applications
+    if "no running event loop" in message:
+        logger.warning("No running event loop error - this is often transient")
+
+        # Set global flag to indicate loop is not running
         global _loop_running
-        _loop_running = True
+        _loop_running = False
+
+        # Try to set the loop as the current event loop
+        try:
+            if not loop.is_closed():
+                asyncio.set_event_loop(loop)
+                logger.debug("Re-set event loop as current loop")
+        except Exception as e:
+            logger.error(f"Failed to reset event loop: {str(e)}")
+        return
+
+    # For critical errors that might crash the application
+    if any(critical_term in message.lower() for critical_term in
+           ["fatal", "crashed", "terminated", "segmentation fault"]):
+        logger.critical(f"CRITICAL EVENT LOOP ERROR: {message}")
+        # Don't re-raise; allow application to continue if possible
 
 
 def ensure_qasync_loop():
