@@ -5,6 +5,8 @@ Improved implementation to ensure consistent event loop usage with qasync.
 
 import os
 import traceback
+import platform
+
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from contextlib import asynccontextmanager
@@ -116,7 +118,7 @@ class AsyncDatabaseManager:
                 raise RuntimeError(f"Failed to create database engine: {str(e)}") from e
 
     async def create_tables(self):
-        """Create all tables defined in the models if they don't exist"""
+        """Create all tables defined in the models if they don't exist with improved Windows handling"""
         self.logger.debug("Ensuring database tables exist")
 
         try:
@@ -125,37 +127,39 @@ class AsyncDatabaseManager:
 
             # Log the current event loop for debugging
             try:
+                from src.utils.qasync_bridge import ensure_qasync_loop
                 current_loop = ensure_qasync_loop()
                 self.logger.debug(f"Creating tables with event loop: {id(current_loop)}")
             except RuntimeError:
                 self.logger.warning("No event loop in current thread")
                 return False
 
-            # Create all tables using engine.begin() context manager
-            try:
-                # This approach is more reliable than run_sync
-                async with self.engine.begin() as conn:
-                    # Create all tables
-                    await conn.run_sync(Base.metadata.create_all)
-                    self.logger.debug("Tables created successfully")
-            except Exception as e:
-                self.logger.error(f"Error creating tables: {str(e)}")
+            # CRITICAL FIX: Special handling for Windows platform
+            if platform.system() == "Windows":
+                # Use a more reliable direct approach on Windows
+                self.logger.debug("Using Windows-specific table creation approach")
 
-                # Fall back to sync approach if async fails
-                if "no running event loop" in str(e) or "Task" in str(e):
-                    self.logger.warning(f"Using fallback method for table creation: {str(e)}")
+                # Fall back to sync approach which is more reliable on Windows
+                from sqlalchemy import create_engine
+                sync_url = self.connection_string.replace('+aiosqlite', '')
+                sync_engine = create_engine(sync_url)
 
-                    # Use SQLAlchemy directly without async
-                    from sqlalchemy import create_engine
-                    sync_url = self.connection_string.replace('+aiosqlite', '')
-                    sync_engine = create_engine(sync_url)
+                with sync_engine.begin() as connection:
+                    Base.metadata.create_all(connection)
 
-                    with sync_engine.begin() as connection:
-                        Base.metadata.create_all(connection)
-
-                    sync_engine.dispose()
-                    self.logger.debug("Tables created successfully with fallback method")
-                else:
+                sync_engine.dispose()
+                self.logger.debug("Tables created successfully with Windows-specific method")
+                return True
+            else:
+                # Standard approach for non-Windows platforms
+                try:
+                    # This approach is more reliable than run_sync
+                    async with self.engine.begin() as conn:
+                        # Create all tables
+                        await conn.run_sync(Base.metadata.create_all)
+                        self.logger.debug("Tables created successfully")
+                except Exception as e:
+                    self.logger.error(f"Error creating tables: {str(e)}")
                     raise
 
             self.logger.info("Database tables created or verified")

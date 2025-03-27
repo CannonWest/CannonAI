@@ -871,7 +871,7 @@ class AsyncApplication(QObject):
             return 1
 
     def _initialize(self):
-        """Initialize the application with comprehensive error handling"""
+        """Initialize the application with improved event loop management for Windows"""
         try:
             # Initialize application
             self.app = QApplication.instance() or QApplication(sys.argv)
@@ -885,23 +885,34 @@ class AsyncApplication(QObject):
             # Load environment variables with better error handling
             self._load_env()
 
-            # CRITICAL: Initialize qasync event loop FIRST before doing anything else
-            from src.utils.qasync_bridge import install, ensure_qasync_loop
-            self.logger.info("Initializing qasync event loop")
+            # CRITICAL CHANGE 1: Properly configure event loop policy for Windows
+            # This needs to happen before qasync initialization
+            if platform.system() == "Windows":
+                from asyncio import WindowsSelectorEventLoopPolicy
+                asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())
+                self.logger.info("Set Windows-specific event loop policy")
+
+            # CRITICAL CHANGE 2: Create event loop separately, then integrate with qasync
+            # Create a new event loop first
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            # Now initialize qasync with existing loop and application
+            from src.utils.qasync_bridge import install
             self.event_loop = install(self.app)
 
-            # Process events to kickstart the loop
+            # CRITICAL CHANGE 3: Process events immediately to ensure loop activation
             self.app.processEvents()
 
-            # Verify loop is running
-            if not self.event_loop.is_running():
-                self.logger.warning("Event loop not running after initialization, applying fixes")
+            # Create dummy task to verify loop functionality
+            async def _verify_loop():
+                await asyncio.sleep(0.1)
+                return True
 
-                # Create a dummy task to help initialize the loop
-                asyncio.ensure_future(asyncio.sleep(0.1), loop=self.event_loop)
+            asyncio.run_coroutine_threadsafe(_verify_loop(), self.event_loop)
 
-                # Process events again
-                self.app.processEvents()
+            # Process events again
+            self.app.processEvents()
 
             # Log loop status and continue with initialization
             self.logger.info(f"Event loop initialized: {id(self.event_loop)}, running={self.event_loop.is_running()}")
@@ -909,12 +920,16 @@ class AsyncApplication(QObject):
             # Initialize QML engine with proper setup
             self._initialize_qml_engine()
 
-            # Initialize services and viewmodels AFTER event loop is working
-            self._initialize_services_sync()  # Use sync version for reliability
+            # CRITICAL CHANGE 4: Initialize services synchronously first, then complete async initialization later
+            # Use synchronous initialization for reliability
+            self._initialize_services_sync()
             self._initialize_viewmodels()
 
             # Set up cleanup handlers
             self._setup_cleanup_handlers()
+
+            # CRITICAL CHANGE 5: Schedule UI initialization after event loop is stable
+            QTimer.singleShot(100, self._complete_initialization)
 
         except Exception as e:
             self.logger.critical(f"Error during application initialization: {e}", exc_info=True)

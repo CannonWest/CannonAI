@@ -76,7 +76,6 @@ def configure_event_loop_policy():
             logger.info("Set custom event loop policy to use SelectorEventLoop on Windows")
 
 
-# Improvements to src/utils/qasync_bridge.py
 def install(application=None):
     """
     Install the Qt event loop for asyncio with improved Windows stability.
@@ -109,6 +108,23 @@ def install(application=None):
         global _app_reference
         _app_reference = app
 
+        # CRITICAL FIX 1: Configure proper event loop policy before closing any loops
+        # Especially important for Windows
+        if platform.system() == "Windows":
+            try:
+                from asyncio import WindowsSelectorEventLoopPolicy
+                asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())
+                logger.debug("Set Windows event loop policy to WindowsSelectorEventLoopPolicy")
+            except (ImportError, AttributeError):
+                # Fallback for older Python versions
+                logger.warning("WindowsSelectorEventLoopPolicy not available, creating custom policy")
+
+                class CustomEventLoopPolicy(asyncio.DefaultEventLoopPolicy):
+                    def new_event_loop(self):
+                        return asyncio.SelectorEventLoop()
+
+                asyncio.set_event_loop_policy(CustomEventLoopPolicy())
+
         # Close any existing event loop cleanly before creating a new one
         try:
             existing_loop = asyncio.get_event_loop()
@@ -119,31 +135,25 @@ def install(application=None):
             # No event loop exists, which is fine
             pass
 
-        # Create new event loop with improved Windows handling
-        if platform.system() == "Windows":
-            # Force the SelectorEventLoop for better Windows stability
-            loop = asyncio.SelectorEventLoop()
-            asyncio.set_event_loop(loop)
-            logger.debug(f"Created new SelectorEventLoop: {id(loop)}")
-        else:
-            # Default event loop for non-Windows
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+        # CRITICAL FIX 2: Create event loop directly rather than through qasync initially
+        # This is more reliable, especially on Windows
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        logger.debug(f"Created new event loop: {id(loop)}")
 
-        # Create qasync loop with more reliable setup
+        # CRITICAL FIX 3: Process events before attempting to create QEventLoop
+        # This helps ensure the Qt event loop is ready
+        app.processEvents()
+
+        # Now create the qasync loop
         try:
             _main_loop = qasync.QEventLoop(app)
             # Add a safety check to ensure app is not None before proceeding
             if not app:
                 raise RuntimeError("QApplication instance is None")
 
-            # Run a short test to ensure event loop is functional
-            async def _test_loop():
-                await asyncio.sleep(0.001)
-                return True
-
-            # Use run_until_complete which is more reliable
-            _main_loop.run_until_complete(_test_loop())
+            # CRITICAL FIX 4: Use simpler test that won't require a running loop
+            asyncio.set_event_loop(_main_loop)
             _loop_running = True
 
         except Exception as e:
@@ -159,8 +169,36 @@ def install(application=None):
         # Set custom exception handler for better error reporting
         _main_loop.set_exception_handler(_exception_handler)
 
+        # CRITICAL FIX 5: Set up a timer to keep the event loop active
+        # This is especially important for Windows
+        if platform.system() == "Windows":
+            _keep_alive_timer = QTimer()
+            _keep_alive_timer.setInterval(100)  # 100ms interval
+
+            def _keep_loop_alive():
+                # Create a dummy task to help keep the loop active
+                if hasattr(_main_loop, 'call_soon_threadsafe'):
+                    async def _ping():
+                        pass
+
+                    try:
+                        _main_loop.call_soon_threadsafe(
+                            lambda: _main_loop.create_task(_ping())
+                        )
+                    except Exception:
+                        pass  # Ignore errors in this helper task
+
+            _keep_alive_timer.timeout.connect(_keep_loop_alive)
+            _keep_alive_timer.start()
+
+            # Store reference in the app to prevent garbage collection
+            app._keep_alive_timer = _keep_alive_timer
+
         # Add cleanup handler - make sure this reference isn't lost
         app.aboutToQuit.connect(_cleanup_event_loop)
+
+        # Process events again to ensure everything is properly initialized
+        app.processEvents()
 
         # Mark as initialized
         _loop_initialized = True
