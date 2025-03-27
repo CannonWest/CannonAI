@@ -43,13 +43,18 @@ from src.utils.async_file_utils import (
     get_file_mime_type
 )
 
-
 # Async QML bridge (preferred)
 from src.utils.async_qml_bridge import AsyncQmlBridge
 
+# Event loop management
+from src.utils.event_loop_manager import EventLoopManager
 
-# Async utilities
+# Enhanced async utilities with improved Windows support
 from src.utils.qasync_bridge import (
+    patch_qasync,
+    ensure_qasync_loop,
+    run_coroutine,
+    run_sync,
     install as install_qasync,
-    run_coroutine
+    get_event_loop_manager
 )

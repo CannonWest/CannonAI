@@ -930,7 +930,7 @@ ApplicationWindow {
 
         contentItem: ColumnLayout {
             spacing: 16
-            width: contentItem.implicitWidth + leftPadding + rightPadding
+            width: parent.width - 32
 
             Text {
                 text: "OpenAI Chat Interface"
