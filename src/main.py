@@ -187,7 +187,7 @@ class AsyncApplication(QObject):
             self._show_error_window("Application startup timed out")
 
     def _initialize_viewmodels(self):
-        """Initialize and register ViewModels"""
+        """Initialize and register ViewModels with improved error handling"""
         try:
             # Create ViewModels
             self.conversation_vm = FullAsyncConversationViewModel()
@@ -195,8 +195,19 @@ class AsyncApplication(QObject):
             self.logger.info("Created ViewModels")
 
             # Initialize settings ViewModel with API service
-            self.settings_vm.initialize(self.api_service)
-            self.logger.info("Initialized AsyncSettingsViewModel with AsyncApiService")
+            # FIXED: Add error handling for missing api_service
+            if hasattr(self, 'api_service') and self.api_service:
+                self.settings_vm.initialize(self.api_service)
+                self.logger.info("Initialized AsyncSettingsViewModel with AsyncApiService")
+            else:
+                # Create API service if it doesn't exist yet
+                self.logger.warning("API service not found, creating it now")
+                self.api_service = AsyncApiService()
+                api_key = os.environ.get("OPENAI_API_KEY", "")
+                if api_key:
+                    self.api_service.set_api_key(api_key)
+                self.settings_vm.initialize(self.api_service)
+                self.logger.info("Created and initialized AsyncApiService")
 
             # Register ViewModels with QML
             self.qml_bridge.register_context_property("conversationViewModel", self.conversation_vm)
@@ -796,13 +807,13 @@ class AsyncApplication(QObject):
         self.app._event_loop_monitor = self.event_loop_monitor
 
     def _initialize_services(self):
-        """Initialize services using proper async approach"""
+        """Initialize services using proper async approach with fixed API service creation"""
         try:
             self.logger.info("Initializing services")
 
-            # Create API service
+            # Create API service - FIXED: Create this first
             self.api_service = AsyncApiService()
-            self.logger.info("Initialized AsyncApiService")
+            self.logger.info("Created AsyncApiService")
 
             # Set API key from environment if available
             api_key = os.environ.get("OPENAI_API_KEY", "")
@@ -818,7 +829,7 @@ class AsyncApplication(QObject):
             self.file_processor = AsyncFileProcessor()
             self.logger.info("Initialized AsyncFileProcessor")
 
-            # DON'T use run_sync - initialize database asynchronously
+            # Initialize database asynchronously
             def on_db_init_complete(result):
                 self.logger.info(f"Database initialized: {result}")
 
@@ -915,9 +926,8 @@ class AsyncApplication(QObject):
             self.logger.critical(f"Error during application initialization: {e}", exc_info=True)
             raise
 
-    # Add a method to keep the event loop alive
     def _keep_event_loop_alive(self):
-        """Create a periodic task to keep the event loop active"""
+        """Create a periodic task to keep the event loop active with improved error handling"""
         self.logger.debug("Setting up event loop keep-alive mechanism")
 
         # Timer to periodically create dummy tasks
@@ -925,16 +935,42 @@ class AsyncApplication(QObject):
         self.keep_alive_timer.setInterval(100)  # 100ms
 
         def create_dummy_task():
-            if hasattr(self, 'event_loop') and self.event_loop and not self.event_loop.is_closed():
+            try:
+                # Try to get the current running loop first
                 try:
-                    # Create a very small async task
-                    async def dummy():
-                        await asyncio.sleep(0.01)
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    # No running loop, try to get one from our manager
+                    if hasattr(self, 'event_loop_manager') and self.event_loop_manager:
+                        loop = self.event_loop_manager.get_loop()
+                        if loop.is_closed():
+                            return  # Skip if loop is closed
+                    else:
+                        return  # Skip if no manager
 
-                    # Use our qasync bridge to run it
-                    asyncio.run_coroutine_threadsafe(dummy(), self.event_loop)
-                except Exception as e:
-                    pass  # Silently ignore any errors
+                # Create a dummy task that handles RuntimeError internally
+                async def dummy():
+                    try:
+                        await asyncio.sleep(0.001)
+                    except (RuntimeError, asyncio.CancelledError) as e:
+                        # Silently catch "no running event loop" and cancellation
+                        pass
+                    except Exception as e:
+                        # Log other exceptions but don't let them propagate
+                        self.logger.debug(f"Error in keep-alive dummy task: {str(e)}")
+
+                # Use create_task directly which is safer than run_coroutine_threadsafe
+                try:
+                    task = loop.create_task(dummy())
+                    # Silence task exceptions
+                    task.add_done_callback(lambda _: None)
+                except Exception:
+                    # Ignore any errors here - this is just a keepalive
+                    pass
+
+            except Exception:
+                # Ignore all errors in the keepalive - it's not critical
+                pass
 
         self.keep_alive_timer.timeout.connect(create_dummy_task)
         self.keep_alive_timer.start()

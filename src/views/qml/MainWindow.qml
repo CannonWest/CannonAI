@@ -474,6 +474,8 @@ ApplicationWindow {
             id: errorDialog
             title: "Error"
             modal: true
+            // Remove implicit width binding and set explicit width
+            width: 400
             property string message: ""
 
             background: Rectangle {
@@ -487,6 +489,7 @@ ApplicationWindow {
                 text: errorDialog.message
                 color: foregroundColor
                 wrapMode: Text.WordWrap
+                width: errorDialog.width - 32  // Use explicit width calculation
                 padding: 16
             }
 
@@ -847,6 +850,8 @@ ApplicationWindow {
         title: "Save Conversations"
         standardButtons: Dialog.Ok
         modal: true
+        // Set explicit width to avoid binding loop
+        width: 400
 
         background: Rectangle {
             color: backgroundColor
@@ -858,6 +863,7 @@ ApplicationWindow {
         contentItem: Text {
             text: "All conversations have been saved."
             color: foregroundColor
+            width: saveDialog.width - 32  // Use explicit width calculation
             padding: 16
         }
     }
@@ -867,8 +873,8 @@ ApplicationWindow {
         title: "Rename Conversation"
         standardButtons: Dialog.Ok | Dialog.Cancel
         modal: true
-        width: 400  // Set explicit width instead of relying on implicit width
-        // Remove any binding to contentItem.implicitWidth + leftPadding + rightPadding
+        width: 400  // Set explicit width
+        // Remove any binding to contentItem.implicitWidth
 
         background: Rectangle {
             color: backgroundColor
@@ -886,8 +892,7 @@ ApplicationWindow {
 
         contentItem: ColumnLayout {
             spacing: 16
-            width: parent.width - 32  // Use parent.width with margin instead of contentItem references
-            anchors.margins: 16
+            width: parent.width - 32  // Use explicit width calculation instead of implicitWidth binding
 
             Text {
                 text: "Enter new conversation name:"
