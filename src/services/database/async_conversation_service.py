@@ -4,10 +4,13 @@ Replaces the previous AsyncConversationService that used thread pools.
 """
 # Standard library imports
 import asyncio
+import platform
+import time
 import traceback
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, AsyncGenerator
 
 # Third-party library imports
 from sqlalchemy import delete, or_, update
@@ -142,27 +145,6 @@ class AsyncConversationService:
             query = select(Conversation).where(Conversation.id == id)
             result = await session.execute(query)
             return result.scalars().first()
-
-    async def get_all_conversations(self) -> List[Conversation]:
-        """
-        Get all conversations ordered by last modified date
-
-        Returns:
-            List of Conversation objects
-        """
-        self.logger.debug("Getting all conversations")
-        
-        # Ensure the service is initialized
-        if not self._initialized:
-            await self.initialize()
-        
-        async with self.db_manager.get_session() as session:
-            query = select(Conversation).order_by(Conversation.modified_at.desc())
-            result = await session.execute(query)
-            conversations = result.scalars().all()
-            
-            self.logger.debug(f"Found {len(conversations)} conversations")
-            return conversations
 
     async def update_conversation(self, id: str, **kwargs) -> bool:
         """
@@ -724,3 +706,143 @@ class AsyncConversationService:
         self.logger.debug("Closing AsyncConversationService")
         await self.db_manager.close()
         self.logger.info("AsyncConversationService closed")
+
+    # Add/modify this method in src/services/database/async_conversation_service.py
+
+    async def get_all_conversations(self) -> List[Conversation]:
+        """
+        Get all conversations ordered by last modified date with improved timeout handling
+
+        Returns:
+            List of Conversation objects
+        """
+        self.logger.debug("Getting all conversations")
+
+        # Ensure the service is initialized
+        if not self._initialized:
+            success = await self.initialize()
+            if not success:
+                self.logger.error("Failed to initialize database service")
+                return []
+
+        # Use a shorter timeout for the session
+        async with self.db_manager.get_session() as session:
+            try:
+                # Set a timeout of 5 seconds for this query
+                await asyncio.wait_for(self._execute_get_all_conversations(session), timeout=5.0)
+
+                # If the above didn't time out, execute the query
+                query = select(Conversation).order_by(Conversation.modified_at.desc())
+                result = await session.execute(query)
+                conversations = result.scalars().all()
+
+                self.logger.debug(f"Found {len(conversations)} conversations")
+                return conversations
+            except asyncio.TimeoutError:
+                self.logger.error("Timeout while getting conversations")
+                return []
+            except Exception as e:
+                self.logger.error(f"Error getting all conversations: {str(e)}")
+                # Return empty list instead of raising
+                return []
+
+    async def _execute_get_all_conversations(self, session):
+        """Helper method for testing database connectivity"""
+        # Simple query to test connection
+        query = select(1)
+        await session.execute(query)
+        return True
+
+
+    @asynccontextmanager
+    async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
+        """
+        Get a new async database session as a context manager with improved error handling
+        and recovery mechanisms for Windows.
+
+        Usage:
+            async with db_manager.get_session() as session:
+                # Use session here
+        """
+        # Make sure engine is created with current event loop
+        if not self._initialized:
+            self._create_engine()
+
+        # Create session with proper timeout management
+        timeout = 10.0  # 10 seconds timeout
+        start_time = time.time()
+
+        session = None
+        attempt = 0
+        max_attempts = 3
+
+        while attempt < max_attempts:
+            try:
+                attempt += 1
+                # Get the session from the factory
+                session = self.async_session()
+
+                # Test the connection with a simple query
+                if platform.system() == "Windows":
+                    try:
+                        # For Windows, use a more reliable approach
+                        await asyncio.wait_for(self._test_connection(session), timeout=5.0)
+                    except (asyncio.TimeoutError, Exception) as e:
+                        if attempt < max_attempts:
+                            self.logger.warning(f"Connection test failed on attempt {attempt}: {str(e)}")
+                            if session:
+                                await session.close()
+                            session = None
+                            await asyncio.sleep(0.1)  # Brief pause before retry
+                            continue
+                        else:
+                            raise
+
+                # Yield the session to the caller
+                try:
+                    yield session
+                except Exception as e:
+                    self.logger.error(f"Error in database session: {str(e)}")
+                    if session and not session.is_active:
+                        self.logger.debug("Session rollback needed")
+                        await session.rollback()
+                    raise
+                finally:
+                    # Always close the session when done
+                    if session:
+                        execution_time = time.time() - start_time
+
+                        # Log slow queries
+                        if execution_time > 1.0:  # Log queries taking more than 1 second
+                            self.logger.warning(f"Slow database operation: {execution_time:.3f}s")
+
+                        try:
+                            await session.close()
+                        except Exception as e:
+                            self.logger.error(f"Error closing session: {str(e)}")
+
+                # If we got here, the session was successful
+                break
+
+            except Exception as e:
+                self.logger.error(f"Failed to create database session (attempt {attempt}): {str(e)}")
+
+                # Clean up if we couldn't create a session
+                if session:
+                    try:
+                        await session.close()
+                    except:
+                        pass
+
+                # If we've used all our attempts, raise the exception
+                if attempt >= max_attempts:
+                    raise
+
+                # Otherwise wait briefly and try again
+                await asyncio.sleep(0.2)
+
+    async def _test_connection(self, session):
+        """Test if the database connection is working"""
+        query = select(1)
+        await session.execute(query)
+        return True

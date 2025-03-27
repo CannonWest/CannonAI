@@ -2,7 +2,7 @@
 Main entry point for the fully asynchronous OpenAI Chat application.
 Implements improved error handling and complete asyncio integration with qasync.
 """
-
+import platform
 # 1. Standard library imports
 import sys
 import os
@@ -856,10 +856,17 @@ class AsyncApplication(QObject):
             self.dummy_task_timer.timeout.connect(create_dummy_task)
             self.dummy_task_timer.start(100)  # Every 100ms
 
-            # Log the event loop state
-            self.logger.info(f"Running event loop {id(self.event_loop)}, is_running={self.event_loop.is_running()}")
+            # Add defensive check before accessing event_loop
+            if hasattr(self, 'event_loop') and self.event_loop:
+                self.logger.info(f"Running event loop {id(self.event_loop)}, is_running={self.event_loop.is_running()}")
+            else:
+                self.logger.warning("Event loop not properly initialized, attempting to continue anyway")
+                # Try to get a valid event loop
+                from src.utils.qasync_bridge import ensure_qasync_loop
+                self.event_loop = ensure_qasync_loop()
 
             # Make one final check before handing control to Qt
+            from src.utils.qasync_bridge import ensure_qasync_loop
             ensure_qasync_loop()
 
             # Use app.exec() which will return when quit() is called
@@ -879,42 +886,51 @@ class AsyncApplication(QObject):
             self.app.setOrganizationName("OpenAI")
             self.app.setOrganizationDomain("openai.com")
 
+            # Initialize event_loop attribute
+            self.event_loop = None
+
             # Set up application-wide error handling
             sys.excepthook = self._global_exception_handler
 
-            # Load environment variables with better error handling
+            # Load environment variables
             self._load_env()
 
-            # CRITICAL CHANGE 1: Properly configure event loop policy for Windows
-            # This needs to happen before qasync initialization
+            # CRITICAL: Configure event loop policy for Windows
             if platform.system() == "Windows":
                 from asyncio import WindowsSelectorEventLoopPolicy
                 asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())
                 self.logger.info("Set Windows-specific event loop policy")
 
-            # CRITICAL CHANGE 2: Create event loop separately, then integrate with qasync
-            # Create a new event loop first
+            # CRITICAL: Create event loop with proper setup
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            # Now initialize qasync with existing loop and application
+            # Create and configure the qasync event loop
             from src.utils.qasync_bridge import install
             self.event_loop = install(self.app)
 
-            # CRITICAL CHANGE 3: Process events immediately to ensure loop activation
+            # IMPORTANT: Add reference to prevent garbage collection
+            self._event_loop_ref = self.event_loop
+
+            # Process events to "prime" the event loop
             self.app.processEvents()
 
-            # Create dummy task to verify loop functionality
-            async def _verify_loop():
+            # Create a dummy task to ensure the loop is activated
+            async def _init_loop():
                 await asyncio.sleep(0.1)
                 return True
 
-            asyncio.run_coroutine_threadsafe(_verify_loop(), self.event_loop)
+            # Run the task with run_coroutine to properly initialize the loop
+            from src.utils.qasync_bridge import run_coroutine
+            run_coroutine(
+                _init_loop(),
+                callback=lambda _: self.logger.info("Event loop initialized and active"),
+                error_callback=lambda e: self.logger.error(f"Failed to initialize event loop: {str(e)}")
+            )
 
-            # Process events again
+            # Process events again after creating the task
             self.app.processEvents()
 
-            # Log loop status and continue with initialization
             self.logger.info(f"Event loop initialized: {id(self.event_loop)}, running={self.event_loop.is_running()}")
 
             # Initialize QML engine with proper setup
@@ -934,6 +950,33 @@ class AsyncApplication(QObject):
         except Exception as e:
             self.logger.critical(f"Error during application initialization: {e}", exc_info=True)
             raise
+
+    # Add a method to keep the event loop alive
+    def _keep_event_loop_alive(self):
+        """Create a periodic task to keep the event loop active"""
+        self.logger.debug("Setting up event loop keep-alive mechanism")
+
+        # Timer to periodically create dummy tasks
+        self.keep_alive_timer = QTimer()
+        self.keep_alive_timer.setInterval(100)  # 100ms
+
+        def create_dummy_task():
+            if hasattr(self, 'event_loop') and self.event_loop and not self.event_loop.is_closed():
+                try:
+                    # Create a very small async task
+                    async def dummy():
+                        await asyncio.sleep(0.01)
+
+                    # Use our qasync bridge to run it
+                    asyncio.run_coroutine_threadsafe(dummy(), self.event_loop)
+                except Exception as e:
+                    pass  # Silently ignore any errors
+
+        self.keep_alive_timer.timeout.connect(create_dummy_task)
+        self.keep_alive_timer.start()
+
+        # Store a reference to prevent garbage collection
+        self.app._keep_alive_timer = self.keep_alive_timer
 
     def _initialize_services_sync(self):
         """Initialize services using synchronous methods for reliability"""
@@ -983,6 +1026,9 @@ class AsyncApplication(QObject):
             from src.utils.qasync_bridge import ensure_qasync_loop
             loop = ensure_qasync_loop()
             self.logger.info(f"Using event loop: {id(loop)}, running={loop.is_running()}")
+
+            # Set up the event loop keep-alive mechanism
+            self._keep_event_loop_alive()
 
             # Load main QML file
             self._load_qml()

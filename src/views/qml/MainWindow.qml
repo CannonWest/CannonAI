@@ -868,6 +868,7 @@ ApplicationWindow {
         standardButtons: Dialog.Ok | Dialog.Cancel
         modal: true
         width: 400  // Set explicit width instead of relying on implicit width
+        // Remove any binding to contentItem.implicitWidth + leftPadding + rightPadding
 
         background: Rectangle {
             color: backgroundColor
@@ -885,7 +886,8 @@ ApplicationWindow {
 
         contentItem: ColumnLayout {
             spacing: 16
-            width: contentItem.implicitWidth + leftPadding + rightPadding
+            width: parent.width - 32  // Use parent.width with margin instead of contentItem references
+            anchors.margins: 16
 
             Text {
                 text: "Enter new conversation name:"
