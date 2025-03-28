@@ -34,154 +34,6 @@ def get_event_loop_manager(app=None):
 
     return _event_loop_manager
 
-def ensure_qasync_loop():
-    """
-    Ensure we have a properly initialized and running qasync event loop.
-    Improved version with better error handling and guaranteed loop creation.
-
-    Returns:
-        The event loop
-    """
-    try:
-        # First try to get the current running loop
-        try:
-            return asyncio.get_running_loop()
-        except RuntimeError:
-            # No running loop, continue with creation steps
-            pass
-
-        # Try to get the event loop using get_event_loop
-        try:
-            loop = asyncio.get_event_loop()
-            if not loop.is_closed():
-                # If we got here, we have a valid loop
-                return loop
-        except RuntimeError:
-            # No event loop in the current thread
-            pass
-
-        # Get the global event loop manager
-        manager = get_event_loop_manager()
-
-        # Try to get a loop from the manager
-        loop = manager.get_loop()
-        if loop and not loop.is_closed():
-            # Set it as the current event loop
-            asyncio.set_event_loop(loop)
-            logger.debug(f"Ensured qasync loop from manager: {id(loop)}")
-            return loop
-
-        # Last resort: Create a new event loop
-        logger.warning("No valid event loop found, creating a new one")
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        # Create a no-op task to help "prime" the loop
-        loop.create_task(asyncio.sleep(0))
-
-        return loop
-
-    except Exception as e:
-        logger.error(f"Error in ensure_qasync_loop: {str(e)}")
-        # Ultimate fallback - create a simple new event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop
-
-def run_coroutine(coro, callback=None, error_callback=None, timeout=None):
-    """
-    Improved version of run_coroutine that uses the event loop manager.
-
-    Args:
-        coro: The coroutine to run
-        callback: Optional callback for result
-        error_callback: Optional callback for errors
-        timeout: Optional timeout in seconds
-
-    Returns:
-        A runner object that can be used to track/cancel the task
-    """
-    try:
-        # Make sure we have a valid coroutine
-        if not asyncio.iscoroutine(coro):
-            if callable(coro):
-                try:
-                    coro = coro()
-                    if not asyncio.iscoroutine(coro):
-                        if error_callback:
-                            error_callback(TypeError(f"Expected a coroutine, got {type(coro)}"))
-                        return None
-                except Exception as e:
-                    if error_callback:
-                        error_callback(e)
-                    return None
-            else:
-                if error_callback:
-                    error_callback(TypeError(f"Expected a coroutine, got {type(coro)}"))
-                return None
-
-        # Get the event loop
-        loop = ensure_qasync_loop()
-
-        # Create a wrapper task that handles callbacks
-        async def wrapper():
-            try:
-                if timeout is not None:
-                    result = await asyncio.wait_for(coro, timeout)
-                else:
-                    result = await coro
-
-                if callback:
-                    callback(result)
-
-                return result
-            except asyncio.CancelledError:
-                logger.debug("Task was cancelled")
-                raise
-            except asyncio.TimeoutError:
-                logger.warning(f"Task timed out after {timeout} seconds")
-                if error_callback:
-                    error_callback(TimeoutError(f"Operation timed out after {timeout} seconds"))
-                raise
-            except Exception as e:
-                logger.error(f"Error in task: {str(e)}")
-                if error_callback:
-                    error_callback(e)
-                raise
-
-        # Create and start the task
-        if loop.is_closed():
-            if error_callback:
-                error_callback(RuntimeError("Event loop is closed"))
-            return None
-
-        # Special handling for Windows to avoid issues
-        if platform.system() == "Windows":
-            try:
-                # Use run_coroutine_threadsafe for improved robustness on Windows
-                future = asyncio.run_coroutine_threadsafe(wrapper(), loop)
-
-                # Return a dummy task-like object that supports cancellation
-                class TaskLike:
-                    def cancel(self):
-                        future.cancel()
-
-                return TaskLike()
-            except Exception as e:
-                logger.error(f"Windows task creation error: {str(e)}")
-                if error_callback:
-                    error_callback(e)
-                return None
-        else:
-            # Standard approach for non-Windows platforms
-            task = loop.create_task(wrapper())
-            return task
-    except Exception as e:
-        logger.error(f"Error in run_coroutine: {str(e)}")
-        if error_callback:
-            error_callback(e)
-        return None
-
 def patch_qasync():
     """
     Apply patches to the qasync module to fix compatibility issues.
@@ -292,6 +144,181 @@ def install(application=None):
     # Initialize the event loop
     return manager.initialize()
 
+def ensure_qasync_loop():
+    """
+    Ensure we have a properly initialized and running qasync event loop.
+    Improved version with better error handling and guaranteed loop creation.
+
+    Returns:
+        The event loop
+    """
+    try:
+        # First try to get the current running loop
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop, continue with creation steps
+            pass
+
+        # Try to get the event loop using get_event_loop
+        try:
+            loop = asyncio.get_event_loop()
+            if not loop.is_closed():
+                # If we got here, we have a valid loop
+                return loop
+        except RuntimeError:
+            # No event loop in the current thread
+            pass
+
+        # Get the global event loop manager
+        manager = get_event_loop_manager()
+
+        # Try to get a loop from the manager
+        loop = manager.get_loop()
+        if loop and not loop.is_closed():
+            # Set it as the current event loop
+            asyncio.set_event_loop(loop)
+
+            # Create a dummy task to ensure the loop is properly initialized
+            try:
+                loop.create_task(asyncio.sleep(0.01))
+            except Exception:
+                pass
+
+            # Process Qt events to help activate the loop
+            from PyQt6.QtCore import QCoreApplication
+            if QCoreApplication.instance():
+                QCoreApplication.instance().processEvents()
+
+            logger.debug(f"Ensured qasync loop from manager: {id(loop)}")
+            return loop
+
+        # Last resort: Create a new event loop
+        logger.warning("No valid event loop found, creating a new one")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        # Create a no-op task to help "prime" the loop
+        loop.create_task(asyncio.sleep(0))
+
+        return loop
+
+    except Exception as e:
+        logger.error(f"Error in ensure_qasync_loop: {str(e)}")
+        # Ultimate fallback - create a simple new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+
+def run_coroutine(coro, callback=None, error_callback=None, timeout=None):
+    """
+    Improved version of run_coroutine that uses the event loop manager.
+
+    Args:
+        coro: The coroutine to run
+        callback: Optional callback for result
+        error_callback: Optional callback for errors
+        timeout: Optional timeout in seconds
+
+    Returns:
+        A runner object that can be used to track/cancel the task
+    """
+    try:
+        # Make sure we have a valid coroutine
+        if not asyncio.iscoroutine(coro):
+            if callable(coro):
+                try:
+                    coro = coro()
+                    if not asyncio.iscoroutine(coro):
+                        if error_callback:
+                            error_callback(TypeError(f"Expected a coroutine, got {type(coro)}"))
+                        return None
+                except Exception as e:
+                    if error_callback:
+                        error_callback(e)
+                    return None
+            else:
+                if error_callback:
+                    error_callback(TypeError(f"Expected a coroutine, got {type(coro)}"))
+                return None
+
+        # Get the event loop
+        loop = ensure_qasync_loop()
+
+        # Force the loop to be active
+        if hasattr(loop, '_process_events'):
+            # For qasync loops, process events to kickstart the loop
+            try:
+                loop._process_events([])
+            except Exception:
+                pass
+
+            # Also process Qt events
+            from PyQt6.QtCore import QCoreApplication
+            if QCoreApplication.instance():
+                QCoreApplication.instance().processEvents()
+
+        # Create a wrapper task that handles callbacks
+        async def wrapper():
+            try:
+                if timeout is not None:
+                    result = await asyncio.wait_for(coro, timeout)
+                else:
+                    result = await coro
+
+                if callback:
+                    callback(result)
+
+                return result
+            except asyncio.CancelledError:
+                logger.debug("Task was cancelled")
+                raise
+            except asyncio.TimeoutError:
+                logger.warning(f"Task timed out after {timeout} seconds")
+                if error_callback:
+                    error_callback(TimeoutError(f"Operation timed out after {timeout} seconds"))
+                raise
+            except Exception as e:
+                logger.error(f"Error in task: {str(e)}")
+                if error_callback:
+                    error_callback(e)
+                raise
+
+        # Create and start the task
+        if loop.is_closed():
+            if error_callback:
+                error_callback(RuntimeError("Event loop is closed"))
+            return None
+
+        # Special handling for Windows to avoid issues
+        if platform.system() == "Windows":
+            try:
+                # Use run_coroutine_threadsafe for improved robustness on Windows
+                future = asyncio.run_coroutine_threadsafe(wrapper(), loop)
+
+                # Return a dummy task-like object that supports cancellation
+                class TaskLike:
+                    def cancel(self):
+                        future.cancel()
+
+                return TaskLike()
+            except Exception as e:
+                logger.error(f"Windows task creation error: {str(e)}")
+                if error_callback:
+                    error_callback(e)
+                return None
+        else:
+            # Standard approach for non-Windows platforms
+            task = loop.create_task(wrapper())
+            return task
+    except Exception as e:
+        logger.error(f"Error in run_coroutine: {str(e)}")
+        if error_callback:
+            error_callback(e)
+        return None
+
+
 def run_sync(coro):
     """
     Run a coroutine synchronously (blocking) with improved error handling
@@ -328,6 +355,12 @@ def run_sync(coro):
             loop = manager.get_loop()
             if not loop.is_closed():
                 asyncio.set_event_loop(loop)
+                # For qasync loops, process events to kickstart the loop
+                if hasattr(loop, '_process_events'):
+                    try:
+                        loop._process_events([])
+                    except Exception:
+                        pass
                 return loop.run_until_complete(coro)
 
             # Approach 3: Create a new event loop
@@ -342,7 +375,7 @@ def run_sync(coro):
             if attempt == 2:  # Last attempt
                 logger.error(f"Failed to run coroutine synchronously: {str(e)}")
                 raise
-            logger.warning(f"Error running coroutine (attempt {attempt+1}): {str(e)}")
+            logger.warning(f"Error running coroutine (attempt {attempt + 1}): {str(e)}")
 
     # This should not be reachable, but just in case
     raise RuntimeError("Failed to run coroutine after multiple attempts")

@@ -61,25 +61,6 @@ class AsyncApplication(QObject):
             self.logger.critical(f"Error during application initialization: {e}", exc_info=True)
             self._show_error_window(str(e))
 
-    def _initialize_fallback_conversation(self):
-        """Create a fallback conversation in case of data loading errors"""
-        self.logger.warning("Attempting to create fallback conversation")
-
-        def on_success(result):
-            self.logger.info(f"Fallback conversation created: {result}")
-
-        def on_error(e):
-            self.logger.error(f"Failed to create fallback conversation: {str(e)}")
-            # Show error to user
-            self._show_error_window("Failed to create conversation - please restart the application")
-
-        # Use the improved run_coroutine function
-        run_coroutine(
-            self._initialize_new_conversation(),
-            callback=on_success,
-            error_callback=on_error
-        )
-
     def _check_event_loop(self):
         """Check if the event loop is properly running and fix if needed"""
         if not self.event_loop.is_running():
@@ -1041,26 +1022,85 @@ class AsyncApplication(QObject):
         """Load initial data after the UI is shown using improved qasync approach"""
         self.logger.info("Loading initial data")
 
-        # Get event loop from manager to ensure it's running
-        loop = self.event_loop_manager.get_loop()
-        self.logger.info(f"Using event loop for data loading: {id(loop)}")
+        # Direct synchronous approach for first-time load to avoid event loop issues
+        try:
+            # Use a simpler approach without complex coroutine management
+            conversations = self._load_conversations_sync()
 
-        # Use run_coroutine with improved error handling
-        def on_success(success):
-            self.logger.info(f"Initial data load {'succeeded' if success else 'failed'}")
+            if conversations and len(conversations) > 0:
+                self.logger.info(f"Loaded {len(conversations)} conversations")
 
-        def on_error(e):
-            self.logger.error(f"Error loading initial data: {str(e)}")
-            # Try to recover with a new conversation
+                # Update the QML model on the main thread
+                QTimer.singleShot(0, lambda: self.qml_bridge.call_qml_method(
+                    "mainWindow", "updateConversationsModel", conversations
+                ))
+
+                # Load the first conversation after a short delay
+                first_id = conversations[0]['id']
+                QTimer.singleShot(100, lambda: self.conversation_vm.load_conversation(first_id))
+            else:
+                # Create a new conversation if none exists
+                self.logger.info("No conversations found, creating new one")
+                self._initialize_fallback_conversation()
+        except Exception as e:
+            self.logger.error(f"Error in initial data load: {str(e)}")
+            # Try fallback method
             self._initialize_fallback_conversation()
 
-        # Use the event loop manager to run the coroutine
-        self.event_loop_manager.run_coroutine(
-            self._load_initial_data_async(),
-            callback=on_success,
-            error_callback=on_error,
-            timeout=30  # 30 second timeout
-        )
+    def _load_conversations_sync(self):
+        """Synchronous version of conversation loading for initial app state"""
+        try:
+            # Initialize database synchronously if needed
+            if not hasattr(self.db_service, '_initialized') or not self.db_service._initialized:
+                from src.utils.qasync_bridge import run_sync
+                run_sync(self.db_service.initialize())
+
+            # Use run_sync to execute the coroutine synchronously
+            from src.utils.qasync_bridge import run_sync
+            conversations = run_sync(self.db_service.get_all_conversations())
+
+            # Convert to list of dicts for the model
+            result = []
+            for conv in conversations:
+                result.append({
+                    'id': conv.id,
+                    'name': conv.name,
+                    'created_at': conv.created_at.isoformat() if conv.created_at else None,
+                    'modified_at': conv.modified_at.isoformat() if conv.modified_at else None
+                })
+            return result
+        except Exception as e:
+            self.logger.error(f"Error in sync conversation loading: {str(e)}")
+            return []
+
+    def _initialize_fallback_conversation(self):
+        """Create a fallback conversation in case of data loading errors"""
+        self.logger.warning("Attempting to create fallback conversation")
+
+        try:
+            # Use a direct synchronous approach for reliability
+            from src.utils.qasync_bridge import run_sync
+
+            # Make sure database is initialized
+            if not hasattr(self.db_service, '_initialized') or not self.db_service._initialized:
+                run_sync(self.db_service.initialize())
+
+            # Create a new conversation
+            conversation = run_sync(self.db_service.create_conversation("New Conversation"))
+
+            if conversation:
+                self.logger.info(f"Fallback conversation created: {conversation.id}")
+                # Load it after a short delay to ensure UI is ready
+                QTimer.singleShot(200, lambda: self.conversation_vm.load_conversation(conversation.id))
+                return True
+            else:
+                self.logger.error("Failed to create fallback conversation")
+                return False
+        except Exception as e:
+            self.logger.error(f"Error creating fallback conversation: {str(e)}")
+            # Show error to user
+            QTimer.singleShot(100, lambda: self._show_error_window("Failed to create conversation - please restart the application"))
+            return False
 
     async def _load_initial_data_async(self):
         """Async implementation of loading initial data with improved error handling"""

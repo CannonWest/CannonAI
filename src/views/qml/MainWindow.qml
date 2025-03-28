@@ -873,8 +873,8 @@ ApplicationWindow {
         title: "Rename Conversation"
         standardButtons: Dialog.Ok | Dialog.Cancel
         modal: true
-        width: 400  // Set explicit width
-        // Remove any binding to contentItem.implicitWidth
+        width: 400  // Fixed width
+        height: contentColumn.implicitHeight + 60  // Fixed height based on content plus padding
 
         background: Rectangle {
             color: backgroundColor
@@ -890,29 +890,37 @@ ApplicationWindow {
             }
         }
 
-        contentItem: ColumnLayout {
-            spacing: 16
-            width: parent.width - 32  // Use explicit width calculation instead of implicitWidth binding
+        contentItem: Item {
+            width: 400 - 32  // Dialog width minus margins
+            height: contentColumn.implicitHeight
 
-            Text {
-                text: "Enter new conversation name:"
-                color: foregroundColor
-                Layout.fillWidth: true
-            }
+            ColumnLayout {
+                id: contentColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                spacing: 16
 
-            TextField {
-                id: renameField
-                Layout.fillWidth: true
-                color: foregroundColor
-
-                background: Rectangle {
-                    color: highlightColor
-                    radius: 4
+                Text {
+                    text: "Enter new conversation name:"
+                    color: foregroundColor
+                    Layout.fillWidth: true
                 }
 
-                Component.onCompleted: {
-                    if (conversationList.currentIndex >= 0) {
-                        text = conversationsModel.get(conversationList.currentIndex).name
+                TextField {
+                    id: renameField
+                    Layout.fillWidth: true
+                    color: foregroundColor
+
+                    background: Rectangle {
+                        color: highlightColor
+                        radius: 4
+                    }
+
+                    Component.onCompleted: {
+                        if (conversationList.currentIndex >= 0) {
+                            text = conversationsModel.get(conversationList.currentIndex).name
+                        }
                     }
                 }
             }
