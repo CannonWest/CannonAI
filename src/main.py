@@ -1,6 +1,6 @@
 """
 Main entry point for the fully asynchronous OpenAI Chat application.
-Implements improved error handling and complete asyncio integration with qasync.
+Significantly improved event loop management and error recovery.
 """
 import platform
 # 1. Standard library imports
@@ -25,11 +25,10 @@ from PyQt6.QtQml import QQmlApplicationEngine
 from PyQt6.QtCore import QUrl, QObject, QTimer, pyqtSlot, QCoreApplication
 
 # 5. asyncio/qasync integration (must be after Qt imports but before other app imports)
-from src.utils.qasync_bridge import install as install_qasync, run_coroutine, ensure_qasync_loop, run_sync, install
+from src.utils.qasync_bridge import install as install_qasync, run_coroutine, ensure_qasync_loop
 from src.utils.async_qml_bridge import AsyncQmlBridge
 from src.utils.event_loop_manager import EventLoopManager
-from src.utils.qasync_bridge import patch_qasync, ensure_qasync_loop, run_coroutine
-
+from src.utils.qasync_bridge import patch_qasync
 
 # 6. App-specific service imports
 from src.services.database import AsyncConversationService
@@ -43,7 +42,7 @@ from src.viewmodels.async_settings_viewmodel import AsyncSettingsViewModel
 from src.utils.async_file_utils import AsyncFileProcessor, get_file_info_async
 
 class AsyncApplication(QObject):
-    """Main application class using fully asynchronous architecture"""
+    """Main application class using fully asynchronous architecture with improved event loop management"""
 
     def __init__(self):
         """Initialize the application with comprehensive error handling"""
@@ -53,6 +52,10 @@ class AsyncApplication(QObject):
         # Setup logger
         self.logger = get_logger("AsyncApplication")
         self.main_window_shown = False
+        self._cleanup_in_progress = False
+        self._initialization_complete = False
+        self._event_loop_check_count = 0
+        self._event_loop_retry_limit = 5
 
         # Run the actual initialization process
         try:
@@ -60,62 +63,6 @@ class AsyncApplication(QObject):
         except Exception as e:
             self.logger.critical(f"Error during application initialization: {e}", exc_info=True)
             self._show_error_window(str(e))
-
-    def _check_event_loop(self):
-        """Check if the event loop is properly running and fix if needed"""
-        if not self.event_loop.is_running():
-            self.logger.warning("Event loop not running, trying to start it")
-
-            # Create a new task that will force the loop to run
-            asyncio.ensure_future(asyncio.sleep(0.1), loop=self.event_loop)
-
-            # Process Qt events
-            self.app.processEvents()
-
-            # Check again
-            if not self.event_loop.is_running():
-                self.logger.error("Failed to start event loop")
-
-                # Last resort - recreate the event loop
-                self.event_loop = install_qasync(self.app)
-                asyncio.set_event_loop(self.event_loop)
-
-                # Create a task and process events
-                asyncio.ensure_future(asyncio.sleep(0.1), loop=self.event_loop)
-                self.app.processEvents()
-
-        # Get the current running status
-        is_running = self.event_loop.is_running()
-        self.logger.info(f"Event loop check: id={id(self.event_loop)}, running={is_running}")
-
-        return is_running
-
-    def _initialize_services_with_manager(self):
-        """Initialize services using the event loop manager for safer async operations"""
-        # Create API service - FIXED: Create this first
-        self.api_service = AsyncApiService()
-        self.logger.info("Created AsyncApiService")
-
-        # Set API key from environment if available
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-        if api_key:
-            self.api_service.set_api_key(api_key)
-            self.logger.info("Set API key from environment")
-
-        # Create conversation service
-        self.db_service = AsyncConversationService()
-        self.logger.info("Created AsyncConversationService")
-
-        # Create file processor
-        self.file_processor = AsyncFileProcessor()
-        self.logger.info("Initialized AsyncFileProcessor")
-
-        # Initialize database using the special event loop manager method
-        # This method doesn't require a running loop and works during initialization
-        db_initialized = self.event_loop_manager.init_async_service(self.db_service)
-        self.logger.info(f"Database initialization started: {db_initialized}")
-
-        self.logger.info("Services initialized")
 
     def _initialize(self):
         """Initialize the application with improved event loop management for Windows"""
@@ -137,6 +84,7 @@ class AsyncApplication(QObject):
 
             # Create event loop manager
             self.event_loop_manager = EventLoopManager(self.app)
+            # Initialize the event loop before anything else happens
             self.event_loop = self.event_loop_manager.initialize()
 
             # Add reference to prevent garbage collection
@@ -151,15 +99,38 @@ class AsyncApplication(QObject):
             # Initialize QML engine with proper setup
             self._initialize_qml_engine()
 
-            # CRITICAL: Initialize services with our enhanced manager
-            self._initialize_services_with_manager()
+            # Set up event loop monitoring and keep-alive
+            self._setup_event_loop_monitor()
+
+            # Create API service first (required by other services)
+            self.api_service = AsyncApiService()
+            self.logger.info("Created AsyncApiService")
+
+            # Set API key from environment if available
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+            if api_key:
+                self.api_service.set_api_key(api_key)
+                self.logger.info("Set API key from environment")
+
+            # Create conversation service
+            self.db_service = AsyncConversationService()
+            self.logger.info("Created AsyncConversationService")
+
+            # Initialize database using the event loop manager method
+            db_init_success = self.event_loop_manager.init_async_service(self.db_service)
+            self.logger.info(f"Database initialization started: {db_init_success}")
+
+            # Initialize viewmodels after services are set up
             self._initialize_viewmodels()
 
             # Set up cleanup handlers
             self._setup_cleanup_handlers()
 
             # Schedule UI initialization after event loop is stable
-            QTimer.singleShot(100, self._complete_initialization)
+            QTimer.singleShot(200, self._complete_initialization)
+
+            # Set initialization flag
+            self._initialization_complete = True
 
         except Exception as e:
             self.logger.critical(f"Error during application initialization: {e}", exc_info=True)
@@ -190,31 +161,67 @@ class AsyncApplication(QObject):
         self.error_window = window
         self.logger.info("Showing error window")
 
+    def _setup_event_loop_monitor(self):
+        """Set up monitoring to ensure event loop stays active"""
+        # Create timer for periodic checks
+        self.event_loop_monitor = QTimer()
+        self.event_loop_monitor.setInterval(500)  # Check every 500ms
+        self.event_loop_monitor.timeout.connect(self._ensure_event_loop_health)
+        self.event_loop_monitor.start()
 
-    def _ensure_loop_running(self):
-        """Helper method to ensure the event loop is running"""
+        # Create timer for periodically creating dummy tasks
+        self.keep_alive_timer = QTimer()
+        self.keep_alive_timer.setInterval(100)  # 100ms
+        self.keep_alive_timer.timeout.connect(self._keep_loop_alive)
+        self.keep_alive_timer.start()
+
+        # Store references to prevent garbage collection
+        self.app._event_loop_monitor = self.event_loop_monitor
+        self.app._keep_alive_timer = self.keep_alive_timer
+
+    def _keep_loop_alive(self):
+        """Helper method to keep the event loop alive."""
         try:
-            # Check if the loop is already running
-            if hasattr(self.event_loop, 'is_running') and self.event_loop.is_running():
-                # Loop is already running, just log at DEBUG level
-                self.logger.debug(f"Event loop already running: {id(self.event_loop)}")
+            if hasattr(self, 'event_loop') and self.event_loop and not self.event_loop.is_closed():
+                # Create a simple no-op task
+                asyncio.ensure_future(asyncio.sleep(0), loop=self.event_loop)
+        except Exception as e:
+            self.logger.error(f"Error in keep_loop_alive: {e}")
+
+    def _ensure_event_loop_health(self):
+        """Ensure the event loop is healthy and running properly"""
+        try:
+            # Skip if we don't have a loop yet
+            if not hasattr(self, 'event_loop') or self.event_loop is None:
                 return
 
-            # For qasync loops - process events to activate
-            if hasattr(self.event_loop, '_process_events'):
-                self.event_loop._process_events([])
+            # Check if the loop is running
+            is_running = self.event_loop.is_running()
 
-            # Create a dummy task to help the loop recognize it's "running"
-            asyncio.ensure_future(asyncio.sleep(0.1), loop=self.event_loop)
+            if not is_running:
+                self._event_loop_check_count += 1
+                self.logger.warning(f"Event loop not running (attempt {self._event_loop_check_count}/{self._event_loop_retry_limit})")
 
-            # Also process Qt events
-            self.app.processEvents()
+                if self._event_loop_check_count <= self._event_loop_retry_limit:
+                    # Try to restart the loop
+                    self.logger.info("Attempting to restart event loop")
 
-            # For debugging, check the loop status
-            running_status = hasattr(self.event_loop, 'is_running') and self.event_loop.is_running()
-            self.logger.debug(f"Event loop check: id={id(self.event_loop)}, running={running_status}")
+                    # Make sure it's the default loop
+                    asyncio.set_event_loop(self.event_loop)
+
+                    # Create a dummy task to kickstart the loop
+                    asyncio.ensure_future(asyncio.sleep(0.1), loop=self.event_loop)
+
+                    # Process Qt events immediately
+                    self.app.processEvents()
+                else:
+                    # We've tried multiple times, log a serious warning
+                    self.logger.error("Failed to restart event loop after multiple attempts")
+            else:
+                # Loop is running, reset the check count
+                self._event_loop_check_count = 0
         except Exception as e:
-            self.logger.error(f"Error ensuring loop is running: {str(e)}")
+            self.logger.error(f"Error in event loop health check: {str(e)}")
 
     def _handle_event_loop_exception(self, loop, context):
         """Handle exceptions in the event loop"""
@@ -251,7 +258,6 @@ class AsyncApplication(QObject):
             self.logger.info("Created ViewModels")
 
             # Initialize settings ViewModel with API service
-            # FIXED: Add error handling for missing api_service
             if hasattr(self, 'api_service') and self.api_service:
                 self.settings_vm.initialize(self.api_service)
                 self.logger.info("Initialized AsyncSettingsViewModel with AsyncApiService")
@@ -265,20 +271,23 @@ class AsyncApplication(QObject):
                 self.settings_vm.initialize(self.api_service)
                 self.logger.info("Created and initialized AsyncApiService")
 
-            # Register ViewModels with QML
-            self.qml_bridge.register_context_property("conversationViewModel", self.conversation_vm)
-            self.qml_bridge.register_context_property("settingsViewModel", self.settings_vm)
-            self.logger.info("Registered ViewModels with QML")
+            # Register ViewModels with QML after QML engine is initialized
+            if hasattr(self, 'qml_bridge') and self.qml_bridge:
+                self.qml_bridge.register_context_property("conversationViewModel", self.conversation_vm)
+                self.qml_bridge.register_context_property("settingsViewModel", self.settings_vm)
+                self.logger.info("Registered ViewModels with QML")
 
-            # Register bridge for QML logging and error handling
-            self.qml_bridge.register_context_property("bridge", self.qml_bridge)
-            self.logger.info("Registered bridge with QML")
+                # Register bridge for QML logging and error handling
+                self.qml_bridge.register_context_property("bridge", self.qml_bridge)
+                self.logger.info("Registered bridge with QML")
 
-            # Create QmlAsyncHelper for better QML-async integration
-            from src.utils.qml_async_helper import QmlAsyncHelper
-            self.qml_async_helper = QmlAsyncHelper()
-            self.qml_bridge.register_context_property("asyncHelper", self.qml_async_helper)
-            self.logger.info("Registered QmlAsyncHelper with QML")
+                # Create QmlAsyncHelper for better QML-async integration
+                from src.utils.qml_async_helper import QmlAsyncHelper
+                self.qml_async_helper = QmlAsyncHelper()
+                self.qml_bridge.register_context_property("asyncHelper", self.qml_async_helper)
+                self.logger.info("Registered QmlAsyncHelper with QML")
+            else:
+                self.logger.warning("QML bridge not available, skipping registration of ViewModels")
         except Exception as e:
             self.logger.error(f"Error initializing ViewModels: {e}", exc_info=True)
             raise
@@ -374,8 +383,8 @@ class AsyncApplication(QObject):
                         except Exception as e:
                             self.logger.error(f"Error extracting QML error details: {e}")
                             self.logger.error(f"Original error: {error}")
-
-                sys.exit(-1)
+            else:
+                self.logger.error("No QML errors property found")
 
     def _on_qml_warning(self, warning):
         """Handle QML warnings with improved detail extraction"""
@@ -406,34 +415,16 @@ class AsyncApplication(QObject):
                     detail = str(warning)
 
             # Log the detailed warning
-            self.logger.warning(f"QML Warning detail: {detail}")
+            self.logger.warning(f"QML Warning: {detail}")
 
-            # Track common issues
+            # Only log common issues at debug level to avoid log clutter
             if "Binding loop detected" in detail:
-                self.logger.warning("QML binding loop detected - this can cause performance issues")
+                self.logger.debug("QML binding loop detected - this can cause performance issues")
             elif "TypeError" in detail:
                 self.logger.error(f"QML TypeError detected: {detail}")
-                # This could be serious enough to require intervention
-                if not hasattr(self, 'qml_error_count'):
-                    self.qml_error_count = 0
-                self.qml_error_count += 1
-
-                # If we have too many errors, we might need to show the error window
-                if self.qml_error_count > 5:
-                    self.logger.error("Too many QML errors, considering fallback")
-                    QTimer.singleShot(500, self._check_for_critical_errors)
         except Exception as e:
             self.logger.warning(f"Error processing QML warning: {e}")
             self.logger.warning(f"Original warning: {warning}")
-
-    def _check_for_critical_errors(self):
-        """Check if we're encountering critical errors that require intervention"""
-        # Only run if we haven't shown the main window yet
-        if not self.main_window_shown:
-            root_objects = self.engine.rootObjects()
-            if not root_objects or not root_objects[0].isVisible():
-                self.logger.error("QML health check failed - showing error window")
-                self._show_error_window("Failed to initialize QML interface")
 
     def _load_qml(self):
         """Load the main QML file with enhanced error handling"""
@@ -467,14 +458,15 @@ class AsyncApplication(QObject):
                 self.logger.critical("Failed to load QML file")
 
                 # Get a list of all QML errors
-                qml_errors = self.engine.errors() if hasattr(self.engine, 'errors') else []
-                if qml_errors:
-                    for i, error in enumerate(qml_errors):
-                        if hasattr(error, 'line') and hasattr(error, 'column') and hasattr(error, 'description'):
-                            error_msg = f"QML Error {i + 1}: Line {error.line()}, Column {error.column()}: {error.description()}"
-                        else:
-                            error_msg = f"QML Error {i + 1}: {error}"
-                        self.logger.error(error_msg)
+                if hasattr(self.engine, 'errors'):
+                    qml_errors = self.engine.errors()
+                    if qml_errors:
+                        for i, error in enumerate(qml_errors):
+                            if hasattr(error, 'line') and hasattr(error, 'column') and hasattr(error, 'description'):
+                                error_msg = f"QML Error {i + 1}: Line {error.line()}, Column {error.column()}: {error.description()}"
+                            else:
+                                error_msg = f"QML Error {i + 1}: {error}"
+                            self.logger.error(error_msg)
 
                 raise RuntimeError("Failed to load QML interface")
             else:
@@ -496,8 +488,11 @@ class AsyncApplication(QObject):
                 root = root_objects[0]
 
                 # Connect Python ViewModels to root properties
-                root.setProperty("conversationViewModel", self.conversation_vm)
-                root.setProperty("settingsViewModel", self.settings_vm)
+                if hasattr(self, 'conversation_vm') and hasattr(self, 'settings_vm'):
+                    root.setProperty("conversationViewModel", self.conversation_vm)
+                    root.setProperty("settingsViewModel", self.settings_vm)
+                else:
+                    self.logger.warning("ViewModels not available for QML connection")
 
                 # Connect signals
                 self.qml_bridge.connect_qml_signal("mainWindow", "fileRequested", self._handle_file_request)
@@ -523,9 +518,6 @@ class AsyncApplication(QObject):
     async def _process_file_async(self, file_path):
         """Process file asynchronously with improved error handling"""
         try:
-            # Use existing async file utilities but with proper qasync integration
-            from src.utils.async_file_utils import get_file_info_async
-
             # Always ensure the loop is running before async operations
             ensure_qasync_loop()
 
@@ -569,123 +561,6 @@ class AsyncApplication(QObject):
         """Handle error from QML"""
         self.logger.error(f"Error from QML: {error_message}")
 
-
-    async def _initialize_new_conversation(self):
-        """Initialize a new conversation (async) with better error handling"""
-        try:
-            # Use the ViewModel to create a new conversation
-            # We'll use a more direct approach to avoid potential issues
-            ensure_qasync_loop()
-
-            # Check if the database is initialized
-            if not self.db_service._initialized:
-                self.logger.warning("Database not initialized, trying to initialize")
-                await self.db_service.initialize()
-
-            # Create a new conversation
-            await self.conversation_vm._create_conversation_impl("New Conversation")
-            self.logger.info("Created new conversation")
-            return True
-        except Exception as e:
-            self.logger.error(f"Error creating new conversation: {str(e)}")
-
-            # As a last resort fallback, try a very direct approach
-            try:
-                self.logger.warning("Trying fallback conversation creation")
-                # Create a conversation directly with the service
-                conversation = await self.db_service.create_conversation("Emergency Conversation")
-                if conversation:
-                    self.logger.info(f"Created fallback conversation: {conversation.id}")
-                    # Tell the view model to load it
-                    QTimer.singleShot(0, lambda: self.conversation_vm.load_conversation(conversation.id))
-                    return True
-            except Exception as inner_e:
-                self.logger.error(f"Fallback conversation creation failed: {str(inner_e)}")
-
-            return False
-
-    async def _load_conversations(self):
-        """Load conversations (async) with better error handling"""
-        try:
-            # Make sure we have a running event loop
-            loop = ensure_qasync_loop()
-
-            # Get all conversations
-            conversations = await self.db_service.get_all_conversations()
-
-            if conversations:
-                # Convert to list of dicts for the model
-                conv_dicts = []
-                for conv in conversations:
-                    conv_dicts.append({
-                        'id': conv.id,
-                        'name': conv.name,
-                        'created_at': conv.created_at.isoformat() if conv.created_at else None,
-                        'modified_at': conv.modified_at.isoformat() if conv.modified_at else None
-                    })
-                return conv_dicts
-            return []
-        except Exception as e:
-            self.logger.error(f"Error loading conversations: {str(e)}")
-            # Return an empty list rather than raising an exception
-            return []
-
-    def _handle_conversations_loaded(self, conversations):
-        """Handle loaded conversations on main thread"""
-        count = len(conversations) if conversations else 0
-        self.logger.info(f"Loaded {count} conversations")
-
-        # Process conversations if any were loaded
-        if conversations and count > 0:
-            # Update the QML model
-            root_objects = self.engine.rootObjects()
-            if root_objects:
-                self.qml_bridge.call_qml_method(
-                    "mainWindow", "updateConversationsModel", conversations
-                )
-
-                # Load the first conversation after a short delay
-                if count > 0:
-                    first_id = conversations[0]['id']
-                    QTimer.singleShot(100, lambda: self.conversation_vm.load_conversation(first_id))
-        else:
-            # Create a new conversation if none exists
-            self.logger.info("No conversations found, creating new one")
-            # Use run_coroutine instead of a direct function call
-            run_coroutine(
-                self._initialize_new_conversation(),
-                callback=lambda result: self.logger.info(f"New conversation created: {result}"),
-                error_callback=lambda e: self.logger.error(f"Error creating new conversation: {str(e)}")
-            )
-
-    def _handle_load_error(self, error_message):
-        """Handle conversation loading error on main thread"""
-        self.logger.error(f"Error loading conversations: {error_message}")
-
-        # Despite error, try to create a new conversation
-        self.logger.info("Creating fallback conversation due to loading error")
-        run_coroutine(
-            self._initialize_new_conversation(),
-            callback=lambda result: self.logger.info(f"Fallback conversation created: {result}"),
-            error_callback=lambda e: self.logger.error(f"Error creating fallback conversation: {str(e)}")
-        )
-
-    def _prepare_cleanup(self):
-        """Prepare for cleanup - run async cleanup in the event loop"""
-        run_coroutine(
-            self._async_cleanup(),
-            callback=lambda _: self.logger.info("Async cleanup completed"),
-            error_callback=lambda e: self.logger.error(f"Error during cleanup: {str(e)}")
-        )
-
-        # Give some time for cleanup to complete before app exits
-        QTimer.singleShot(500, lambda: None)
-
-    def _setup_cleanup_handlers(self):
-        """Set up cleanup handlers for application exit"""
-        # Connect to app's aboutToQuit signal
-        self.app.aboutToQuit.connect(self._prepare_cleanup)
-
     def _handle_window_close(self):
         """Handle the window close event (X button)"""
         self.logger.info("Window close event received, initiating cleanup")
@@ -722,35 +597,44 @@ class AsyncApplication(QObject):
             self.logger.info("Starting async cleanup")
 
             # Ensure the event loop is active and running
-            loop = self.event_loop_manager.get_loop()
+            loop = ensure_qasync_loop()
+            self.logger.debug(f"Using event loop for cleanup: {id(loop)}")
 
             # Clean up services with proper error handling
-            try:
-                # Close database connections
-                if hasattr(self, 'db_service'):
-                    self.logger.info("Closing database service")
-                    await self.db_service.close()
+            cleanup_tasks = []
 
-                # Close API connections
-                if hasattr(self, 'api_service') and hasattr(self.api_service, 'close'):
-                    self.logger.info("Closing API service")
-                    await self.api_service.close()
+            # Close database connections
+            if hasattr(self, 'db_service') and hasattr(self.db_service, 'close'):
+                self.logger.info("Closing database service")
+                cleanup_tasks.append(self.db_service.close())
 
-                # Clean up conversation view model
-                if hasattr(self, 'conversation_vm') and hasattr(self.conversation_vm, 'cleanup'):
-                    self.logger.info("Cleaning up conversation view model")
-                    await self.conversation_vm.cleanup()
+            # Close API connections
+            if hasattr(self, 'api_service') and hasattr(self.api_service, 'close'):
+                self.logger.info("Closing API service")
+                cleanup_tasks.append(self.api_service.close())
 
-                # Clean up QML bridge
-                if hasattr(self, 'qml_bridge') and hasattr(self.qml_bridge, 'perform_async_cleanup'):
-                    self.logger.info("Cleaning up QML bridge")
-                    await self.qml_bridge.perform_async_cleanup()
+            # Clean up conversation view model
+            if hasattr(self, 'conversation_vm') and hasattr(self.conversation_vm, 'cleanup'):
+                self.logger.info("Cleaning up conversation view model")
+                cleanup_tasks.append(self.conversation_vm.cleanup())
 
-            except Exception as e:
-                self.logger.error(f"Error during specific cleanup step: {str(e)}")
+            # Clean up QML bridge
+            if hasattr(self, 'qml_bridge') and hasattr(self.qml_bridge, 'perform_async_cleanup'):
+                self.logger.info("Cleaning up QML bridge")
+                cleanup_tasks.append(self.qml_bridge.perform_async_cleanup())
+
+            # Run all cleanup tasks with timeout protection
+            if cleanup_tasks:
+                try:
+                    await asyncio.wait_for(asyncio.gather(*cleanup_tasks), timeout=5.0)
+                    self.logger.info("All cleanup tasks completed")
+                except asyncio.TimeoutError:
+                    self.logger.warning("Cleanup tasks timed out - continuing shutdown")
+                except Exception as e:
+                    self.logger.error(f"Error in cleanup tasks: {str(e)}")
 
             # Final step: close the event loop manager
-            if hasattr(self, 'event_loop_manager'):
+            if hasattr(self, 'event_loop_manager') and hasattr(self.event_loop_manager, 'close'):
                 self.logger.info("Closing event loop manager")
                 self.event_loop_manager.close()
 
@@ -759,6 +643,45 @@ class AsyncApplication(QObject):
             self.logger.error(f"Error during async cleanup: {str(e)}")
         finally:
             self._cleanup_in_progress = False
+
+    def _setup_cleanup_handlers(self):
+        """Set up cleanup handlers for application exit"""
+        # Connect to app's aboutToQuit signal
+        self.app.aboutToQuit.connect(self._prepare_cleanup)
+
+    def _prepare_cleanup(self):
+        """Prepare for cleanup - run async cleanup in the event loop"""
+        # Skip if cleanup already running
+        if hasattr(self, '_cleanup_in_progress') and self._cleanup_in_progress:
+            return
+
+        self.logger.info("Preparing application cleanup")
+        run_coroutine(
+            self._async_cleanup(),
+            callback=lambda _: self.logger.info("Async cleanup completed"),
+            error_callback=lambda e: self.logger.error(f"Error during cleanup: {str(e)}")
+        )
+
+        # Give some time for cleanup to complete before app exits
+        QTimer.singleShot(500, lambda: None)
+
+    def _complete_initialization(self):
+        """Complete initialization after the event loop is running"""
+        try:
+            self.logger.info("Completing initialization")
+
+            # Process events to help the event loop
+            self.app.processEvents()
+
+            # Load main QML file
+            self._load_qml()
+
+            # Initialize views after a short delay
+            QTimer.singleShot(50, self._initialize_views)
+
+        except Exception as e:
+            self.logger.critical(f"Error completing initialization: {str(e)}")
+            self._show_error_window(str(e))
 
     def _initialize_views(self):
         """Initialize views after QML is loaded with improved async handling"""
@@ -780,6 +703,9 @@ class AsyncApplication(QObject):
             self.main_window_shown = True
             self.logger.info("Main window shown")
 
+            # Process events to ensure UI is responsive
+            self.app.processEvents()
+
             # Delay data loading to allow UI to stabilize
             QTimer.singleShot(200, self._load_initial_data)
 
@@ -787,123 +713,102 @@ class AsyncApplication(QObject):
             self.logger.critical(f"Error initializing views: {str(e)}")
             self._show_error_window(str(e))
 
-    def _keep_loop_alive(self):
-        """Helper method to keep the event loop alive."""
+    def _load_initial_data(self):
+        """Load initial data after the UI is shown using improved qasync approach"""
+        self.logger.info("Loading initial data")
+
+        # Use run_coroutine with proper error handling
+        run_coroutine(
+            self._load_initial_data_async(),
+            callback=lambda success: self.logger.info(f"Initial data loaded: {success}"),
+            error_callback=lambda e: self.logger.error(f"Error loading initial data: {str(e)}")
+        )
+
+    async def _initialize_fallback_conversation(self):
+        """Create a fallback conversation when data loading fails"""
+        self.logger.warning("Creating emergency fallback conversation")
+
         try:
-            if hasattr(self, 'event_loop') and self.event_loop and not self.event_loop.is_closed():
-                # Create a simple no-op task
-                asyncio.ensure_future(asyncio.sleep(0), loop=self.event_loop)
-        except Exception as e:
-            self.logger.error(f"Error in keep_loop_alive: {e}")
+            # Ensure database is initialized
+            if hasattr(self.db_service, 'initialize') and not self.db_service._initialized:
+                await self.db_service.initialize()
 
-    def _ensure_event_loop_health(self):
-        """Ensure the event loop is healthy and running properly"""
-        try:
-            # Skip if we don't have a loop yet
-            if not hasattr(self, 'event_loop') or self.event_loop is None:
-                return
+            # Create a conversation
+            new_conversation = await self.db_service.create_conversation("New Conversation")
 
-            # Check if the loop is running
-            is_running = self.event_loop.is_running()
-
-            if not is_running:
-                self._event_loop_check_count += 1
-                self.logger.warning(f"Event loop not running (attempt {self._event_loop_check_count}/{self._event_loop_retry_limit})")
-
-                if self._event_loop_check_count <= self._event_loop_retry_limit:
-                    # Try to restart the loop
-                    self.logger.info("Attempting to restart event loop")
-
-                    # Make sure it's the default loop
-                    asyncio.set_event_loop(self.event_loop)
-
-                    # Create a dummy task to kickstart the loop
-                    asyncio.ensure_future(asyncio.sleep(0.1), loop=self.event_loop)
-
-                    # Process Qt events immediately
-                    self.app.processEvents()
-                else:
-                    # We've tried multiple times, log a serious warning
-                    self.logger.error("Failed to restart event loop after multiple attempts")
+            if new_conversation:
+                self.logger.info(f"Created fallback conversation: {new_conversation.id}")
+                return new_conversation
             else:
-                # Loop is running, reset the check count
-                self._event_loop_check_count = 0
+                self.logger.error("Failed to create fallback conversation")
+                return None
         except Exception as e:
-            self.logger.error(f"Error in event loop health check: {str(e)}")
+            self.logger.error(f"Error creating fallback conversation: {str(e)}")
+            return None
 
-    def _setup_event_loop_monitor(self):
-        """Set up monitoring to ensure event loop stays active"""
-
-        def check_event_loop():
-            if not hasattr(self, 'event_loop') or self.event_loop is None:
-                return
-
-            # Check if the loop is running
-            is_running = self.event_loop.is_running()
-
-            if not is_running:
-                self.logger.warning("Event loop not running - attempting to restart")
-
-                # Set as default loop
-                asyncio.set_event_loop(self.event_loop)
-
-                # Create a dummy task
-                asyncio.ensure_future(asyncio.sleep(0.1), loop=self.event_loop)
-
-                # Process Qt events
-                self.app.processEvents()
-
-        # Create timer for periodic checks
-        self.event_loop_monitor = QTimer()
-        self.event_loop_monitor.setInterval(500)  # Check every 500ms
-        self.event_loop_monitor.timeout.connect(check_event_loop)
-        self.event_loop_monitor.start()
-
-        # Store reference to prevent garbage collection
-        self.app._event_loop_monitor = self.event_loop_monitor
-
-    def _initialize_services(self):
-        """Initialize services using proper async approach with fixed API service creation"""
+    async def _load_initial_data_async(self):
+        """Async implementation of loading initial data with improved error handling"""
         try:
-            self.logger.info("Initializing services")
+            # Ensure event loop is running
+            loop = ensure_qasync_loop()
+            self.logger.debug(f"Loading data with event loop: {id(loop)}")
 
-            # Create API service - FIXED: Create this first
-            self.api_service = AsyncApiService()
-            self.logger.info("Created AsyncApiService")
+            # Initialize database if needed
+            if not self.db_service._initialized:
+                self.logger.debug("Initializing database before loading data")
+                result = await self.db_service.initialize()
+                if not result:
+                    self.logger.error("Database initialization failed, trying to create fallback conversation")
+                    await self._initialize_fallback_conversation()
+                    return False
 
-            # Set API key from environment if available
-            api_key = os.environ.get("OPENAI_API_KEY", "")
-            if api_key:
-                self.api_service.set_api_key(api_key)
-                self.logger.info("Set API key from environment")
+            # Get conversations
+            conversations = []
+            try:
+                # Try with timeout protection
+                async with asyncio.timeout(5.0):  # 5 second timeout
+                    conversations = await self.db_service.get_all_conversations()
+            except (asyncio.TimeoutError, Exception) as e:
+                self.logger.error(f"Error loading conversations: {str(e)}")
+                # Continue without conversations
 
-            # Create conversation service
-            self.db_service = AsyncConversationService()
-            self.logger.info("Created AsyncConversationService")
+            # Process any conversations found
+            if conversations:
+                self.logger.info(f"Loaded {len(conversations)} conversations")
 
-            # Create file processor
-            self.file_processor = AsyncFileProcessor()
-            self.logger.info("Initialized AsyncFileProcessor")
+                # Convert to format for QML
+                conv_list = []
+                for conv in conversations:
+                    conv_list.append({
+                        'id': conv.id,
+                        'name': conv.name,
+                        'modified_at': conv.modified_at.isoformat() if conv.modified_at else None,
+                        'created_at': conv.created_at.isoformat() if conv.created_at else None
+                    })
 
-            # Initialize database asynchronously
-            def on_db_init_complete(result):
-                self.logger.info(f"Database initialized: {result}")
+                # Update QML model on main thread
+                QTimer.singleShot(0, lambda: self.qml_bridge.call_qml_method(
+                    "mainWindow", "updateConversationsModel", conv_list
+                ))
 
-            def on_db_init_error(error):
-                self.logger.error(f"Error initializing database: {str(error)}")
+                # Load first conversation after short delay
+                if len(conversations) > 0:
+                    first_id = conversations[0].id
+                    QTimer.singleShot(100, lambda: self.conversation_vm.load_conversation(first_id))
+                    return True
+            else:
+                # No conversations found, create new one
+                self.logger.info("No conversations found, creating new one")
+                await self._initialize_fallback_conversation()
+                return True
 
-            # Use run_coroutine which handles threading properly
-            from src.utils.qasync_bridge import run_coroutine
-            run_coroutine(
-                self.db_service.initialize(),
-                callback=on_db_init_complete,
-                error_callback=on_db_init_error
-            )
+            return True
 
-            self.logger.info("Services initialized")
         except Exception as e:
-            self.logger.error(f"Error initializing services: {e}", exc_info=True)
-            raise
+            self.logger.error(f"Error in load_initial_data_async: {str(e)}")
+            # Try to create a fallback conversation
+            await self._initialize_fallback_conversation()
+            return False
 
     def run(self):
         """Run the application with enhanced error handling and event loop protection"""
@@ -916,17 +821,6 @@ class AsyncApplication(QObject):
             self.startup_check_timer.setSingleShot(True)
             self.startup_check_timer.start(5000)  # Check after 5 seconds
 
-            # Make sure the event loop is properly initialized
-            if hasattr(self, 'event_loop_manager'):
-                self.logger.info("Using event loop manager for application run")
-            elif hasattr(self, 'event_loop') and self.event_loop:
-                self.logger.info(f"Using event loop: {id(self.event_loop)}")
-            else:
-                self.logger.warning("No event loop initialized, attempting to continue")
-                # Create the event loop manager if it doesn't exist
-                self.event_loop_manager = EventLoopManager(self.app)
-                self.event_loop = self.event_loop_manager.initialize()
-
             # Process events before starting main loop
             self.app.processEvents()
 
@@ -936,248 +830,6 @@ class AsyncApplication(QObject):
             self.logger.critical(f"Critical error running application: {e}", exc_info=True)
             traceback.print_exc()
             return 1
-
-    def _keep_event_loop_alive(self):
-        """Create a periodic task to keep the event loop active with improved error handling"""
-        self.logger.debug("Setting up event loop keep-alive mechanism")
-
-        # Timer to periodically create dummy tasks
-        self.keep_alive_timer = QTimer()
-        self.keep_alive_timer.setInterval(100)  # 100ms
-
-        def create_dummy_task():
-            try:
-                # Try to get the current running loop first
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    # No running loop, try to get one from our manager
-                    if hasattr(self, 'event_loop_manager') and self.event_loop_manager:
-                        loop = self.event_loop_manager.get_loop()
-                        if loop.is_closed():
-                            return  # Skip if loop is closed
-                    else:
-                        return  # Skip if no manager
-
-                # Create a dummy task that handles RuntimeError internally
-                async def dummy():
-                    try:
-                        await asyncio.sleep(0.001)
-                    except (RuntimeError, asyncio.CancelledError) as e:
-                        # Silently catch "no running event loop" and cancellation
-                        pass
-                    except Exception as e:
-                        # Log other exceptions but don't let them propagate
-                        self.logger.debug(f"Error in keep-alive dummy task: {str(e)}")
-
-                # Use create_task directly which is safer than run_coroutine_threadsafe
-                try:
-                    task = loop.create_task(dummy())
-                    # Silence task exceptions
-                    task.add_done_callback(lambda _: None)
-                except Exception:
-                    # Ignore any errors here - this is just a keepalive
-                    pass
-
-            except Exception:
-                # Ignore all errors in the keepalive - it's not critical
-                pass
-
-        self.keep_alive_timer.timeout.connect(create_dummy_task)
-        self.keep_alive_timer.start()
-
-        # Store a reference to prevent garbage collection
-        self.app._keep_alive_timer = self.keep_alive_timer
-
-    def _initialize_services_sync(self):
-        """Initialize services using synchronous methods for reliability"""
-        # Create conversation service
-        self.db_service = AsyncConversationService()
-        self.logger.info("Created AsyncConversationService")
-
-        # Initialize database with proper event loop handling
-        try:
-            # Get the event loop from the manager
-            loop = self.event_loop_manager.get_loop()
-
-            # Create a special initialization coroutine
-            async def init_database():
-                try:
-                    success = await self.db_service.initialize()
-                    self.logger.info(f"Database initialized: {success}")
-                    return success
-                except Exception as e:
-                    self.logger.error(f"Error in database initialization: {str(e)}")
-                    return False
-
-            # Run with timeout using the event loop manager
-            result = self.event_loop_manager.run_coroutine(
-                init_database(),
-                timeout=10.0  # 10 second timeout
-            )
-
-            # Process events to help the task complete
-            for _ in range(5):
-                self.app.processEvents()
-                time.sleep(0.05)
-
-        except Exception as e:
-            self.logger.error(f"Error initializing database: {str(e)}")
-            # Continue - we can try again later
-
-    def _complete_initialization(self):
-        """Complete initialization after the event loop is running"""
-        try:
-            self.logger.info("Completing initialization")
-
-            # Verify the event loop is still running
-            from src.utils.qasync_bridge import ensure_qasync_loop
-            loop = ensure_qasync_loop()
-            self.logger.info(f"Using event loop: {id(loop)}, running={loop.is_running()}")
-
-            # Set up the event loop keep-alive mechanism
-            self._keep_event_loop_alive()
-
-            # Load main QML file
-            self._load_qml()
-
-            # Initialize views after a short delay
-            QTimer.singleShot(50, self._initialize_views)
-
-        except Exception as e:
-            self.logger.critical(f"Error completing initialization: {str(e)}")
-            self._show_error_window(str(e))
-
-    def _load_initial_data(self):
-        """Load initial data after the UI is shown using improved qasync approach"""
-        self.logger.info("Loading initial data")
-
-        # Direct synchronous approach for first-time load to avoid event loop issues
-        try:
-            # Use a simpler approach without complex coroutine management
-            conversations = self._load_conversations_sync()
-
-            if conversations and len(conversations) > 0:
-                self.logger.info(f"Loaded {len(conversations)} conversations")
-
-                # Update the QML model on the main thread
-                QTimer.singleShot(0, lambda: self.qml_bridge.call_qml_method(
-                    "mainWindow", "updateConversationsModel", conversations
-                ))
-
-                # Load the first conversation after a short delay
-                first_id = conversations[0]['id']
-                QTimer.singleShot(100, lambda: self.conversation_vm.load_conversation(first_id))
-            else:
-                # Create a new conversation if none exists
-                self.logger.info("No conversations found, creating new one")
-                self._initialize_fallback_conversation()
-        except Exception as e:
-            self.logger.error(f"Error in initial data load: {str(e)}")
-            # Try fallback method
-            self._initialize_fallback_conversation()
-
-    def _load_conversations_sync(self):
-        """Synchronous version of conversation loading for initial app state"""
-        try:
-            # Initialize database synchronously if needed
-            if not hasattr(self.db_service, '_initialized') or not self.db_service._initialized:
-                from src.utils.qasync_bridge import run_sync
-                run_sync(self.db_service.initialize())
-
-            # Use run_sync to execute the coroutine synchronously
-            from src.utils.qasync_bridge import run_sync
-            conversations = run_sync(self.db_service.get_all_conversations())
-
-            # Convert to list of dicts for the model
-            result = []
-            for conv in conversations:
-                result.append({
-                    'id': conv.id,
-                    'name': conv.name,
-                    'created_at': conv.created_at.isoformat() if conv.created_at else None,
-                    'modified_at': conv.modified_at.isoformat() if conv.modified_at else None
-                })
-            return result
-        except Exception as e:
-            self.logger.error(f"Error in sync conversation loading: {str(e)}")
-            return []
-
-    def _initialize_fallback_conversation(self):
-        """Create a fallback conversation in case of data loading errors"""
-        self.logger.warning("Attempting to create fallback conversation")
-
-        try:
-            # Use a direct synchronous approach for reliability
-            from src.utils.qasync_bridge import run_sync
-
-            # Make sure database is initialized
-            if not hasattr(self.db_service, '_initialized') or not self.db_service._initialized:
-                run_sync(self.db_service.initialize())
-
-            # Create a new conversation
-            conversation = run_sync(self.db_service.create_conversation("New Conversation"))
-
-            if conversation:
-                self.logger.info(f"Fallback conversation created: {conversation.id}")
-                # Load it after a short delay to ensure UI is ready
-                QTimer.singleShot(200, lambda: self.conversation_vm.load_conversation(conversation.id))
-                return True
-            else:
-                self.logger.error("Failed to create fallback conversation")
-                return False
-        except Exception as e:
-            self.logger.error(f"Error creating fallback conversation: {str(e)}")
-            # Show error to user
-            QTimer.singleShot(100, lambda: self._show_error_window("Failed to create conversation - please restart the application"))
-            return False
-
-    async def _load_initial_data_async(self):
-        """Async implementation of loading initial data with improved error handling"""
-        # Use the ensure_qasync_loop function to get a reliable loop reference
-        from src.utils.qasync_bridge import ensure_qasync_loop
-        loop = ensure_qasync_loop()
-        self.logger.debug(f"Loading data with event loop: {id(loop)}")
-
-        # Initialize database if needed
-        if not hasattr(self.db_service, '_initialized') or not self.db_service._initialized:
-            self.logger.debug("Initializing database before loading data")
-            result = await self.db_service.initialize()
-            if not result:
-                self.logger.error("Database initialization failed")
-                return False
-
-        try:
-            # Load conversations
-            conversations = await self._load_conversations()
-
-            # Log the result
-            count = len(conversations) if conversations else 0
-            self.logger.info(f"Loaded {count} conversations")
-
-            if conversations and count > 0:
-                # Update the QML model on the main thread
-                QTimer.singleShot(0, lambda: self.qml_bridge.call_qml_method(
-                    "mainWindow", "updateConversationsModel", conversations
-                ))
-
-                # Load the first conversation after a short delay
-                if count > 0:
-                    first_id = conversations[0]['id']
-                    QTimer.singleShot(100, lambda: self.conversation_vm.load_conversation(first_id))
-                    return True
-            else:
-                # Create a new conversation if none exists
-                self.logger.info("No conversations found, creating new one")
-                result = await self._initialize_new_conversation()
-                return result
-
-        except Exception as e:
-            self.logger.error(f"Error in load_initial_data_async: {str(e)}")
-            # Try to create a new conversation as fallback
-            return await self._initialize_new_conversation()
-
-        return True
 
 
 def main():
