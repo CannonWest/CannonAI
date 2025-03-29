@@ -116,14 +116,14 @@ class EventLoopManager(QObject):
             # Skip closing existing loop - we'll take over whatever is there
 
             # Process events to ensure Qt is ready
-            if self._app:
-                self._app.processEvents()
+            if self.app:
+                self.app.processEvents()
 
             # IMPORTANT: Create the QEventLoop first and IMMEDIATELY set as default
             try:
                 self.logger.debug("Creating qasync QEventLoop")
                 # Create the qasync event loop
-                self._main_loop = qasync.QEventLoop(self._app)
+                self._main_loop = qasync.QEventLoop(self.app)
 
                 # Set as the default event loop immediately
                 asyncio.set_event_loop(self._main_loop)
@@ -150,8 +150,8 @@ class EventLoopManager(QObject):
                 self.logger.error(f"Error creating dummy task: {str(e)}")
 
             # Process events to ensure loop activation
-            if self._app:
-                self._app.processEvents()
+            if self.app:
+                self.app.processEvents()
 
             # Mark as initialized
             self._loop_initialized = True
