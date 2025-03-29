@@ -199,12 +199,12 @@ Dialog {
 
                         TabButton {
                             text: "Models"
-                            width: implicitWidth
+                            width: 40
                         }
 
                         TabButton {
                             text: "Dated Snapshots"
-                            width: implicitWidth
+                            width: 40
                         }
                     }
 
