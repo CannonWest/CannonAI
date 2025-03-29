@@ -213,7 +213,7 @@ def ensure_qasync_loop():
 
 def run_coroutine(coro, callback=None, error_callback=None, timeout=None):
     """
-    Improved version of run_coroutine that uses the event loop manager.
+    Improved version of run_coroutine that handles non-running loops better.
 
     Args:
         coro: The coroutine to run
@@ -259,6 +259,14 @@ def run_coroutine(coro, callback=None, error_callback=None, timeout=None):
             if QCoreApplication.instance():
                 QCoreApplication.instance().processEvents()
 
+        # If the loop is not running, we need a different approach
+        is_running = False
+        try:
+            asyncio.get_running_loop()
+            is_running = True
+        except RuntimeError:
+            is_running = False
+
         # Create a wrapper task that handles callbacks
         async def wrapper():
             try:
@@ -285,16 +293,10 @@ def run_coroutine(coro, callback=None, error_callback=None, timeout=None):
                     error_callback(e)
                 raise
 
-        # Create and start the task
-        if loop.is_closed():
-            if error_callback:
-                error_callback(RuntimeError("Event loop is closed"))
-            return None
-
-        # Special handling for Windows to avoid issues
-        if platform.system() == "Windows":
+        # If loop is not running or we're on Windows, use run_coroutine_threadsafe
+        if not is_running or platform.system() == "Windows":
             try:
-                # Use run_coroutine_threadsafe for improved robustness on Windows
+                # Use run_coroutine_threadsafe for improved robustness during initialization
                 future = asyncio.run_coroutine_threadsafe(wrapper(), loop)
 
                 # Return a dummy task-like object that supports cancellation
@@ -304,12 +306,17 @@ def run_coroutine(coro, callback=None, error_callback=None, timeout=None):
 
                 return TaskLike()
             except Exception as e:
-                logger.error(f"Windows task creation error: {str(e)}")
+                logger.error(f"Task creation error: {str(e)}")
                 if error_callback:
                     error_callback(e)
                 return None
         else:
-            # Standard approach for non-Windows platforms
+            # Standard approach for non-Windows platforms with running loop
+            if loop.is_closed():
+                if error_callback:
+                    error_callback(RuntimeError("Event loop is closed"))
+                return None
+
             task = loop.create_task(wrapper())
             return task
     except Exception as e:
@@ -341,13 +348,15 @@ def run_sync(coro):
     # Try several approaches to run the coroutine
     for attempt in range(3):
         try:
-            # Approach 1: Use current event loop
+            # Approach 1: Try to use the current event loop
             try:
                 loop = asyncio.get_running_loop()
                 if not loop.is_closed():
-                    return loop.run_until_complete(coro)
+                    # Use run_coroutine_threadsafe for running loop
+                    future = asyncio.run_coroutine_threadsafe(coro, loop)
+                    return future.result(30)  # 30 second timeout
             except RuntimeError:
-                # No current loop, try next approach
+                # No running loop, try next approach
                 pass
 
             # Approach 2: Use event loop manager

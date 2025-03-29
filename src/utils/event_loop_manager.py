@@ -183,6 +183,123 @@ class EventLoopManager(QObject):
             self.logger.warning("No running event loop found, reinitializing")
             return self.initialize()
 
+    def run_during_init(self, coro, callback=None, error_callback=None):
+        """
+        Special method to run coroutines during initialization before the main event loop is running.
+        Uses run_coroutine_threadsafe which doesn't require a running loop.
+
+        Args:
+            coro: The coroutine to run
+            callback: Optional callback for the result
+            error_callback: Optional callback for errors
+
+        Returns:
+            A Future-like object that can be used to get the result
+        """
+        # Make sure we have an event loop
+        loop = self.get_loop()
+
+        # Make sure we have a valid coroutine
+        if not asyncio.iscoroutine(coro):
+            if callable(coro):
+                try:
+                    coro = coro()
+                except Exception as e:
+                    if error_callback:
+                        error_callback(e)
+                    return None
+            else:
+                if error_callback:
+                    error_callback(TypeError(f"Expected a coroutine, got {type(coro)}"))
+                return None
+
+        # Verify again after potential conversion
+        if not asyncio.iscoroutine(coro):
+            if error_callback:
+                error_callback(TypeError(f"Expected a coroutine, got {type(coro)}"))
+            return None
+
+        # Create a safe wrapper coroutine
+        async def _safe_wrapper():
+            try:
+                result = await coro
+                # Call the callback with the result
+                if callback:
+                    callback(result)
+                return result
+            except asyncio.CancelledError:
+                # Task was cancelled, not an error
+                raise
+            except Exception as e:
+                if error_callback:
+                    error_callback(e)
+                raise
+
+        try:
+            # Use run_coroutine_threadsafe which doesn't require a running loop
+            future = asyncio.run_coroutine_threadsafe(_safe_wrapper(), loop)
+
+            # Create a task-like object for compatibility
+            class TaskLike:
+                def cancel(self):
+                    future.cancel()
+
+                def result(self, timeout=None):
+                    return future.result(timeout)
+
+            return TaskLike()
+        except Exception as e:
+            self.logger.error(f"Error in run_during_init: {str(e)}")
+            if error_callback:
+                error_callback(e)
+            return None
+
+    def init_async_service(self, service, init_method='initialize', timeout=5.0):
+        """
+        Safely initialize an async service during application startup
+
+        Args:
+            service: The service object to initialize
+            init_method: The name of the initialization method
+            timeout: Maximum time to wait for initialization (seconds)
+
+        Returns:
+            True if initialization was successful, False otherwise
+        """
+        if not hasattr(service, init_method):
+            self.logger.error(f"Service does not have '{init_method}' method")
+            return False
+
+        method = getattr(service, init_method)
+        if not callable(method):
+            self.logger.error(f"'{init_method}' is not callable")
+            return False
+
+        success = [False]  # Use list to allow modification from callback
+
+        def on_success(result):
+            success[0] = bool(result)
+            self.logger.info(f"Service {service.__class__.__name__} initialized: {result}")
+
+        def on_error(error):
+            self.logger.error(f"Error initializing {service.__class__.__name__}: {str(error)}")
+
+        # Use run_during_init to safely initialize without requiring a running loop
+        task = self.run_during_init(
+            method(),
+            callback=on_success,
+            error_callback=on_error
+        )
+
+        # Process events to help task completion
+        end_time = time.time() + timeout
+        while time.time() < end_time and not success[0]:
+            if self.app:
+                self.app.processEvents()
+            time.sleep(0.05)
+
+        return success[0]
+
     def _setup_timers(self):
         """Set up timers for keeping the event loop alive and monitoring its health"""
         # Timer to periodically create tasks to keep loop active

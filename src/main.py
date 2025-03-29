@@ -90,6 +90,81 @@ class AsyncApplication(QObject):
 
         return is_running
 
+    def _initialize_services_with_manager(self):
+        """Initialize services using the event loop manager for safer async operations"""
+        # Create API service - FIXED: Create this first
+        self.api_service = AsyncApiService()
+        self.logger.info("Created AsyncApiService")
+
+        # Set API key from environment if available
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if api_key:
+            self.api_service.set_api_key(api_key)
+            self.logger.info("Set API key from environment")
+
+        # Create conversation service
+        self.db_service = AsyncConversationService()
+        self.logger.info("Created AsyncConversationService")
+
+        # Create file processor
+        self.file_processor = AsyncFileProcessor()
+        self.logger.info("Initialized AsyncFileProcessor")
+
+        # Initialize database using the special event loop manager method
+        # This method doesn't require a running loop and works during initialization
+        db_initialized = self.event_loop_manager.init_async_service(self.db_service)
+        self.logger.info(f"Database initialization started: {db_initialized}")
+
+        self.logger.info("Services initialized")
+
+    def _initialize(self):
+        """Initialize the application with improved event loop management for Windows"""
+        try:
+            # Initialize application
+            self.app = QApplication.instance() or QApplication(sys.argv)
+            self.app.setApplicationName("OpenAI Chat Interface")
+            self.app.setOrganizationName("OpenAI")
+            self.app.setOrganizationDomain("openai.com")
+
+            # Set up application-wide error handling
+            sys.excepthook = self._global_exception_handler
+
+            # Load environment variables
+            self._load_env()
+
+            # CRITICAL: Patch qasync before creating any event loops
+            patch_qasync()
+
+            # Create event loop manager
+            self.event_loop_manager = EventLoopManager(self.app)
+            self.event_loop = self.event_loop_manager.initialize()
+
+            # Add reference to prevent garbage collection
+            self._event_loop_ref = self.event_loop
+
+            # Process events to "prime" the event loop
+            self.app.processEvents()
+
+            # CRITICAL: Make sure the loop is properly set in asyncio
+            asyncio.set_event_loop(self.event_loop)
+
+            # Initialize QML engine with proper setup
+            self._initialize_qml_engine()
+
+            # CRITICAL: Initialize services with our enhanced manager
+            self._initialize_services_with_manager()
+            self._initialize_viewmodels()
+
+            # Set up cleanup handlers
+            self._setup_cleanup_handlers()
+
+            # Schedule UI initialization after event loop is stable
+            QTimer.singleShot(100, self._complete_initialization)
+
+        except Exception as e:
+            self.logger.critical(f"Error during application initialization: {e}", exc_info=True)
+            raise
+
     def _show_error_window(self, error_message):
         """Create an error window to display critical errors"""
         window = QMainWindow()
@@ -861,51 +936,6 @@ class AsyncApplication(QObject):
             self.logger.critical(f"Critical error running application: {e}", exc_info=True)
             traceback.print_exc()
             return 1
-
-    def _initialize(self):
-        """Initialize the application with improved event loop management for Windows"""
-        try:
-            # Initialize application
-            self.app = QApplication.instance() or QApplication(sys.argv)
-            self.app.setApplicationName("OpenAI Chat Interface")
-            self.app.setOrganizationName("OpenAI")
-            self.app.setOrganizationDomain("openai.com")
-
-            # Set up application-wide error handling
-            sys.excepthook = self._global_exception_handler
-
-            # Load environment variables
-            self._load_env()
-
-            # CRITICAL: Patch qasync before creating any event loops
-            patch_qasync()
-
-            # Create event loop manager
-            self.event_loop_manager = EventLoopManager(self.app)
-            self.event_loop = self.event_loop_manager.initialize()
-
-            # Add reference to prevent garbage collection
-            self._event_loop_ref = self.event_loop
-
-            # Process events to "prime" the event loop
-            self.app.processEvents()
-
-            # Initialize QML engine with proper setup
-            self._initialize_qml_engine()
-
-            # CRITICAL: Initialize services with synchronous initialization first
-            self._initialize_services_sync()
-            self._initialize_viewmodels()
-
-            # Set up cleanup handlers
-            self._setup_cleanup_handlers()
-
-            # Schedule UI initialization after event loop is stable
-            QTimer.singleShot(100, self._complete_initialization)
-
-        except Exception as e:
-            self.logger.critical(f"Error during application initialization: {e}", exc_info=True)
-            raise
 
     def _keep_event_loop_alive(self):
         """Create a periodic task to keep the event loop active with improved error handling"""
