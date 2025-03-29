@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 # 3. Logging setup (must be before other app imports)
 from src.utils.logging_utils import configure_logging, get_logger
+
 configure_logging()
 logger = get_logger(__name__)
 
@@ -41,6 +42,7 @@ from src.viewmodels.async_settings_viewmodel import AsyncSettingsViewModel
 # 8. Utility imports
 from src.utils.async_file_utils import AsyncFileProcessor, get_file_info_async
 
+
 class AsyncApplication(QObject):
     """Main application class using fully asynchronous architecture with improved event loop management"""
 
@@ -65,7 +67,7 @@ class AsyncApplication(QObject):
             self._show_error_window(str(e))
 
     def _initialize(self):
-        """Initialize the application with improved event loop management for Windows"""
+        """Initialize the application with guaranteed non-recursive approach"""
         try:
             # Initialize application
             self.app = QApplication.instance() or QApplication(sys.argv)
@@ -82,24 +84,31 @@ class AsyncApplication(QObject):
             # CRITICAL: Patch qasync before creating any event loops
             patch_qasync()
 
-            # Create event loop manager
-            self.event_loop_manager = EventLoopManager(self.app)
-            # Initialize the event loop before anything else happens
-            self.event_loop = self.event_loop_manager.initialize()
-
-            # Add reference to prevent garbage collection
-            self._event_loop_ref = self.event_loop
-
-            # Process events to "prime" the event loop
+            # Process events to ensure UI responsiveness
             self.app.processEvents()
 
-            # CRITICAL: Make sure the loop is properly set in asyncio
-            asyncio.set_event_loop(self.event_loop)
+            # IMPORTANT: Directly create event loop manager without using any helper functions
+            # that might cause recursion
+            from src.utils.event_loop_manager import EventLoopManager
+            self.event_loop_manager = EventLoopManager(self.app)
+            self.logger.info("EventLoopManager created successfully")
+
+            # Store the manager reference globally but AFTER creating it
+            from src.utils.qasync_bridge import get_event_loop_manager
+            get_event_loop_manager(self.app)  # This will now set the global reference
+
+            # Initialize the event loop
+            self.event_loop = self.event_loop_manager.initialize()
+            self._event_loop_ref = self.event_loop
+            self.logger.info("Event loop initialized successfully")
+
+            # Process events to ensure UI responsiveness
+            self.app.processEvents()
 
             # Initialize QML engine with proper setup
             self._initialize_qml_engine()
 
-            # Set up event loop monitoring and keep-alive
+            # Set up event loop monitoring
             self._setup_event_loop_monitor()
 
             # Create API service first (required by other services)

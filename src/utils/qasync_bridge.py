@@ -16,10 +16,14 @@ from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
-# Global event loop manager
-_event_loop_manager = None
 # Cache to track used coroutines - helps prevent "cannot reuse already awaited coroutine" errors
 _used_coroutines = set()
+
+# In src/utils/qasync_bridge.py
+
+# Global variable to store manager reference
+_event_loop_manager = None
+
 
 def get_event_loop_manager(app=None):
     """
@@ -34,7 +38,9 @@ def get_event_loop_manager(app=None):
     global _event_loop_manager
 
     if _event_loop_manager is None:
-        _event_loop_manager = EventLoopManager(app)
+        # Import here to avoid circular imports
+        from src.utils.event_loop_manager import get_global_manager
+        _event_loop_manager = get_global_manager(app)
 
     return _event_loop_manager
 

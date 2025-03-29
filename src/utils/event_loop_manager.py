@@ -23,20 +23,18 @@ except ImportError:
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+# In src/utils/event_loop_manager.py
+
+# Global variable to hold the global manager instance
+_GLOBAL_MANAGER = None
 
 class EventLoopManager(QObject):
     """
     Manages the asyncio event loop lifecycle when integrated with PyQt.
-    Provides mechanisms to ensure the event loop stays active and recovers from errors.
     """
 
     def __init__(self, app=None):
-        """
-        Initialize the event loop manager.
-
-        Args:
-            app: The QApplication instance
-        """
+        # Always call QObject.__init__
         super().__init__()
         self.app = app or QCoreApplication.instance()
         self.logger = get_logger(__name__ + ".EventLoopManager")
@@ -65,6 +63,121 @@ class EventLoopManager(QObject):
 
         self.logger.info("EventLoopManager initialized")
 
+    def _init_instance(self):
+        """Initialize instance variables (called only once)"""
+        self.logger = get_logger(__name__ + ".EventLoopManager")
+
+        # Event loop references
+        self._main_loop = None
+        self._original_policy = None
+        self._loop_initialized = False
+        self._loop_running = False
+
+        # Monitoring
+        self._keep_alive_timer = None
+        self._monitor_timer = None
+        self._health_check_timer = None
+        self._recovery_attempts = 0
+        self._max_recovery_attempts = 5
+
+        # Prevent circular references
+        self._protected_tasks = set()
+
+        # References to protect from garbage collection
+        self._refs = {}
+
+        # Flag to track initialization status
+        self._is_initializing = False
+
+        self.logger.info("EventLoopManager singleton initialized")
+
+    def initialize(self):
+        """Initialize the event loop with qasync with improved error handling"""
+        # Do nothing if already initialized
+        if self._loop_initialized and self._main_loop and not self._main_loop.is_closed():
+            self.logger.debug(f"Using existing qasync event loop: {id(self._main_loop)}")
+            return self._main_loop
+
+        # Prevent multiple simultaneous initializations
+        if self._is_initializing:
+            self.logger.debug("Initialization already in progress, waiting...")
+            # Wait for initialization to complete
+            for _ in range(10):  # Try for 1 second (10 * 0.1s)
+                if self._loop_initialized and self._main_loop and not self._main_loop.is_closed():
+                    return self._main_loop
+                time.sleep(0.1)
+
+        self._is_initializing = True
+
+        try:
+            # Configure policy first - only do once
+            self.configure_policy()
+
+            # Skip closing existing loop - we'll take over whatever is there
+
+            # Process events to ensure Qt is ready
+            if self._app:
+                self._app.processEvents()
+
+            # IMPORTANT: Create the QEventLoop first and IMMEDIATELY set as default
+            try:
+                self.logger.debug("Creating qasync QEventLoop")
+                # Create the qasync event loop
+                self._main_loop = qasync.QEventLoop(self._app)
+
+                # Set as the default event loop immediately
+                asyncio.set_event_loop(self._main_loop)
+                self.logger.debug(f"Set qasync loop as default: {id(self._main_loop)}")
+            except Exception as e:
+                self.logger.error(f"Failed to create QEventLoop: {str(e)}")
+                # Last resort - use standard asyncio loop
+                self._main_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._main_loop)
+
+            # Set custom exception handler
+            self._main_loop.set_exception_handler(self._exception_handler)
+
+            # Set up health check timers
+            self._setup_timers()
+
+            # Create a dummy task safely to kickstart the loop
+            try:
+                @self._main_loop.call_soon
+                def _create_dummy_task():
+                    future = self._main_loop.create_future()
+                    self._main_loop.call_soon(future.set_result, None)
+            except Exception as e:
+                self.logger.error(f"Error creating dummy task: {str(e)}")
+
+            # Process events to ensure loop activation
+            if self._app:
+                self._app.processEvents()
+
+            # Mark as initialized
+            self._loop_initialized = True
+            self._loop_running = True
+
+            # Set class variable to mark singleton as initialized
+            EventLoopManager._initialized = True
+
+            self.logger.info(f"Initialized qasync event loop: {id(self._main_loop)}")
+            return self._main_loop
+
+        except Exception as e:
+            self.logger.error(f"Error initializing event loop: {str(e)}", exc_info=True)
+            # Try to create a minimal event loop as fallback
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                self._main_loop = loop
+                self._loop_initialized = True
+                return loop
+            except Exception as e2:
+                self.logger.critical(f"Could not create fallback event loop: {str(e2)}")
+                raise
+        finally:
+            self._is_initializing = False
+
     def configure_policy(self):
         """Configure the correct event loop policy for the current platform"""
         # Save the original policy
@@ -84,104 +197,25 @@ class EventLoopManager(QObject):
 
                 class CustomEventLoopPolicy(asyncio.DefaultEventLoopPolicy):
                     """Custom policy that uses SelectorEventLoop on Windows"""
+
                     def new_event_loop(self):
                         return asyncio.SelectorEventLoop()
 
                 asyncio.set_event_loop_policy(CustomEventLoopPolicy())
                 self.logger.info("Set custom event loop policy to use SelectorEventLoop on Windows")
 
-    def initialize(self):
-        """Initialize the event loop with qasync"""
-        if self._is_initializing:
-            self.logger.debug("Initialization already in progress, waiting...")
-            # Wait for initialization to complete
-            for _ in range(10):  # Try for 1 second (10 * 0.1s)
-                if self._loop_initialized and self._main_loop and not self._main_loop.is_closed():
-                    return self._main_loop
-                time.sleep(0.1)
-
-        if self._loop_initialized and self._main_loop and not self._main_loop.is_closed():
-            self.logger.debug(f"Using existing qasync event loop: {id(self._main_loop)}")
-            return self._main_loop
-
-        self._is_initializing = True
-
+    # Add this method to EventLoopManager
+    async def _dummy_task(self):
+        """A safer dummy task that doesn't use sleep directly"""
         try:
-            # Configure policy first
-            self.configure_policy()
-
-            # Close any existing event loop cleanly
-            try:
-                existing_loop = asyncio.get_event_loop()
-                if not existing_loop.is_closed():
-                    self.logger.debug(f"Closing existing event loop: {id(existing_loop)}")
-                    existing_loop.close()
-            except RuntimeError:
-                # No event loop exists, which is fine
-                pass
-
-            # Create a new event loop first
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            self.logger.debug(f"Created new event loop: {id(loop)}")
-
-            # Process events to ensure Qt is ready
-            if self.app:
-                self.app.processEvents()
-
-            try:
-                # Try to create qasync loop with newest API
-                self._main_loop = qasync.QEventLoop(self.app)
-            except (TypeError, AttributeError):
-                # Fallback for older qasync versions
-                self.logger.debug("Older qasync API detected, trying alternate initialization")
-                try:
-                    self._main_loop = qasync.QEventLoop(self.app)
-                except Exception as e:
-                    self.logger.error(f"Failed to create QEventLoop: {str(e)}")
-                    # Last resort - use standard asyncio loop
-                    self._main_loop = asyncio.new_event_loop()
-
-            # Set as the default event loop
-            asyncio.set_event_loop(self._main_loop)
-
-            # Set custom exception handler
-            self._main_loop.set_exception_handler(self._exception_handler)
-
-            # Set up health check timers
-            self._setup_timers()
-
-            # Create a dummy task to kickstart the loop
-            @self._main_loop.call_soon_threadsafe
-            def _start_loop():
-                self._main_loop.create_task(asyncio.sleep(0.01))
-
-            # Process events to help kickstart the loop
-            if self.app:
-                self.app.processEvents()
-
-            # Mark as initialized
-            self._loop_initialized = True
-            self._loop_running = True
-
-            self.logger.info(f"Initialized qasync event loop: {id(self._main_loop)}")
-
-            return self._main_loop
-
-        except Exception as e:
-            self.logger.error(f"Error initializing event loop: {str(e)}", exc_info=True)
-            # Try to create a minimal event loop as fallback
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                self._main_loop = loop
-                self._loop_initialized = True
-                return loop
-            except Exception as e2:
-                self.logger.critical(f"Could not create fallback event loop: {str(e2)}")
-                raise
-        finally:
-            self._is_initializing = False
+            # Use a very small delay that doesn't rely directly on asyncio.sleep
+            await asyncio.wait_for(asyncio.shield(asyncio.Future()), 0.001)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            # This is expected, we're just using the timeout to create a small delay
+            pass
+        except Exception:
+            # Ignore any other errors - this is just a keepalive
+            pass
 
     def get_loop(self):
         """
@@ -292,6 +326,11 @@ class EventLoopManager(QObject):
         Returns:
             True if initialization was successful, False otherwise
         """
+        # Validate we have the required attributes
+        if not hasattr(self, 'app') or self.app is None:
+            self.logger.error("No app reference available for EventLoopManager")
+            return False
+
         if not hasattr(service, init_method):
             self.logger.error(f"Service does not have '{init_method}' method")
             return False
@@ -666,6 +705,7 @@ class EventLoopManager(QObject):
                             class TaskProxy:
                                 def cancel(self):
                                     future.cancel()
+
                                 def add_done_callback(self, callback):
                                     future.add_done_callback(callback)
 
@@ -749,3 +789,11 @@ class EventLoopManager(QObject):
                 self.logger.debug("Restored original event loop policy")
             except Exception as e:
                 self.logger.warning(f"Error restoring event loop policy: {str(e)}")
+
+# Function to get the global instance - no class methods involved
+def get_global_manager(app=None):
+    """Get the global EventLoopManager instance"""
+    global _GLOBAL_MANAGER
+    if _GLOBAL_MANAGER is None:
+        _GLOBAL_MANAGER = EventLoopManager(app)
+    return _GLOBAL_MANAGER
