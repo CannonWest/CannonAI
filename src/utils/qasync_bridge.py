@@ -1,12 +1,14 @@
 """
 Enhanced qasync bridge with fixes for Python 3.12 and PyQt6 compatibility.
+Fixes coroutine reuse issues and provides more reliable event loop management.
 """
 
 import asyncio
 import platform
 import sys
 import traceback
-from typing import Any, Awaitable, Callable, Optional
+import inspect
+from typing import Any, Awaitable, Callable, Optional, Union, Coroutine
 
 # Import local event loop manager
 from src.utils.event_loop_manager import EventLoopManager
@@ -16,6 +18,8 @@ logger = get_logger(__name__)
 
 # Global event loop manager
 _event_loop_manager = None
+# Cache to track used coroutines - helps prevent "cannot reuse already awaited coroutine" errors
+_used_coroutines = set()
 
 def get_event_loop_manager(app=None):
     """
@@ -62,6 +66,54 @@ def patch_qasync():
 
             qasync.QEventLoop.run_forever = patched_run_forever
             logger.info("Patched QEventLoop.run_forever")
+
+            # Patch create_task to prevent coroutine reuse
+            original_create_task = qasync.QEventLoop.create_task
+
+            def patched_create_task(self, coro):
+                # Check if we've seen this coroutine before
+                global _used_coroutines
+                if coro in _used_coroutines:
+                    logger.warning("Attempting to reuse an already awaited coroutine - creating new wrapper")
+                    # Create a wrapping coroutine to avoid the reuse issue
+                    async def _wrap_coro():
+                        # We can't directly await coro here, so create a new one
+                        if hasattr(coro, '__qualname__') and hasattr(coro, '__self__'):
+                            # This appears to be a bound method coroutine
+                            method_name = coro.__qualname__.split('.')[-1]
+                            if hasattr(coro.__self__, method_name):
+                                # Get the original method and call it again
+                                method = getattr(coro.__self__, method_name)
+                                # Try to get the original arguments
+                                frame = inspect.currentframe()
+                                try:
+                                    if frame and frame.f_back and frame.f_back.f_locals:
+                                        # Look for coroutine in locals
+                                        for key, value in frame.f_back.f_locals.items():
+                                            if value is coro and key != 'coro':
+                                                logger.debug(f"Found coroutine as {key} in locals")
+                                                # Try to get args from the original call
+                                                # This is a best-effort attempt
+                                                return await method()
+                                finally:
+                                    del frame  # Avoid reference cycles
+
+                                # Fallback without args
+                                return await method()
+
+                        # If all else fails, just return None
+                        logger.warning("Could not recreate coroutine, returning None")
+                        return None
+
+                    return original_create_task(self, _wrap_coro())
+
+                # Mark as used for future reference
+                _used_coroutines.add(coro)
+                # Call original method for fresh coroutines
+                return original_create_task(self, coro)
+
+            qasync.QEventLoop.create_task = patched_create_task
+            logger.info("Patched QEventLoop.create_task to prevent coroutine reuse")
 
             # Add special exception handler
             def patched_exception_handler(self, context):
@@ -211,12 +263,16 @@ def ensure_qasync_loop():
         return loop
 
 
-def run_coroutine(coro, callback=None, error_callback=None, timeout=None):
+def run_coroutine(coro: Union[Coroutine, Callable[..., Coroutine]],
+                 callback: Optional[Callable[[Any], None]] = None,
+                 error_callback: Optional[Callable[[Exception], None]] = None,
+                 timeout: Optional[float] = None):
     """
-    Improved version of run_coroutine that handles non-running loops better.
+    Improved version of run_coroutine that handles non-running loops better
+    and prevents coroutine reuse errors.
 
     Args:
-        coro: The coroutine to run
+        coro: The coroutine or coroutine function to run
         callback: Optional callback for result
         error_callback: Optional callback for errors
         timeout: Optional timeout in seconds
@@ -225,16 +281,18 @@ def run_coroutine(coro, callback=None, error_callback=None, timeout=None):
         A runner object that can be used to track/cancel the task
     """
     try:
-        # Make sure we have a valid coroutine
+        # Make sure we have a valid coroutine - with special handling for reuse
         if not asyncio.iscoroutine(coro):
             if callable(coro):
                 try:
+                    # Call the function to get a fresh coroutine
                     coro = coro()
                     if not asyncio.iscoroutine(coro):
                         if error_callback:
                             error_callback(TypeError(f"Expected a coroutine, got {type(coro)}"))
                         return None
                 except Exception as e:
+                    logger.error(f"Error calling coroutine function: {str(e)}")
                     if error_callback:
                         error_callback(e)
                     return None
@@ -242,6 +300,17 @@ def run_coroutine(coro, callback=None, error_callback=None, timeout=None):
                 if error_callback:
                     error_callback(TypeError(f"Expected a coroutine, got {type(coro)}"))
                 return None
+
+        # Check for coroutine reuse
+        global _used_coroutines
+        if coro in _used_coroutines:
+            logger.warning(f"Attempted to reuse coroutine in run_coroutine - this is not allowed")
+            if error_callback:
+                error_callback(RuntimeError("Cannot reuse already awaited coroutine"))
+            return None
+
+        # Mark the coroutine as used to prevent future reuse
+        _used_coroutines.add(coro)
 
         # Get the event loop
         loop = ensure_qasync_loop()
@@ -293,18 +362,14 @@ def run_coroutine(coro, callback=None, error_callback=None, timeout=None):
                     error_callback(e)
                 raise
 
-        # If loop is not running or we're on Windows, use run_coroutine_threadsafe
+        # If loop is not running or we're on Windows, use event loop manager
         if not is_running or platform.system() == "Windows":
             try:
-                # Use run_coroutine_threadsafe for improved robustness during initialization
-                future = asyncio.run_coroutine_threadsafe(wrapper(), loop)
+                # Get our event loop manager
+                manager = get_event_loop_manager()
 
-                # Return a dummy task-like object that supports cancellation
-                class TaskLike:
-                    def cancel(self):
-                        future.cancel()
-
-                return TaskLike()
+                # Use the manager's run_coroutine method which has better handling
+                return manager.run_coroutine(wrapper(), callback, error_callback, timeout)
             except Exception as e:
                 logger.error(f"Task creation error: {str(e)}")
                 if error_callback:
@@ -344,6 +409,14 @@ def run_sync(coro):
                 raise TypeError(f"Expected a coroutine, got {type(coro)}")
         else:
             raise TypeError(f"Expected a coroutine, got {type(coro)}")
+
+    # Check for coroutine reuse
+    global _used_coroutines
+    if coro in _used_coroutines:
+        raise RuntimeError("Cannot reuse already awaited coroutine")
+
+    # Mark the coroutine as used to prevent future reuse
+    _used_coroutines.add(coro)
 
     # Try several approaches to run the coroutine
     for attempt in range(3):

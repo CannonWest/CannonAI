@@ -1,7 +1,7 @@
 """
 Enhanced event loop manager for PyQt6 with qasync integration.
 Provides reliable lifecycle management and event loop recovery.
-Updated for Python 3.12 compatibility.
+Updated for Python 3.12 compatibility with improved Windows support.
 """
 
 import asyncio
@@ -9,7 +9,7 @@ import platform
 import sys
 import time
 import traceback
-from typing import Optional, Any, Callable, Coroutine
+from typing import Optional, Any, Callable, Coroutine, Union
 
 from PyQt6.QtCore import QObject, QCoreApplication, QTimer
 
@@ -54,8 +54,14 @@ class EventLoopManager(QObject):
         self._recovery_attempts = 0
         self._max_recovery_attempts = 5
 
+        # Prevent circular references
+        self._protected_tasks = set()
+
         # References to protect from garbage collection
         self._refs = {}
+
+        # Flag to track initialization status
+        self._is_initializing = False
 
         self.logger.info("EventLoopManager initialized")
 
@@ -86,9 +92,19 @@ class EventLoopManager(QObject):
 
     def initialize(self):
         """Initialize the event loop with qasync"""
+        if self._is_initializing:
+            self.logger.debug("Initialization already in progress, waiting...")
+            # Wait for initialization to complete
+            for _ in range(10):  # Try for 1 second (10 * 0.1s)
+                if self._loop_initialized and self._main_loop and not self._main_loop.is_closed():
+                    return self._main_loop
+                time.sleep(0.1)
+
         if self._loop_initialized and self._main_loop and not self._main_loop.is_closed():
             self.logger.debug(f"Using existing qasync event loop: {id(self._main_loop)}")
             return self._main_loop
+
+        self._is_initializing = True
 
         try:
             # Configure policy first
@@ -135,15 +151,20 @@ class EventLoopManager(QObject):
             # Set up health check timers
             self._setup_timers()
 
+            # Create a dummy task to kickstart the loop
+            @self._main_loop.call_soon_threadsafe
+            def _start_loop():
+                self._main_loop.create_task(asyncio.sleep(0.01))
+
+            # Process events to help kickstart the loop
+            if self.app:
+                self.app.processEvents()
+
             # Mark as initialized
             self._loop_initialized = True
             self._loop_running = True
 
             self.logger.info(f"Initialized qasync event loop: {id(self._main_loop)}")
-
-            # Process events to kickstart the loop
-            if self.app:
-                self.app.processEvents()
 
             return self._main_loop
 
@@ -154,14 +175,18 @@ class EventLoopManager(QObject):
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 self._main_loop = loop
+                self._loop_initialized = True
                 return loop
             except Exception as e2:
                 self.logger.critical(f"Could not create fallback event loop: {str(e2)}")
                 raise
+        finally:
+            self._is_initializing = False
 
     def get_loop(self):
         """
         Get the current event loop, initializing if needed.
+        Includes improved error checking and recovery.
 
         Returns:
             The current asyncio event loop
@@ -257,6 +282,7 @@ class EventLoopManager(QObject):
     def init_async_service(self, service, init_method='initialize', timeout=5.0):
         """
         Safely initialize an async service during application startup
+        with improved error handling and fallback mechanisms.
 
         Args:
             service: The service object to initialize
@@ -298,13 +324,30 @@ class EventLoopManager(QObject):
                 self.app.processEvents()
             time.sleep(0.05)
 
+        # Special handling for Windows: try direct synchronous initialization if async approach fails
+        if not success[0] and platform.system() == "Windows":
+            try:
+                self.logger.warning(f"Trying direct synchronous initialization for {service.__class__.__name__}")
+                # Create a new event loop for direct execution
+                direct_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(direct_loop)
+
+                try:
+                    result = direct_loop.run_until_complete(method())
+                    success[0] = bool(result)
+                    self.logger.info(f"Direct initialization of {service.__class__.__name__}: {result}")
+                finally:
+                    direct_loop.close()
+            except Exception as e:
+                self.logger.error(f"Error in direct initialization: {str(e)}")
+
         return success[0]
 
     def _setup_timers(self):
         """Set up timers for keeping the event loop alive and monitoring its health"""
         # Timer to periodically create tasks to keep loop active
         self._keep_alive_timer = QTimer()
-        self._keep_alive_timer.setInterval(100)  # 100ms interval
+        self._keep_alive_timer.setInterval(50)  # Reduced from 100ms to 50ms for more responsiveness
         self._keep_alive_timer.timeout.connect(self._keep_loop_alive)
         self._keep_alive_timer.start()
 
@@ -326,7 +369,7 @@ class EventLoopManager(QObject):
         self._refs['health_check_timer'] = self._health_check_timer
 
     def _keep_loop_alive(self):
-        """Create a dummy task to keep the event loop active"""
+        """Create a dummy task to keep the event loop active with better error handling"""
         if not self._main_loop or self._main_loop.is_closed():
             return
 
@@ -335,19 +378,26 @@ class EventLoopManager(QObject):
             async def _dummy():
                 try:
                     await asyncio.sleep(0.001)
-                except (RuntimeError, asyncio.CancelledError):
-                    # Ignore errors from "no running event loop" or cancellation
+                except (RuntimeError, asyncio.CancelledError, Exception):
+                    # Ignore all errors - this is just a keepalive
                     pass
 
-            # Add task to the loop - use create_task directly for simplicity
-            # Don't use call_soon_threadsafe which can cause issues
+            # Add task to the loop - use call_soon_threadsafe for thread safety
             try:
-                self._main_loop.create_task(_dummy())
-            except RuntimeError:
-                # Ignore "no running event loop" errors
+                @self._main_loop.call_soon_threadsafe
+                def _create_task():
+                    try:
+                        task = self._main_loop.create_task(_dummy())
+                        # Don't track the task's completion - we don't care
+                        task.add_done_callback(lambda _: None)
+                    except Exception:
+                        # Ignore all errors
+                        pass
+            except Exception:
+                # Ignore errors here - this is just a keepalive
                 pass
-        except Exception as e:
-            # Ignore errors here - this is just a keepalive
+        except Exception:
+            # Ignore all exceptions in keepalive
             pass
 
     def _check_loop_health(self):
@@ -362,9 +412,12 @@ class EventLoopManager(QObject):
 
             try:
                 # Try to get the running loop
-                asyncio.get_running_loop()
-                is_running = True
-            except RuntimeError:
+                try:
+                    asyncio.get_running_loop()
+                    is_running = True
+                except RuntimeError:
+                    is_running = False
+            except Exception:
                 is_running = False
 
             # Special case for Windows - if we've initialized it, consider it running
@@ -396,22 +449,27 @@ class EventLoopManager(QObject):
             # Run it on the event loop
             if not self._main_loop.is_closed():
                 try:
-                    task = self._main_loop.create_task(_health_check())
-
-                    # Set up a callback to verify task completion
-                    def check_result(task):
+                    @self._main_loop.call_soon_threadsafe
+                    def _create_task():
                         try:
-                            result = task.result()
-                            if result:
-                                self.logger.debug("Health check task completed successfully")
-                        except (asyncio.CancelledError, Exception) as e:
-                            self.logger.warning(f"Health check task failed: {str(e)}")
+                            task = self._main_loop.create_task(_health_check())
 
-                    task.add_done_callback(check_result)
-                except RuntimeError:
-                    # Event loop might not be running
-                    self.logger.warning("Event loop not running during health check")
-                    self._recover_loop()
+                            # Set up a callback to verify task completion
+                            def check_result(task):
+                                try:
+                                    if task.done():
+                                        if not task.cancelled():
+                                            result = task.result()
+                                            if result:
+                                                self.logger.debug("Health check task completed successfully")
+                                except Exception as e:
+                                    self.logger.warning(f"Health check task error: {str(e)}")
+
+                            task.add_done_callback(check_result)
+                        except Exception as e:
+                            self.logger.warning(f"Error creating health check task: {str(e)}")
+                except Exception as e:
+                    self.logger.warning(f"Error scheduling health check: {str(e)}")
             else:
                 self.logger.warning("Cannot perform health check - event loop is closed")
                 self._recover_loop()
@@ -469,6 +527,11 @@ class EventLoopManager(QObject):
 
             # Handle Windows-specific errors
             if platform.system() == "Windows" and isinstance(exception, OSError):
+                if hasattr(exception, 'winerror'):
+                    if exception.winerror in (6, 995, 996, 121):  # Common Windows errors during operation
+                        self.logger.debug(f"Windows-specific error: {str(exception)}")
+                        return
+
                 if "ERROR_ABANDONED_WAIT_0" in str(exception):
                     self.logger.debug("Windows handle abandoned error - this is normal during shutdown")
                     return
@@ -491,12 +554,19 @@ class EventLoopManager(QObject):
                 if loop and not loop.is_closed():
                     asyncio.set_event_loop(loop)
                     self.logger.debug("Reset event loop as current")
+                else:
+                    # Try to recover with a new loop
+                    new_loop = self.initialize()
+                    if new_loop and not new_loop.is_closed():
+                        asyncio.set_event_loop(new_loop)
+                        self.logger.debug("Created new event loop to replace closed one")
             except Exception as e:
                 self.logger.error(f"Failed to reset event loop: {str(e)}")
 
     def run_coroutine(self, coro, callback=None, error_callback=None, timeout=None):
         """
         Run a coroutine on the event loop with proper error handling
+        and improved Windows compatibility.
 
         Args:
             coro: The coroutine to run
@@ -530,19 +600,23 @@ class EventLoopManager(QObject):
                 error_callback(TypeError(f"Expected a coroutine, got {type(coro)}"))
             return None
 
-        # Create a safe wrapper coroutine
+        # IMPORTANT: Create a new coroutine instance for the wrapper to avoid
+        # "cannot reuse already awaited coroutine" errors
+        # We must be careful not to directly await the original coroutine here
         async def _safe_wrapper():
+            local_coro = coro  # Reference the outer coroutine but don't await yet
+
             try:
                 # Run with timeout if specified
                 if timeout:
                     try:
-                        result = await asyncio.wait_for(coro, timeout)
+                        result = await asyncio.wait_for(local_coro, timeout)
                     except asyncio.TimeoutError:
                         if error_callback:
                             error_callback(TimeoutError(f"Operation timed out after {timeout} seconds"))
                         raise
                 else:
-                    result = await coro
+                    result = await local_coro
 
                 # Call the callback with the result
                 if callback:
@@ -553,33 +627,65 @@ class EventLoopManager(QObject):
                 # Task was cancelled, not an error
                 raise
             except Exception as e:
+                self.logger.error(f"Error in _safe_wrapper: {str(e)}", exc_info=True)
                 if error_callback:
                     error_callback(e)
                 raise
 
         try:
-            # Run on the event loop with proper handling
-            if loop.is_closed():
-                raise RuntimeError("Event loop is closed")
-
-            # Create the task with proper Windows handling
+            # Windows requires special handling
             if platform.system() == "Windows":
+                # Skip if the loop is closed
+                if loop.is_closed():
+                    if error_callback:
+                        error_callback(RuntimeError("Event loop is closed"))
+                    return None
+
                 try:
-                    # On Windows, use a more reliable approach
-                    future = asyncio.run_coroutine_threadsafe(_safe_wrapper(), loop)
-
-                    # Create a task-like object that supports cancellation
-                    class TaskProxy:
-                        def cancel(self):
-                            future.cancel()
-
-                    return TaskProxy()
-                except RuntimeError:
-                    # If that fails, try regular task creation
+                    # Create the task safely to avoid "no running event loop" errors
                     task = loop.create_task(_safe_wrapper())
+
+                    # Keep track of the task in our protected set
+                    self._protected_tasks.add(task)
+
+                    # Add cleanup callback to remove from protected set when done
+                    def _cleanup_task(task):
+                        if task in self._protected_tasks:
+                            self._protected_tasks.remove(task)
+
+                    task.add_done_callback(_cleanup_task)
                     return task
+                except RuntimeError as e:
+                    # If we get "no running event loop", try threadsafe approach
+                    if "no running event loop" in str(e):
+                        try:
+                            # Direct threadsafe call
+                            future = asyncio.run_coroutine_threadsafe(_safe_wrapper(), loop)
+
+                            # Create a task-like interface
+                            class TaskProxy:
+                                def cancel(self):
+                                    future.cancel()
+                                def add_done_callback(self, callback):
+                                    future.add_done_callback(callback)
+
+                            return TaskProxy()
+                        except Exception as inner_e:
+                            self.logger.error(f"Failed to run task via threadsafe approach: {str(inner_e)}")
+                            if error_callback:
+                                error_callback(inner_e)
+                            return None
+                    else:
+                        # Other RuntimeError
+                        self.logger.error(f"RuntimeError in task creation: {str(e)}")
+                        if error_callback:
+                            error_callback(e)
+                        return None
             else:
-                # Normal case for non-Windows
+                # Non-Windows platforms
+                if loop.is_closed():
+                    raise RuntimeError("Event loop is closed")
+
                 task = loop.create_task(_safe_wrapper())
                 return task
 
@@ -597,6 +703,16 @@ class EventLoopManager(QObject):
         for timer_name, timer in self._refs.items():
             if isinstance(timer, QTimer) and timer.isActive():
                 timer.stop()
+
+        # Cancel all protected tasks
+        for task in list(self._protected_tasks):
+            try:
+                if not task.done():
+                    task.cancel()
+            except Exception:
+                pass
+
+        self._protected_tasks.clear()
 
         # Clear references
         self._refs.clear()
