@@ -1,13 +1,14 @@
 """
-ViewModels package for the OpenAI Chat application.
-Contains both async and reactive implementations for UI data binding.
+ViewModels package for the CannonAI application.
+Contains ViewModels implementing the MVVM pattern using standard PyQt threading.
 """
 
-# Async viewmodels (preferred for new code)
-from src.viewmodels.updated_async_conversation_viewmodel import FullAsyncConversationViewModel
-from src.viewmodels.async_settings_viewmodel import AsyncSettingsViewModel
+# Import the actual threaded ViewModel classes
+from src.viewmodels.conversation_viewmodel import ConversationViewModel
+from src.viewmodels.settings_viewmodel import SettingsViewModel
 
-
-# Define preferred models for new code
-ConversationViewModel = FullAsyncConversationViewModel
-SettingsViewModel = AsyncSettingsViewModel
+# Define exports (optional but good practice)
+__all__ = [
+    "ConversationViewModel",
+    "SettingsViewModel",
+]

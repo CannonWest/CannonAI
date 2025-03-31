@@ -1,18 +1,21 @@
 """
-OpenAI Chat Application Package.
-A desktop application for interacting with OpenAI language models.
-
-This package provides a PyQt6-based UI for interacting with the OpenAI API,
-with support for multiple conversations, file attachments, and model customization.
+CannonAI Application Package.
+A desktop application for interacting with various AI models using PyQt6 and MVVM.
 """
 
 # Package version
-__version__ = "1.0.0"
+__version__ = "1.0.0" # Consider updating version if making significant changes
 
-# Import core components
-from src.models import Conversation, Message, FileAttachment
-from src.services import AsyncApiService, AsyncConversationService, SettingsManager
-from src.viewmodels import ConversationViewModel, SettingsViewModel
+# Import core components (ensure these align with exports from sub-packages)
+from src.models import Conversation, Message, FileAttachment, Base
+from src.services import ApiService, ConversationService, SettingsManager, DatabaseManager # Use correct service names
+from src.viewmodels import ConversationViewModel, SettingsViewModel # Use correct ViewModel names
 
-# For convenience, also import the qasync tools
-from src.utils import install_qasync, run_coroutine
+
+# Optional: Define __all__ for explicit public API
+__all__ = [
+    "Conversation", "Message", "FileAttachment", "Base",
+    "ApiService", "ConversationService", "SettingsManager", "DatabaseManager",
+    "ConversationViewModel", "SettingsViewModel",
+    "__version__",
+]

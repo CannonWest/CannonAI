@@ -1,13 +1,18 @@
 """
-Services package for the OpenAI Chat application.
-Contains both synchronous and asynchronous service implementations.
+Services package for the CannonAI application.
+Contains synchronous service implementations for API, Database, and Storage.
 """
 
-# Async API service
-from src.services.api import AsyncApiService
+# Import synchronous services using their actual class names
+from src.services.api.api_service import ApiService
+from src.services.database.conversation_service import ConversationService
+from src.services.database.db_manager import DatabaseManager
+from src.services.storage.settings_manager import SettingsManager
 
-# Database services - new async implementation
-from src.services.database import AsyncConversationService, AsyncDatabaseManager
-
-# Storage services
-from src.services.storage import SettingsManager
+# Optional: Define __all__
+__all__ = [
+    "ApiService",
+    "ConversationService",
+    "DatabaseManager",
+    "SettingsManager",
+]

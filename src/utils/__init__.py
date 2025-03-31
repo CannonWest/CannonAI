@@ -33,28 +33,12 @@ from src.utils.logging_utils import (
     log_exception
 )
 
-# Async file utilities (preferred)
-from src.utils.async_file_utils import (
-    get_file_info_async,
-    AsyncFileProcessor,
-    AsyncFileCacheManager,
+# file utilities
+from src.utils.file_utils import (
     count_tokens,
     read_text_file,
     get_file_mime_type
 )
 
-# Async QML bridge (preferred)
-from src.utils.async_qml_bridge import AsyncQmlBridge
-
-# Event loop management
-from src.utils.event_loop_manager import EventLoopManager
-
-# Enhanced async utilities with improved Windows support
-from src.utils.qasync_bridge import (
-    patch_qasync,
-    ensure_qasync_loop,
-    run_coroutine,
-    run_sync,
-    install as install_qasync,
-    get_event_loop_manager
-)
+# QML bridge
+from src.utils.qml_bridge import QmlBridge

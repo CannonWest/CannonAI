@@ -1,10 +1,11 @@
 """
-API services package for the OpenAI Chat application.
+API services package for the CannonAI application.
 """
 
-# Import AsyncApiService from the existing file
-try:
-    from src.services.async_api_service import AsyncApiService
-except ImportError:
-    # Once we move the file to its new location, use this import
-    from src.services.api.async_api_service import AsyncApiService
+# Import the synchronous ApiService class
+from src.services.api.api_service import ApiService
+
+# Optional: Define __all__
+__all__ = [
+    "ApiService",
+]

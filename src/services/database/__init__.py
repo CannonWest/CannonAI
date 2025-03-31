@@ -1,8 +1,16 @@
 """
-Database services package for the OpenAI Chat application.
-Provides asynchronous database operations using SQLAlchemy 2.0.
+Database services package for the CannonAI application.
+Provides synchronous database operations using SQLAlchemy 2.0.
 """
 
-from src.services.database.async_manager import AsyncDatabaseManager, Base
-from src.services.database.async_conversation_service import AsyncConversationService
-from src.services.database.models import Conversation, Message, FileAttachment
+# Import synchronous database classes
+from src.services.database.db_manager import DatabaseManager
+from src.services.database.conversation_service import ConversationService
+
+# Removed Base import/export (import Base from src.models where needed)
+
+# Optional: Define __all__
+__all__ = [
+    "DatabaseManager",
+    "ConversationService",
+]
