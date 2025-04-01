@@ -1,7 +1,6 @@
 # src/viewmodels/conversation_viewmodel.py
 
 # Standard library imports
-# Removed asyncio, concurrent.futures
 import uuid
 from datetime import datetime
 import platform
@@ -261,53 +260,64 @@ class ConversationViewModel(QObject): # Renamed class
     # --- Worker Management ---
     def _start_worker(self, task_id: str, worker_class: type, *args, **kwargs):
         """Helper method to create, configure, and start a QThread worker."""
-        # Prevent starting the same task ID if already running
         if task_id in self._threads and self._threads[task_id].isRunning():
-             self.logger.warning(f"Task '{task_id}' is already running. Ignoring request.")
-             return
+            self.logger.warning(f"Task '{task_id}' is already running. Ignoring request.")
+            return
 
-        # If a previous thread for this task ID exists but isn't running (e.g., finished uncleanly?), clean it up.
         if task_id in self._threads:
-             self.logger.warning(f"Cleaning up previous non-running thread for task: {task_id}")
-             # Ensure signals are disconnected? QThread cleanup should handle this.
-             del self._threads[task_id]
+            self.logger.warning(f"Cleaning up previous non-running thread for task: {task_id}")
+            del self._threads[task_id]
 
-
-        self.logger.debug(f"Starting worker for task: {task_id}")
-        thread = QThread()
-        # Pass required services and arguments to the worker's constructor
+        self.logger.debug(f"Starting worker {worker_class.__name__} for task: {task_id}")
+        thread = QThread(self)  # Parent the thread to the ViewModel
         kwargs['conversation_service'] = self.conversation_service
         kwargs['api_service'] = self.api_service
-        # Pass the ViewModel instance itself so worker can emit signals *on* it
-        kwargs['view_model'] = self
-        kwargs['task_id'] = task_id # Pass task_id for context in worker/signals
+        kwargs['view_model'] = self  # Pass ViewModel ref if needed by worker logic (e.g., settings access)
+        kwargs['task_id'] = task_id
 
         worker = worker_class(*args, **kwargs)
         worker.moveToThread(thread)
 
-        # Connect signals from Worker to ViewModel Slots
-        # Note: Ensure slots exist in the ViewModel!
-        worker.conversationResult.connect(self._handle_conversation_loaded)
-        worker.conversationListResult.connect(self._handle_conversation_list_loaded)
-        worker.messageResult.connect(self._handle_message_added)
-        worker.branchResult.connect(self._handle_branch_changed)
-        # Connect generic error signal
+        # --- Connect signals from Worker to ViewModel Slots ---
+        # Generic signals from BaseWorker
         worker.error.connect(self._handle_worker_error)
+        worker.finished.connect(thread.quit)  # Worker finished -> Quit thread's event loop
 
-        # Thread lifecycle signals
-        worker.finished.connect(thread.quit)
-        # Ensure cleanup happens *after* thread quits
+        # Connect specific result signals based on worker type
+        if hasattr(worker, 'conversationResult'):
+            worker.conversationResult.connect(self._handle_conversation_loaded)
+        if hasattr(worker, 'conversationListResult'):
+            worker.conversationListResult.connect(self._handle_conversation_list_loaded)  # <<< Verify this connection
+        if hasattr(worker, 'messageResult'):
+            worker.messageResult.connect(self._handle_message_added)  # Assuming this slot exists
+        if hasattr(worker, 'branchResult'):
+            worker.branchResult.connect(self._handle_branch_changed)
+
+        # Specific signals for SendMessageWorker (if worker_class is SendMessageWorker)
+        if isinstance(worker, SendMessageWorker):
+            worker.userMessageSaved.connect(self._handle_user_message_saved)
+            worker.assistantMessageSaved.connect(self._handle_assistant_message_saved)
+            worker.streamChunkReady.connect(self._handle_stream_chunk)
+            worker.tokenUsageReady.connect(self._handle_api_metadata)
+            worker.reasoningStepsReady.connect(self._handle_api_metadata)
+            worker.messagingDone.connect(self._handle_messaging_done)
+
+        # --- Thread lifecycle ---
+        # Clean up worker and thread objects once the thread's event loop has finished
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         # Connect thread started signal to worker's run method
         thread.started.connect(worker.run)
         # Clean up ViewModel's tracking when thread finishes
-        thread.finished.connect(lambda tid=task_id: self._cleanup_thread(tid)) # Use lambda to capture task_id
+        thread.finished.connect(lambda tid=task_id: self._cleanup_thread(tid))
 
-        self._threads[task_id] = thread # Store thread reference
-        self.loadingStateChanged.emit(True) # Indicate loading started
+        self._threads[task_id] = thread
+        # Set loading state ONLY if no other threads are running yet
+        if len(self._threads) == 1:
+            self.loadingStateChanged.emit(True)
+            self.logger.debug("Set loading state to True.")
 
-        thread.start() # Start the thread's event loop
+        thread.start()
 
     def _cleanup_thread(self, task_id: str):
         """Remove thread reference upon completion and update loading state."""
@@ -332,23 +342,33 @@ class ConversationViewModel(QObject): # Renamed class
         if not self._threads:
              self.loadingStateChanged.emit(False)
 
-    @pyqtSlot(list) # Expecting list of dicts
+    @pyqtSlot(list)
     def _handle_conversation_list_loaded(self, conversations_list: list):
-        self.logger.info(f"Received conversation list with {len(conversations_list)} items.")
+        # ADD LOGGING at the start of the slot
+        self.logger.info(f">>> SLOT _handle_conversation_list_loaded called with {len(conversations_list)} items.")
         self.conversationListUpdated.emit(conversations_list)
+        # Rest of the logic...
         if conversations_list:
             first_id = conversations_list[0].get('id')
             if first_id:
-                self.logger.debug(f"Loading first conversation: {first_id}")
-                self.load_conversation(first_id) # Trigger load worker
+                # Check if already loading this conversation or if it's the current one
+                load_task_id = f"load_conv_{first_id}"
+                if first_id != self._current_conversation_id and load_task_id not in self._threads:
+                    self.logger.debug(f"Slot loading first conversation: {first_id}")
+                    self.load_conversation(first_id)  # Trigger load worker for the first conv
+                elif first_id == self._current_conversation_id:
+                    self.logger.debug(f"First conversation {first_id} is already current.")
+                else:
+                    self.logger.debug(f"Already loading conversation {first_id}.")
             else:
                 self.logger.warning("First conversation in list has no ID.")
-                # If loading the list was the only task, set loading false
-                if len(self._threads) == 1 and "load_all_convs" in list(self._threads.keys())[0]:
-                     self.loadingStateChanged.emit(False)
+                # Potentially update loading state if this was the only task
+                # self._check_and_update_loading_state() # Helper function might be useful
         else:
-             self.logger.info("No conversations found, creating a new one.")
-             self.create_new_conversation("New Conversation") # Starts another worker
+            self.logger.info("No conversations found, creating a new one.")
+            # Avoid starting create if another thread is already running (e.g., the load thread itself)
+            if "create_conv" not in self._threads:
+                self.create_new_conversation("New Conversation")  # Starts another worker
 
     @pyqtSlot(object) # Expecting Conversation object (or dict)
     def _handle_conversation_loaded(self, conversation: Optional[Conversation]):
@@ -416,25 +436,32 @@ class ConversationViewModel(QObject): # Renamed class
             try:
                 self.logger.debug("LoadConversationsWorker running...")
                 conv_service: ConversationService = self.kwargs.get('conversation_service')
-                conversations = conv_service.get_all_conversations() # Sync call
+                if not conv_service:
+                    raise ValueError("ConversationService not provided to worker.")  # Add check
+
+                conversations = conv_service.get_all_conversations()  # Sync call
                 conv_list_dicts = []
                 for conv in conversations:
-                     # Ensure essential fields exist
-                     conv_id = getattr(conv, 'id', None)
-                     conv_name = getattr(conv, 'name', 'Unnamed')
-                     mod_at = getattr(conv, 'modified_at', None)
-                     if conv_id:
-                          conv_list_dicts.append({
-                              'id': conv_id, 'name': conv_name,
-                              'modified_at': mod_at.isoformat() if mod_at else datetime.utcnow().isoformat()
-                          })
-                # Emit signal via the ViewModel instance passed in kwargs
-                self.kwargs['view_model'].conversationListResult.emit(conv_list_dicts)
+                    conv_id = getattr(conv, 'id', None)
+                    conv_name = getattr(conv, 'name', 'Unnamed')
+                    mod_at = getattr(conv, 'modified_at', None)
+                    if conv_id:
+                        conv_list_dicts.append({
+                            'id': conv_id, 'name': conv_name,
+                            'modified_at': mod_at.isoformat() if mod_at else datetime.utcnow().isoformat()
+                        })
+
+                # ADD LOGGING before emitting the worker's signal
+                self.logger.debug(f"Worker emitting conversationListResult with {len(conv_list_dicts)} items.")
+                self.conversationListResult.emit(conv_list_dicts)  # Emit the worker's own signal
+
                 self.logger.debug("LoadConversationsWorker finished successfully.")
             except Exception as e:
                 self.logger.error(f"Error in LoadConversationsWorker: {e}", exc_info=True)
-                self.error.emit(str(e))
+                self.error.emit(f"Failed to load conversations: {str(e)}")  # Emit error signal
             finally:
+                # Ensure finished is emitted even if error occurs
+                self.logger.debug("LoadConversationsWorker emitting finished signal.")
                 self.finished.emit()
 
     def load_all_conversations_threaded(self):

@@ -4,6 +4,8 @@ Main entry point for the CannonAI application using standard PyQt threading.
 # 1. Standard library imports
 import sys
 import os
+os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
+
 import traceback
 import platform
 from datetime import datetime
@@ -20,6 +22,7 @@ logger = get_logger(__name__)
 # 4. Qt imports
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtQml import QQmlApplicationEngine, QQmlError
+# Make sure QObject is imported if not already
 from PyQt6.QtCore import QUrl, QObject, QTimer, pyqtSlot, QCoreApplication, Qt, QThread
 
 # 5. App-specific service imports (Synchronous/Threaded versions)
@@ -170,9 +173,9 @@ class ApplicationController(QObject):
         try:
             self.engine = QQmlApplicationEngine()
             # Connect signals *before* loading QML
-            # Connection needs the method to exist, hence defining _on_object_created
             self.engine.objectCreated.connect(self._on_object_created, Qt.ConnectionType.DirectConnection)
-            self.engine.warnings.connect(self._on_qml_warning)
+            # Connect warnings signal to the correctly decorated slot
+            self.engine.warnings.connect(self._on_qml_warning) # <<< Connection should now work
 
             self.engine.rootContext().setContextProperty("DEBUG_MODE", os.environ.get('DEBUG', 'False').lower() == 'true')
 
@@ -251,20 +254,18 @@ class ApplicationController(QObject):
         self.logger.info("AboutToQuit signal received. Starting application cleanup...")
         self._cleanup()
 
-    # ADDED this missing method
     @pyqtSlot(QObject, QUrl)
     def _on_object_created(self, obj: QObject, url: QUrl):
         """Slot connected to QQmlApplicationEngine.objectCreated signal."""
-        # Check if the root object failed to load
         if obj is None and url.isValid() and url.fileName() == "MainWindow.qml":
             self.logger.error(f"Failed to create root QML object from URL: {url.toString()}. Check QML warnings.")
-            # No need to raise an error here, the _load_qml method already checks rootObjects()
 
-    @pyqtSlot(list)
-    def _on_qml_warning(self, warnings: list):
+    # Decorator changed to specify C++ signature
+    @pyqtSlot('QList<QQmlError>')
+    def _on_qml_warning(self, warnings: list): # Keep Python hint as list
         """Handle QML warnings/errors reported by the engine."""
         if warnings:
-            for warning in warnings: # warnings is a list of QQmlError
+            for warning in warnings: # warnings is now a Python list of QQmlError objects
                 try:
                     detail = warning.toString()
                     self.logger.warning(f"QML Info: {detail}")
@@ -277,7 +278,8 @@ class ApplicationController(QObject):
                     if "Binding loop detected" in detail:
                         self.logger.error("QML binding loop detected - review QML bindings.")
                 except Exception as e:
-                    self.logger.warning(f"Error processing QML warning object: {e}")
+                    # Log error processing the warning object itself
+                    self.logger.warning(f"Error processing QML warning object of type {type(warning)}: {e}")
 
     @pyqtSlot(str, str)
     def _on_bridge_error(self, error_type: str, message: str):
@@ -292,6 +294,7 @@ class ApplicationController(QObject):
     def _cleanup(self):
         """Perform application cleanup: Stop threads, close services."""
         self.logger.info("Executing cleanup tasks...")
+        # Cleanup ViewModels first to stop threads
         if self.conversation_vm and hasattr(self.conversation_vm, 'cleanup'):
             self.logger.debug("Cleaning up ConversationViewModel...")
             try: self.conversation_vm.cleanup()
@@ -301,6 +304,7 @@ class ApplicationController(QObject):
             try: self.settings_vm.cleanup()
             except Exception as e: self.logger.error(f"Error cleaning up SettingsViewModel: {e}", exc_info=True)
 
+        # Close Services
         if self.db_service and hasattr(self.db_service, 'close'):
             self.logger.debug("Closing DB service...")
             try: self.db_service.close()
@@ -310,6 +314,7 @@ class ApplicationController(QObject):
             try: self.api_service.close()
             except Exception as e: self.logger.error(f"Error closing API service: {e}", exc_info=True)
 
+        # Cleanup Bridge
         if self.qml_bridge and hasattr(self.qml_bridge, 'cleanup'):
             self.logger.debug("Cleaning up QmlBridge...")
             self.qml_bridge.cleanup()
@@ -364,7 +369,6 @@ class ApplicationController(QObject):
             msg_box.exec()
         except Exception as e:
              self.logger.error(f"Failed to display QMessageBox: {e}", exc_info=True)
-             # Fallback if even QMessageBox fails
              print(f"CRITICAL ERROR (QMessageBox failed): {message}", file=sys.stderr)
 
 
@@ -418,7 +422,11 @@ def main():
              print(f"\nFATAL ERROR (Initialization Failed):\n{e}\n", file=sys.stderr)
              traceback.print_exc(file=sys.stderr)
              if not controller or not controller.app:
-                  dummy_controller = ApplicationController() # Create dummy instance for fallback method
+                  # Can't guarantee ApplicationController() won't fail again,
+                  # so create a simpler fallback instance just for the message.
+                  class DummyController:
+                      def _try_tkinter_fallback(self, msg): ApplicationController._try_tkinter_fallback(None, msg) # Call static-like
+                  dummy_controller = DummyController()
                   dummy_controller._try_tkinter_fallback(f"Application failed to start:\n\n{e}\n\nCheck logs for details.")
         exit_code = 1
     finally:
