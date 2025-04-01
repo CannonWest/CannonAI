@@ -1,5 +1,5 @@
 // src/views/qml/MainWindow.qml
-// Version: Fixed invalid 'shortcut' property on MenuItem
+// Version: Integrated SearchDialog signals & Duplicate Conversation call
 
 import QtQuick 2.15
 import QtQuick.Controls 2.15
@@ -31,27 +31,25 @@ ApplicationWindow {
     property var settingsViewModel: null
 
     // --- Application State (Driven by ViewModel Signals) ---
-    property bool isLoading: false
-    property var currentConversation: null
-    property var currentBranch: []
+    property bool isLoading: false // Global loading state (used by thinking indicator)
+    property var currentConversation: null // Holds the fully loaded Conversation object/dict
+    property var currentBranch: [] // Holds the list of Message objects/dicts for the current view
 
     // --- Internal UI Models ---
     ListModel {
-        id: conversationsModel
+        id: conversationsModel // For the sidebar list
     }
     ListModel {
-        id: messagesModel
+        id: messagesModel // For the main chat message view
     }
     ListModel {
-        id: fileAttachmentsModel
+        id: fileAttachmentsModel // For the staging area before sending
     }
 
     // --- Signals to Python ---
-    signal fileRequested(string filePath)
-
-    signal errorOccurred(string errorMessage)
-
-    signal cleanupRequested()
+    signal fileRequested(string filePath) // When user selects a file to attach
+    signal errorOccurred(string errorMessage) // For generic QML-side errors (less used now)
+    signal cleanupRequested() // When window is closing
 
     // --- Initialization ---
     Component.onCompleted: {
@@ -71,26 +69,28 @@ ApplicationWindow {
             return;
         }
         console.log("QML: Requesting initial conversation list load.");
+        // Trigger the threaded load in the ViewModel
         conversationViewModel.load_all_conversations_threaded();
     }
 
     // --- Window Closing Handler ---
     onClosing: function (close) {
         console.log("MainWindow: Window closing event received");
+        // Don't close immediately, signal Python to clean up first
         close.accepted = false;
         cleanupRequested();
+        // Python side (_on_about_to_quit) will eventually call app.quit() after cleanup
     }
 
-    // --- Menu Bar (Shortcuts Corrected) ---
+    // --- Menu Bar ---
     menuBar: MenuBar {
         Menu {
             title: "File"
             MenuItem {
-                id: newConvMenuItem // Give IDs if needed for shortcuts
+                id: newConvMenuItem
                 text: "New Conversation"
-                enabled: conversationViewModel !== null
+                enabled: conversationViewModel !== null && !isLoading // Disable during general loading
                 onTriggered: { if (conversationViewModel) conversationViewModel.create_new_conversation("New Conversation"); }
-                // Add Shortcut element inside or associated
                 Shortcut {
                     sequence: "Ctrl+N"; onActivated: newConvMenuItem.trigger()
                 }
@@ -108,7 +108,7 @@ ApplicationWindow {
             MenuItem {
                 id: exitMenuItem
                 text: "Exit"
-                onTriggered: mainWindow.close()
+                onTriggered: mainWindow.close() // Triggers onClosing handler
                 Shortcut {
                     sequence: "Ctrl+Q"; onActivated: exitMenuItem.trigger()
                 }
@@ -119,7 +119,7 @@ ApplicationWindow {
             MenuItem {
                 id: renameMenuItem
                 text: "Rename Conversation"
-                enabled: conversationList.currentIndex >= 0
+                enabled: conversationList.currentIndex >= 0 && !isLoading
                 onTriggered: renameDialog.open()
                 Shortcut {
                     sequence: "F2"; onActivated: renameMenuItem.trigger()
@@ -128,8 +128,8 @@ ApplicationWindow {
             MenuItem {
                 id: duplicateMenuItem
                 text: "Duplicate Conversation"
-                enabled: conversationList.currentIndex >= 0 && conversationViewModel !== null
-                onTriggered: duplicateConversation()
+                enabled: conversationList.currentIndex >= 0 && conversationViewModel !== null && !isLoading
+                onTriggered: duplicateConversation() // Calls updated QML function
                 Shortcut {
                     sequence: "Ctrl+D"; onActivated: duplicateMenuItem.trigger()
                 }
@@ -137,10 +137,10 @@ ApplicationWindow {
             MenuItem {
                 id: searchMenuItem
                 text: "Search Messages"
-                enabled: conversationViewModel !== null
+                enabled: conversationViewModel !== null // Enable even if loading, dialog has own indicator
                 onTriggered: {
                     const currentConvId = currentConversation ? currentConversation.id : null;
-                    searchDialog.initialize(currentConvId);
+                    searchDialog.initialize(currentConvId); // Initialize with current context
                     searchDialog.open();
                 }
                 Shortcut {
@@ -155,8 +155,7 @@ ApplicationWindow {
                 text: "API Settings"
                 enabled: settingsViewModel !== null
                 onTriggered: openSettingsDialog()
-                // Optional: Add shortcut like Ctrl+,
-                // Shortcut { sequence: "Ctrl+,"; onActivated: settingsMenuItem.trigger() }
+                // Shortcut { sequence: "Ctrl+,"; onActivated: settingsMenuItem.trigger() } // Optional
             }
         }
         Menu {
@@ -193,33 +192,22 @@ ApplicationWindow {
                         anchors.fill: parent
                         anchors.margins: 8
 
-                        Label { // Use Label for better alignment control
+                        Label {
                             text: "Conversations"
                             color: foregroundColor
-                            font.pixelSize: 16
-                            font.bold: true
+                            font.pixelSize: 16; font.bold: true
                             verticalAlignment: Text.AlignVCenter
                             Layout.fillWidth: true
                         }
-
                         Button {
-                            text: "+"
-                            ToolTip.text: "New Conversation (Ctrl+N)"
-                            ToolTip.visible: hovered
-                            ToolTip.delay: 500
-                            enabled: conversationViewModel !== null
-                            onClicked: {
-                                if (conversationViewModel) {
-                                    conversationViewModel.create_new_conversation("New Conversation");
-                                }
-                            }
+                            text: "+"; ToolTip.text: "New Conversation (Ctrl+N)"; ToolTip.visible: hovered; ToolTip.delay: 500
+                            enabled: conversationViewModel !== null && !isLoading
+                            onClicked: { if (conversationViewModel) conversationViewModel.create_new_conversation("New Conversation"); }
                             background: Rectangle {
                                 color: highlightColor; radius: 4
                             }
                             contentItem: Text {
-                                text: parent.text; color: foregroundColor; font.bold: true
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
+                                text: parent.text; color: foregroundColor; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                             }
                         }
                     }
@@ -228,20 +216,23 @@ ApplicationWindow {
                 // Conversation List
                 ListView {
                     id: conversationList
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
+                    Layout.fillWidth: true; Layout.fillHeight: true
                     clip: true
                     model: conversationsModel // Use the internal ListModel
 
                     delegate: Components.ConversationItem
                     {
-                        width: conversationList.width // Ensure delegate fills width
+                        width: conversationList.width
+                        // Pass theme colors if needed by delegate
+                        // foregroundColor: mainWindow.foregroundColor
+                        // accentColor: mainWindow.accentColor
+
                         // Connect signals to slot methods
                         onItemClicked: {
-                            if (conversationList.currentIndex !== index && conversationViewModel) {
+                            if (conversationList.currentIndex !== index && conversationViewModel && !isLoading) {
                                 console.log("QML: Conversation item clicked:", model.id);
                                 conversationList.currentIndex = index; // Update selection immediately
-                                conversationViewModel.load_conversation(model.id);
+                                conversationViewModel.load_conversation(model.id); // Trigger VM load
                             }
                         }
                         onItemRightClicked: {
@@ -249,8 +240,10 @@ ApplicationWindow {
                             contextMenu.popup();
                         }
                         onItemDoubleClicked: {
-                            conversationList.currentIndex = index;
-                            renameDialog.open(); // Open rename dialog
+                            if (!isLoading) {
+                                conversationList.currentIndex = index;
+                                renameDialog.open(); // Open rename dialog
+                            }
                         }
                     }
 
@@ -258,19 +251,20 @@ ApplicationWindow {
                     Menu {
                         id: contextMenu
                         MenuItem {
-                            text: "Rename"; onClicked: renameDialog.open()
+                            text: "Rename"; onClicked: renameDialog.open(); enabled: !isLoading
                         }
                         MenuItem {
-                            text: "Duplicate"; onClicked: duplicateConversation()
-                        } // TODO: Implement duplicate_conversation
+                            text: "Duplicate"; onClicked: duplicateConversation(); enabled: !isLoading
+                        }
                         MenuItem {
-                            text: "Delete"; onClicked: deleteConfirmDialog.open()
+                            text: "Delete"; onClicked: deleteConfirmDialog.open(); enabled: !isLoading
                         }
                     }
-                }
-            }
-        } // End Sidebar
+                } // End ListView
+            } // End Sidebar ColumnLayout
+        } // End Sidebar Rectangle
 
+        // === Main Chat Area ===
         Rectangle {
             id: chatContainer
             SplitView.fillWidth: true
@@ -279,7 +273,7 @@ ApplicationWindow {
             ColumnLayout {
                 anchors.fill: parent; anchors.margins: 8; spacing: 8
 
-                // Branch Navigation Bar (Dynamically populated)
+                // Branch Navigation Bar
                 Rectangle {
                     id: branchNavBar
                     Layout.fillWidth: true
@@ -289,86 +283,84 @@ ApplicationWindow {
                     visible: currentBranch.length > 1 // Show only if there's history
 
                     ScrollView {
-                        anchors.fill: parent
-                        anchors.margins: 4
-                        ScrollBar.horizontal.policy: ScrollBar.AsNeeded // Show scrollbar only if needed
+                        anchors.fill: parent; anchors.margins: 4
+                        ScrollBar.horizontal.policy: ScrollBar.AsNeeded
                         ScrollBar.vertical.policy: ScrollBar.AlwaysOff
 
                         Row {
-                            id: branchNavRow // Buttons added by updateBranchNavigation()
+                            id: branchNavRow
                             spacing: 8
                             anchors.verticalCenter: parent.verticalCenter
                         }
                     }
-                }
+                } // End BranchNavBar
 
                 // Chat Messages Area
                 ScrollView {
                     id: messagesScroll
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true // Takes up most vertical space
+                    Layout.fillWidth: true; Layout.fillHeight: true
                     clip: true
                     ScrollBar.vertical.policy: ScrollBar.AlwaysOn
 
                     ListView {
                         id: messagesView
-                        anchors.fill: parent
-                        anchors.margins: 8 // Padding inside the scroll view
-                        spacing: 16 // Spacing between messages
-                        verticalLayoutDirection: ListView.BottomToTop // New messages appear at bottom
+                        anchors.fill: parent; anchors.margins: 8
+                        spacing: 16
+                        verticalLayoutDirection: ListView.BottomToTop
                         model: messagesModel // Use internal ListModel
 
                         delegate: Components.MessageDelegate
                         {
-                        } // Custom delegate handles rendering
+                            // Pass theme colors if needed by delegate
+                            // userMessageColor: mainWindow.userMessageColor
+                            // assistantMessageColor: mainWindow.assistantMessageColor
+                            // systemMessageColor: mainWindow.systemMessageColor
+                            // foregroundColor: mainWindow.foregroundColor
+                            // highlightColor: mainWindow.highlightColor
+                            // accentColor: mainWindow.accentColor
+                        }
 
-                        // Auto-scroll to bottom (slightly adjusted logic for BottomToTop)
-                        onContentHeightChanged: positionViewAtBeginning() // Keep newest message visible
-                        Component.onCompleted: positionViewAtBeginning() // Scroll on initial load
+                        // Auto-scroll logic
+                        onContentHeightChanged: positionViewAtBeginning()
+                        Component.onCompleted: positionViewAtBeginning()
                     }
-                }
+                } // End Messages ScrollView
 
                 // Thinking/Loading Indicator
                 Rectangle {
                     id: thinkingIndicator
                     Layout.fillWidth: true
-                    height: visible ? 30 : 0 // Collapse when not visible
+                    height: visible ? 30 : 0
                     color: highlightColor
                     radius: 4
-                    visible: isLoading // Bound to ViewModel state
+                    visible: isLoading // Bound to global loading state
                     Behavior on height {
                         NumberAnimation {
                             duration: 150
                         }
-                    } // Animate collapse/expand
+                    }
 
                     RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: 8
-                        spacing: 8
-                        visible: parent.visible // Hide content when collapsed
+                        anchors.fill: parent; anchors.margins: 8; spacing: 8
+                        visible: parent.visible
 
                         BusyIndicator {
-                            width: 20; height: 20
-                            running: thinkingIndicator.visible
+                            width: 20; height: 20; running: thinkingIndicator.visible
                         }
-                        Label { // Use Label
-                            text: "Thinking..."
-                            color: foregroundColor
-                            Layout.fillWidth: true
-                            verticalAlignment: Text.AlignVCenter
+                        Label {
+                            text: "Thinking..."; color: foregroundColor; Layout.fillWidth: true; verticalAlignment: Text.AlignVCenter
                         }
                     }
-                }
+                } // End Thinking Indicator
 
                 // File Attachments Staging Area
                 Rectangle {
                     id: attachmentsArea
                     Layout.fillWidth: true
-                    height: visible ? 60 : 0 // Collapse when empty
+                    height: visible ? 60 : 0
                     color: highlightColor
                     radius: 4
-                    visible: fileAttachmentsModel.count > 0 // Show only if files are attached
+                    visible: fileAttachmentsModel.count > 0
                     Behavior on height {
                         NumberAnimation {
                             duration: 150
@@ -376,17 +368,13 @@ ApplicationWindow {
                     }
 
                     ColumnLayout {
-                        anchors.fill: parent
-                        anchors.margins: 8
-                        spacing: 4
+                        anchors.fill: parent; anchors.margins: 8; spacing: 4
                         visible: parent.visible
 
                         RowLayout {
                             Layout.fillWidth: true
-                            Label { // Use Label
-                                text: "Attachments: " + fileAttachmentsModel.count
-                                color: foregroundColor; Layout.fillWidth: true
-                                verticalAlignment: Text.AlignVCenter
+                            Label {
+                                text: "Attachments: " + fileAttachmentsModel.count; color: foregroundColor; Layout.fillWidth: true; verticalAlignment: Text.AlignVCenter
                             }
                             Button {
                                 text: "Clear All"; onClicked: fileAttachmentsModel.clear()
@@ -399,30 +387,26 @@ ApplicationWindow {
                             }
                         }
 
-                        ListView { // Horizontal list of attached files
+                        ListView {
                             id: attachmentsView
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
+                            Layout.fillWidth: true; Layout.fillHeight: true
                             orientation: ListView.Horizontal
                             spacing: 8
                             model: fileAttachmentsModel
 
-                            delegate: Rectangle { // Simple delegate for attached file
+                            delegate: Rectangle {
                                 width: 150; height: attachmentsView.height
                                 color: accentColor; radius: 4
 
                                 RowLayout {
                                     anchors.fill: parent; anchors.margins: 4; spacing: 4
 
-                                    Label { // Use Label
-                                        text: model.fileName // Display filename
-                                        color: foregroundColor; elide: Text.ElideRight
-                                        Layout.fillWidth: true
-                                        verticalAlignment: Text.AlignVCenter
-                                        ToolTip.text: model.fileName + "\n" + model.fileSize // Show full name/size on hover
-                                        ToolTip.visible: hovered
+                                    Label {
+                                        text: model.fileName; color: foregroundColor; elide: Text.ElideRight
+                                        Layout.fillWidth: true; verticalAlignment: Text.AlignVCenter
+                                        ToolTip.text: model.fileName + "\n" + (model.fileSize || "Pending..."); ToolTip.visible: hovered
                                     }
-                                    Button { // Remove button
+                                    Button {
                                         text: "×"; width: 20; height: 20
                                         onClicked: fileAttachmentsModel.remove(index)
                                         background: Rectangle {
@@ -433,67 +417,55 @@ ApplicationWindow {
                                         }
                                     }
                                 }
-                            }
-                        }
-                    }
-                }
+                            } // End delegate
+                        } // End Attachments ListView
+                    } // End Attachments ColumnLayout
+                } // End Attachments Area
 
                 // Input Area
                 Rectangle {
                     id: inputArea
                     Layout.fillWidth: true
-                    // Dynamic height based on content, with min/max
                     height: Math.min(Math.max(inputField.implicitHeight + 20, 80), 200)
                     color: highlightColor
                     radius: 4
 
                     RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: 8
-                        spacing: 8
+                        anchors.fill: parent; anchors.margins: 8; spacing: 8
 
-                        TextArea { // Use TextArea for better multiline handling
+                        TextArea {
                             id: inputField
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true // Fill available height
+                            Layout.fillWidth: true; Layout.fillHeight: true
                             placeholderText: "Type your message (Shift+Enter for newline)..."
                             color: foregroundColor
                             background: Rectangle {
                                 color: "transparent"
-                            } // No background needed
-                            wrapMode: TextEdit.Wrap // Enable wrapping
-                            font.pixelSize: 14
-                            enabled: !isLoading // Disable input while loading
+                            }
+                            wrapMode: TextEdit.Wrap; font.pixelSize: 14
+                            enabled: !isLoading // Disable input during global loading
 
-                            // Handle Enter/Shift+Enter keys
                             Keys.onPressed: (event) => {
                                 if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                                     if (event.modifiers & Qt.ShiftModifier) {
-                                        // Allow default behavior (insert newline)
-                                        event.accepted = false;
+                                        event.accepted = false; // Insert newline
                                     } else {
-                                        // Send message
-                                        sendMessage();
-                                        event.accepted = true; // Consume the event
+                                        sendMessage(); // Send message
+                                        event.accepted = true; // Consume event
                                     }
                                 } else {
                                     event.accepted = false; // Allow other keys
                                 }
                             }
-                        }
+                        } // End Input TextArea
 
                         // Action Buttons Column
                         ColumnLayout {
-                            Layout.preferredWidth: 40 // Fixed width for buttons column
-                            spacing: 8
+                            Layout.preferredWidth: 40; spacing: 8
 
                             Button { // Send Button
                                 id: sendButton
-                                text: "➤" // Use an icon/symbol
-                                ToolTip.text: "Send Message (Enter)"
-                                ToolTip.visible: hovered
-                                Layout.fillWidth: true // Use full column width
-                                Layout.preferredHeight: 40
+                                text: "➤"; ToolTip.text: "Send Message (Enter)"; ToolTip.visible: hovered
+                                Layout.fillWidth: true; Layout.preferredHeight: 40
                                 enabled: !isLoading && inputField.text.trim() !== ""
                                 onClicked: sendMessage()
                                 background: Rectangle {
@@ -505,13 +477,10 @@ ApplicationWindow {
                             }
                             Button { // Retry Button
                                 id: retryButton
-                                text: "↺"
-                                ToolTip.text: "Retry Last Response"
-                                ToolTip.visible: hovered
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 40
-                                enabled: !isLoading && messagesModel.count > 0 && currentBranch.length > 0 && currentBranch[currentBranch.length - 1].role === 'assistant' // Enable only if last msg is assistant
-                                onClicked: { if (conversationViewModel) conversationViewModel.retry_last_response(); } // TODO: Implement retry_last_response
+                                text: "↺"; ToolTip.text: "Retry Last Response"; ToolTip.visible: hovered
+                                Layout.fillWidth: true; Layout.preferredHeight: 40
+                                enabled: !isLoading && messagesModel.count > 0 && currentBranch.length > 0 && currentBranch[currentBranch.length - 1].role === 'assistant'
+                                onClicked: { if (conversationViewModel) conversationViewModel.retry_last_response(); }
                                 background: Rectangle {
                                     color: retryButton.enabled ? highlightColor : Qt.rgba(0.27, 0.28, 0.35, 0.5); radius: 4; border.color: accentColor; border.width: 1
                                 }
@@ -521,13 +490,10 @@ ApplicationWindow {
                             }
                             Button { // Attach Button
                                 id: attachButton
-                                text: "📎"
-                                ToolTip.text: "Attach File"
-                                ToolTip.visible: hovered
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 40
+                                text: "📎"; ToolTip.text: "Attach File"; ToolTip.visible: hovered
+                                Layout.fillWidth: true; Layout.preferredHeight: 40
                                 enabled: !isLoading
-                                onClicked: fileDialog.open() // Open file dialog
+                                onClicked: fileDialog.open()
                                 background: Rectangle {
                                     color: attachButton.enabled ? highlightColor : Qt.rgba(0.27, 0.28, 0.35, 0.5); radius: 4; border.color: accentColor; border.width: 1
                                 }
@@ -535,65 +501,56 @@ ApplicationWindow {
                                     text: "📎"; color: foregroundColor; font.pixelSize: 18; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                                 }
                             }
-                        }
-                    }
-                }
+                        } // End Action Buttons Column
+                    } // End Input RowLayout
+                } // End Input Area Rectangle
 
                 // Status Bar (Tokens, Model)
                 Rectangle {
                     id: statusBar
-                    Layout.fillWidth: true
-                    height: 30
-                    color: highlightColor
-                    radius: 4
+                    Layout.fillWidth: true; height: 30
+                    color: highlightColor; radius: 4
 
                     RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: 8
-                        spacing: 8
+                        anchors.fill: parent; anchors.margins: 8; spacing: 8
 
-                        Label { // Use Label
+                        Label {
                             id: tokenUsageText
                             text: "Tokens: N/A" // Updated by signal
                             color: foregroundColor; opacity: 0.8
                             Layout.fillWidth: true
                             verticalAlignment: Text.AlignVCenter
                         }
-                        Label { // Use Label
+                        Label {
                             id: modelInfoText
-                            text: "Model: " + (currentSettings.model || "N/A") // Show current setting
+                            // Bind directly to ViewModel property if available, otherwise use signal connection
+                            text: "Model: " + (settingsViewModel ? (settingsViewModel.get_setting("model") || "N/A") : "N/A")
                             color: foregroundColor; opacity: 0.8
                             Layout.fillWidth: true
                             horizontalAlignment: Text.AlignRight
                             verticalAlignment: Text.AlignVCenter
-                            // TODO: Update this dynamically if model changes during conversation
-                            // Needs signal from ViewModel if model can change per-message
                         }
                     }
-                }
+                } // End Status Bar
             } // End Main Chat Area ColumnLayout
         } // End Main Chat Area Rectangle
     } // End SplitView
 
     // --- Dialogs ---
-    // File Dialog for Attachments
     FileDialog {
         id: fileDialog
         title: "Attach File(s)"
-        fileMode: FileDialog.OpenFiles // Allow multiple files
+        fileMode: FileDialog.OpenFiles
         onAccepted: {
-            // Iterate through selected files and signal Python for each
             for (var i = 0; i < selectedFiles.length; i++) {
                 handleFileSelected(selectedFiles[i]);
             }
         }
     }
 
-    // Simple Confirmation/Error Dialogs
     Dialog {
         id: saveDialog
-        title: "Save Conversations"; standardButtons: Dialog.Ok; modal: true
-        width: 350; // Explicit width
+        title: "Save Conversations"; standardButtons: Dialog.Ok; modal: true; width: 350
         background: Rectangle {
             color: backgroundColor; radius: 8; border.color: accentColor; border.width: 1
         }
@@ -603,9 +560,9 @@ ApplicationWindow {
     }
 
     Dialog {
-        id: errorDialog // General error display
-        title: "Error"; standardButtons: Dialog.Ok; modal: true
-        width: 400; property string text: "" // Use 'text' property
+        id: errorDialog
+        title: "Error"; standardButtons: Dialog.Ok; modal: true; width: 400
+        property string text: ""
         background: Rectangle {
             color: backgroundColor; radius: 8; border.color: errorColor; border.width: 1
         }
@@ -616,9 +573,7 @@ ApplicationWindow {
 
     Dialog {
         id: renameDialog
-        title: "Rename Conversation"; standardButtons: Dialog.Ok | Dialog.Cancel; modal: true
-        width: 400; // Fixed width
-        // Remove height binding causing loop: height: contentColumn.implicitHeight + 60
+        title: "Rename Conversation"; standardButtons: Dialog.Ok | Dialog.Cancel; modal: true; width: 400
         background: Rectangle {
             color: backgroundColor; radius: 8; border.color: accentColor; border.width: 1
         }
@@ -628,10 +583,8 @@ ApplicationWindow {
                 conversationViewModel.rename_conversation(conversationId, renameField.text);
             }
         }
-        contentItem: ColumnLayout { // Use ColumnLayout for content
-            id: contentColumn
-            width: renameDialog.width - 32 // Adjust width based on dialog width
-            spacing: 16
+        contentItem: ColumnLayout {
+            id: contentColumn; width: renameDialog.width - 32; spacing: 16
             Label {
                 text: "Enter new conversation name:"; color: foregroundColor; Layout.fillWidth: true
             }
@@ -645,17 +598,13 @@ ApplicationWindow {
                 onAccepted: renameDialog.accept() // Accept on Enter key
             }
         }
-        // Adjust dialog height dynamically after content is ready
-        Component.onCompleted: height = contentColumn.implicitHeight + 80 // Add padding/button space
-        // Re-populate field when dialog is opened
+        Component.onCompleted: height = contentColumn.implicitHeight + 80
         onOpened: { if (conversationList.currentIndex >= 0) renameField.text = conversationsModel.get(conversationList.currentIndex).name; }
-
     }
 
     Dialog {
         id: aboutDialog
-        title: "About CannonAI"; standardButtons: Dialog.Close; modal: true
-        width: 400
+        title: "About CannonAI"; standardButtons: Dialog.Close; modal: true; width: 400
         background: Rectangle {
             color: backgroundColor; radius: 8; border.color: accentColor; border.width: 1
         }
@@ -665,8 +614,7 @@ ApplicationWindow {
                 text: "CannonAI Chat Interface"; color: foregroundColor; font.bold: true; font.pixelSize: 16
             }
             Label {
-                text: "A desktop application using PyQt6 and MVVM for interacting with AI models.\n\nVersion: 1.0.0 (Placeholder)"
-                color: foregroundColor; wrapMode: Text.WordWrap
+                text: "A desktop application using PyQt6 and MVVM for interacting with AI models.\n\nVersion: 1.0.0 (Placeholder)"; color: foregroundColor; wrapMode: Text.WordWrap
             }
         }
         Component.onCompleted: height = contentItem.implicitHeight + 80
@@ -674,8 +622,7 @@ ApplicationWindow {
 
     Dialog {
         id: deleteConfirmDialog
-        title: "Delete Conversation"; standardButtons: Dialog.Yes | Dialog.No; modal: true
-        width: 400
+        title: "Delete Conversation"; standardButtons: Dialog.Yes | Dialog.No; modal: true; width: 400
         background: Rectangle {
             color: backgroundColor; radius: 8; border.color: accentColor; border.width: 1
         }
@@ -695,41 +642,93 @@ ApplicationWindow {
     // Settings Dialog
     Components.SettingsDialog {
         id: settingsDialog
-        // Set initial size hints if needed
-        // width: 600; height: 700
-        // Connect signals
+        objectName: "settingsDialog"
+
+        // Ensure connection is active
         onSettingsSaved: (settings) => {
-            if (settingsViewModel) settingsViewModel.update_settings(settings);
+            if (settingsViewModel) {
+                console.log("MainWindow: Forwarding settingsSaved signal to settingsViewModel.");
+                settingsViewModel.update_settings(settings);
+            } else {
+                console.error("MainWindow: Cannot save settings, settingsViewModel is null.");
+                errorDialog.text = "Settings functionality is unavailable.";
+                errorDialog.open();
+            }
         }
-        // Make sure the dialog uses colors defined in MainWindow
-        // backgroundColor: mainWindow.backgroundColor
-        // foregroundColor: mainWindow.foregroundColor
-        // accentColor: mainWindow.accentColor
-        // highlightColor: mainWindow.highlightColor
+        // Pass theme colors if needed
+        // backgroundColor: mainWindow.backgroundColor // etc.
     }
 
     // Search Dialog
     Components.SearchDialog {
         id: searchDialog
-        // width: 500; height: 400
-        // TODO: Connect SearchDialog signals/actions to ConversationViewModel
-        // Example: onSearchRequested: (term, searchAll) => { conversationViewModel.search_conversations(...) }
-        // Example: onResultSelected: (convId, msgId) => { conversationViewModel.load_conversation(convId); conversationViewModel.navigate_to_message(msgId); }
-        // Pass theme colors
-        // backgroundColor: mainWindow.backgroundColor
-        // foregroundColor: mainWindow.foregroundColor
-        // accentColor: mainWindow.accentColor
-        // highlightColor: mainWindow.highlightColor
+        objectName: "searchDialog"
+
+        // Connect SearchDialog signals to ConversationViewModel slots
+        onSearchRequested: (term, searchAll, convId) => {
+            if (conversationViewModel) {
+                console.log("MainWindow: Forwarding search request to ViewModel.");
+                conversationViewModel.start_search(term, searchAll, convId);
+            } else {
+                console.error("MainWindow: Cannot start search, conversationViewModel is null.");
+                errorDialog.text = "Search functionality is unavailable.";
+                errorDialog.open();
+                searchDialog.isSearching = false; // Ensure indicator stops
+            }
+        }
+        onResultSelected: (convId, msgId) => {
+            if (conversationViewModel) {
+                console.log("MainWindow: Forwarding result selection to ViewModel (convId: " + convId + ", msgId: " + msgId + ")");
+                // Load conversation if necessary, then navigate. ViewModel should handle the sequence.
+                // Simple approach: Load first, navigate relies on load completing.
+                if (!currentConversation || currentConversation.id !== convId) {
+                    console.log("MainWindow: Loading conversation " + convId + " before navigating.");
+                    conversationViewModel.load_conversation(convId);
+                    // Assume load_conversation will trigger branch load for the target message eventually
+                    // Or potentially navigate_to_message needs to be smarter or called after load signal
+                }
+                // Always call navigate - if conv is loaded, it updates node; if not, load call above should handle it.
+                // This relies on VM handling the sequence correctly.
+                conversationViewModel.navigate_to_message(msgId);
+
+            } else {
+                console.error("MainWindow: Cannot navigate to result, conversationViewModel is null.");
+            }
+        }
+        // Pass theme colors if needed
+        // backgroundColor: mainWindow.backgroundColor // etc.
     }
 
     // --- Utility Functions ---
-    // Function to handle file attachments (called by FileDialog)
     function handleFileSelected(fileUrl) {
-        if (!bridge) {
-            console.error("QML: Bridge is not available for file path conversion.");
+        // Use PythonBridge singleton if available, otherwise basic parsing
+        let filePath = "";
+        try {
+            // Assuming PythonBridge is registered globally as PythonBridge
+            if (typeof PythonBridge !== "undefined" && PythonBridge.bridge) {
+                filePath = PythonBridge.fileUrlToPath(fileUrl);
+            } else {
+                // Basic fallback parsing (might not cover all edge cases)
+                let pathStr = fileUrl.toString();
+                if (pathStr.startsWith("file:///")) {
+                    pathStr = pathStr.substring(Qt.platform.os === "windows" ? 8 : 7);
+                } else if (pathStr.startsWith("file://")) {
+                    pathStr = pathStr.substring(7);
+                }
+                filePath = decodeURIComponent(pathStr);
+            }
+        } catch (e) {
+            console.error("QML: Error converting file URL to path:", e);
+            errorDialog.text = "Could not process selected file path.";
+            errorDialog.open();
             return;
         }
-        const filePath = bridge.fileUrlToPath(fileUrl); // Convert URL to path using bridge
+
+        if (!filePath) {
+            console.error("QML: Could not determine file path from URL:", fileUrl);
+            return;
+        }
+
         console.log("QML: File selected:", filePath);
         fileRequested(filePath); // Signal Python with the actual file path
 
@@ -743,7 +742,6 @@ ApplicationWindow {
         });
     }
 
-    // Function to send message (called by button/Enter key)
     function sendMessage() {
         if (!conversationViewModel || !currentConversation) {
             console.error("Cannot send message: ViewModel or conversation not ready.");
@@ -751,35 +749,35 @@ ApplicationWindow {
             errorDialog.open();
             return;
         }
-        if (inputField.text.trim() === "") return; // Don't send empty messages
+        if (inputField.text.trim() === "") return;
 
-        // Prepare attachments data from the staging model
         let attachmentsData = [];
         for (let i = 0; i < fileAttachmentsModel.count; i++) {
             const item = fileAttachmentsModel.get(i);
             attachmentsData.push({
                 fileName: item.fileName,
-                filePath: item.filePath // Send the path obtained earlier
+                filePath: item.filePath
             });
         }
 
         console.log("QML: Sending message in conversation:", currentConversation.id);
+        // Convert attachmentsData to QVariant if sending complex objects
         conversationViewModel.send_message(currentConversation.id, inputField.text, attachmentsData);
 
         inputField.text = ""; // Clear input field
         fileAttachmentsModel.clear(); // Clear staged attachments
     }
 
-    // Function to trigger conversation duplication
     function duplicateConversation() {
-        if (!conversationViewModel || !currentConversation) return;
+        if (!conversationViewModel || !currentConversation) {
+            console.error("Cannot duplicate: ViewModel or current conversation not available.");
+            return;
+        }
         console.log("QML: Requesting duplication of conversation:", currentConversation.id);
-        // TODO: Implement duplicate_conversation in ViewModel if needed
-        // conversationViewModel.duplicate_conversation(currentConversation.id, currentConversation.name + " (Copy)");
-        console.warn("QML: Duplicate conversation functionality not yet implemented in ViewModel.");
+        // Call the ViewModel slot
+        conversationViewModel.duplicate_conversation(currentConversation.id, currentConversation.name + " (Copy)");
     }
 
-    // Function to open settings dialog
     function openSettingsDialog() {
         if (!settingsViewModel) {
             console.error("QML: settingsViewModel not available.");
@@ -792,165 +790,229 @@ ApplicationWindow {
         settingsDialog.open();
     }
 
-    // Function to update branch navigation UI
     function updateBranchNavigation(branch) {
-        branchNavRow.children = []; // Clear existing buttons
+        branchNavRow.children = [];
         if (!branch || branch.length <= 1) {
-            branchNavBar.visible = false; // Hide if only one or zero messages
+            branchNavBar.visible = false;
             return;
         }
         branchNavBar.visible = true;
 
+        let visibleItemCount = 0;
         for (let i = 0; i < branch.length; i++) {
             const node = branch[i];
-            // Skip system messages unless it's the very first one
-            if (node.role === "system" && i > 0) continue;
+            if (node.role === "system" && i > 0) continue; // Skip mid-conversation system messages
 
+            visibleItemCount++;
             let buttonText = "";
             if (node.role === "user") buttonText = "👤 User";
-            else if (node.role === "assistant") buttonText = "🤖 Asst"; // Shorter text
+            else if (node.role === "assistant") buttonText = "🤖 Asst";
             else buttonText = "🔧 Sys";
 
             // Create navigation button dynamically
             const button = Qt.createQmlObject(
-                'import QtQuick.Controls 2.15; Button { \
+                'import QtQuick.Controls 2.15; import QtQuick 2.15; Button { \
                     text: qsTr("' + buttonText + '"); \
                     property string nodeId: "' + node.id + '"; \
-                    flat: true; /* Less prominent look */ \
+                    flat: true; \
+                    enabled: !mainWindow.isLoading; \
                     background: Rectangle { color: "transparent" } \
                     contentItem: Text { \
                         text: parent.text; \
-                        color: ' + (i === branch.length - 1 ? 'accentColor' : 'foregroundColor') + '; \
+                        color: ' + (i === branch.length - 1 ? 'mainWindow.accentColor' : 'mainWindow.foregroundColor') + '; \
                         font.bold: ' + (i === branch.length - 1) + '; \
                         opacity: ' + (i === branch.length - 1 ? 1.0 : 0.7) + '; \
                     } \
                     onClicked: { \
-                        if (conversationViewModel && nodeId !== currentBranch[currentBranch.length-1].id) { \
+                        if (mainWindow.conversationViewModel && nodeId !== mainWindow.currentBranch[mainWindow.currentBranch.length-1].id && !mainWindow.isLoading) { \
                             console.log("QML: Navigating to message:", nodeId); \
-                            conversationViewModel.navigate_to_message(nodeId); \
+                            mainWindow.conversationViewModel.navigate_to_message(nodeId); \
                         } \
                     } \
+                    ToolTip.text: "Go to this message"; ToolTip.visible: hovered; ToolTip.delay: 500; \
                 }',
-                branchNavRow, // Parent item
-                "navButton_" + i // Unique object name
+                branchNavRow,
+                "navButton_" + node.id // Use message ID for potentially more stable object name
             );
 
-            // Add arrow separator if not the last visible item
-            // Need to look ahead to see if the next item is system
+            // Add arrow separator if not the last *visible* item
             let nextVisibleIndex = -1;
             for (let j = i + 1; j < branch.length; j++) {
-                if (branch[j].role !== "system") {
+                if (!(branch[j].role === "system" && j > 0)) { // Same visibility condition
                     nextVisibleIndex = j;
                     break;
                 }
             }
-            if (nextVisibleIndex !== -1 && nextVisibleIndex < branch.length) {
+            if (nextVisibleIndex !== -1) {
                 Qt.createQmlObject(
-                    'import QtQuick 2.15; Text { text: "→"; color: foregroundColor; opacity: 0.5; anchors.verticalCenter: parent.verticalCenter }',
-                    branchNavRow, "arrow_" + i
+                    'import QtQuick 2.15; Text { text: "→"; color: mainWindow.foregroundColor; opacity: 0.5; anchors.verticalCenter: parent.verticalCenter }',
+                    branchNavRow, "arrow_" + node.id
                 );
             }
+        }
+    }
+
+    // Function to scroll message view (no changes needed)
+    function positionViewAtBeginning() {
+        // For BottomToTop, positionViewAtBeginning shows the newest items
+        if (messagesView.contentHeight > messagesScroll.height) {
+            messagesView.positionViewAtBeginning();
         }
     }
 
     // --- ViewModel Signal Connections ---
     Connections {
         target: conversationViewModel
-        enabled: conversationViewModel !== null // Activate connections only when VM is set
+        enabled: conversationViewModel !== null
 
         function onConversationListUpdated(convList) {
             console.log("QML: Received conversationListUpdated signal with", convList ? convList.length : 0, "items.");
-            if (!convList) return;
             conversationsModel.clear();
+            if (!convList) return;
             for (let i = 0; i < convList.length; i++) conversationsModel.append(convList[i]);
 
+            // Select first item if nothing is selected, VM handles loading it
             if (convList.length > 0 && conversationList.currentIndex === -1) {
-                console.log("QML: Auto-selecting first conversation:", convList[0].id);
+                console.log("QML: Auto-selecting first conversation in list:", convList[0].id);
                 conversationList.currentIndex = 0;
-                // ViewModel should handle loading the first conversation after list update
+                // ViewModel's _handle_conversation_list_loaded triggers loading the first one
             } else if (convList.length === 0) {
+                // Clear chat if no conversations left
                 messagesModel.clear();
                 currentConversation = null;
-                updateBranchNavigation([]); // Clear branch nav
+                currentBranch = [];
+                updateBranchNavigation([]);
+            } else {
+                // Ensure selection is still valid if list updated
+                if (conversationList.currentIndex >= convList.length) {
+                    conversationList.currentIndex = convList.length - 1;
+                    // VM should load this one if selection changed
+                    if (conversationList.currentIndex >= 0) {
+                        conversationViewModel.load_conversation(conversationsModel.get(conversationList.currentIndex).id);
+                    }
+                } else if (currentConversation && conversationList.currentIndex >= 0) {
+                    // Refresh data for the currently selected item in case name changed
+                    const selectedModelData = conversationsModel.get(conversationList.currentIndex);
+                    if (selectedModelData && selectedModelData.id === currentConversation.id) {
+                        conversationsModel.setProperty(conversationList.currentIndex, "name", currentConversation.name);
+                        conversationsModel.setProperty(conversationList.currentIndex, "modified_at", currentConversation.modified_at);
+                    }
+                }
             }
         }
 
         function onConversationLoaded(conversation) {
             console.log("QML: Received conversationLoaded signal for:", conversation ? conversation.id : "null");
-            if (!conversation) return;
+            if (!conversation) {
+                // Handle case where load failed or returned null
+                currentConversation = null;
+                messagesModel.clear();
+                currentBranch = [];
+                updateBranchNavigation([]);
+                return;
+            }
             currentConversation = conversation; // Update current conversation state
 
             // Ensure list selection matches loaded conversation
+            let found = false;
             for (let i = 0; i < conversationsModel.count; i++) {
                 if (conversationsModel.get(i).id === conversation.id) {
-                    if (conversationList.currentIndex !== i) conversationList.currentIndex = i;
+                    if (conversationList.currentIndex !== i) {
+                        console.log("QML: Updating conversationList currentIndex to match loaded conversation.");
+                        conversationList.currentIndex = i;
+                    }
                     // Update list item data if necessary (name might have changed)
                     conversationsModel.setProperty(i, "name", conversation.name);
                     conversationsModel.setProperty(i, "modified_at", conversation.modified_at);
+                    found = true;
                     break;
                 }
             }
-            // ViewModel should trigger branch loading via its own logic after load completes
+            if (!found) console.warn("QML: Loaded conversation ID not found in conversationsModel!");
+            // ViewModel should handle triggering branch loading via its own logic after load completes
+            // (Handled in _handle_conversation_loaded in VM)
         }
 
         function onMessageBranchChanged(branch) {
             console.log("QML: Received messageBranchChanged signal with", branch.length, "messages.");
-            currentBranch = branch; // Update state
+            currentBranch = branch || []; // Update state, ensure it's an array
             messagesModel.clear();
             let isStreamingPlaceholder = false;
-            for (let i = 0; i < branch.length; i++) {
-                const node = branch[i];
+            for (let i = 0; i < currentBranch.length; i++) {
+                const node = currentBranch[i];
+                // Basic check for node structure
+                if (!node || typeof node.id === 'undefined' || typeof node.role === 'undefined') {
+                    console.error("QML: Invalid message node received in branch:", node);
+                    continue; // Skip invalid node
+                }
                 messagesModel.append({
-                    id: node.id, role: node.role, content: node.content,
-                    timestamp: node.timestamp,
-                    // Ensure attachments is always an array for the delegate
-                    attachments: node.file_attachments ? node.file_attachments : []
+                    id: node.id, role: node.role, content: node.content || "",
+                    timestamp: node.timestamp || new Date().toISOString(),
+                    attachments: node.file_attachments || [] // Ensure attachments is always an array
                 });
-                if (i === branch.length - 1 && node.role === 'assistant' && node.id && node.id.startsWith('temp-')) {
+                // Check if last message is a temporary streaming one
+                if (i === currentBranch.length - 1 && node.role === 'assistant' && node.id && node.id.toString().startsWith('temp-')) {
                     isStreamingPlaceholder = true;
                 }
             }
-            updateBranchNavigation(branch);
+            updateBranchNavigation(currentBranch);
             // Use timer to ensure layout is updated before scrolling
-            Qt.callLater(messagesView.positionViewAtBeginning);
+            Qt.callLater(positionViewAtBeginning);
         }
 
         function onMessageStreamChunk(chunk) {
+            // console.log("QML: Stream chunk:", chunk); // Can be very noisy
             if (messagesModel.count > 0) {
                 const lastIndex = messagesModel.count - 1;
                 let lastMessage = messagesModel.get(lastIndex);
+                // Append to last assistant message OR add new temporary assistant message
                 if (lastMessage.role === "assistant") {
                     messagesModel.setProperty(lastIndex, "content", lastMessage.content + chunk);
-                } else { // Add new temporary assistant message
+                } else {
+                    // Last message was user, add new temp assistant message
                     messagesModel.append({id: "temp-" + Date.now(), role: "assistant", content: chunk, timestamp: new Date().toISOString(), attachments: []});
                 }
-                Qt.callLater(messagesView.positionViewAtBeginning); // Scroll during stream
-            } else { // First message is streaming
+                Qt.callLater(positionViewAtBeginning); // Scroll during stream
+            } else { // First message in conversation is streaming
                 messagesModel.append({id: "temp-" + Date.now(), role: "assistant", content: chunk, timestamp: new Date().toISOString(), attachments: []});
-                Qt.callLater(messagesView.positionViewAtBeginning);
+                Qt.callLater(positionViewAtBeginning);
             }
         }
 
         function onMessageAdded(message) {
+            // This signal is emitted when a *final* message (user or assistant) is saved
+            // It's often followed by onMessageBranchChanged, but can update UI slightly faster
             console.log("QML: Received messageAdded signal for:", message.id, "Role:", message.role);
-            // If the last message was temporary, replace it fully
+
             if (message.role === 'assistant' && messagesModel.count > 0) {
                 const lastIndex = messagesModel.count - 1;
                 let lastMessage = messagesModel.get(lastIndex);
-                if (lastMessage.id.startsWith("temp-")) {
+                // If the last message in the model was the temporary streaming one, replace it
+                if (lastMessage.id && lastMessage.id.toString().startsWith("temp-")) {
                     console.log("QML: Replacing temporary streaming message with final:", message.id);
-                    // Use setProperty for individual fields to avoid recreating the whole item
+                    // Update properties of the existing item
                     messagesModel.setProperty(lastIndex, "id", message.id);
-                    messagesModel.setProperty(lastIndex, "content", message.content);
-                    messagesModel.setProperty(lastIndex, "timestamp", message.timestamp);
+                    messagesModel.setProperty(lastIndex, "content", message.content || "");
+                    messagesModel.setProperty(lastIndex, "timestamp", message.timestamp || new Date().toISOString());
                     messagesModel.setProperty(lastIndex, "attachments", message.file_attachments || []);
                 } else if (lastMessage.id !== message.id) {
-                    // This case should be rare if branchChanged handles additions correctly
-                    // console.warn("QML: messageAdded received but last message wasn't temporary. Appending.")
-                    // messagesModel.append({...}); // Append if absolutely necessary
+                    // This might happen if branch change signal arrives slightly later.
+                    // Avoid appending duplicates if the branch change will handle it.
+                    console.warn("QML: messageAdded received, but last message wasn't temporary or ID differs. Branch change should handle addition.");
+                    // messagesModel.append({...}); // Avoid appending here usually
+                }
+            } else if (message.role === 'user') {
+                // Append the user message if it's not already the last item
+                if (messagesModel.count === 0 || messagesModel.get(messagesModel.count - 1).id !== message.id) {
+                    console.log("QML: Appending user message from messageAdded signal.");
+                    messagesModel.append({
+                        id: message.id, role: message.role, content: message.content || "",
+                        timestamp: message.timestamp || new Date().toISOString(),
+                        attachments: message.file_attachments || []
+                    });
                 }
             }
-            Qt.callLater(messagesView.positionViewAtBeginning);
+            Qt.callLater(positionViewAtBeginning);
         }
 
         function onTokenUsageUpdated(usage) {
@@ -962,7 +1024,17 @@ ApplicationWindow {
 
         function onLoadingStateChanged(loading) {
             console.log("QML: Received loadingStateChanged signal:", loading);
-            isLoading = loading;
+            isLoading = loading; // Update global loading state
+        }
+
+        // Handle search results from ViewModel
+        function onSearchResultsReady(results) {
+            console.log("MainWindow: Received searchResultsReady signal with " + (results ? results.length : 0) + " items.");
+            if (searchDialog) {
+                searchDialog.searchResults = results; // Update the dialog's property
+                // The dialog's onSearchResultsChanged handler will update its internal model
+                // and set isSearching = false.
+            }
         }
 
         function onErrorOccurred(errorMessage) {
@@ -970,17 +1042,27 @@ ApplicationWindow {
             errorDialog.title = "Application Error";
             errorDialog.text = errorMessage;
             errorDialog.open();
+
+            // If an error occurs, assume any ongoing search should stop visually
+            if (searchDialog && searchDialog.isSearching) {
+                console.log("MainWindow: Stopping search indicator due to error.");
+                searchDialog.isSearching = false;
+            }
+            // Also ensure global loading indicator stops on error
+            if (isLoading) {
+                isLoading = false;
+            }
         }
 
         function onReasoningStepsChanged(steps) {
-            console.log("QML: Received reasoningStepsChanged signal with", steps.length, "steps.");
-            // TODO: Display reasoning steps (e.g., in a separate panel or tooltip)
+            console.log("QML: Received reasoningStepsChanged signal with", steps ? steps.length : 0, "steps.");
+            // TODO: Display reasoning steps
         }
 
         function onMessagingComplete() {
             console.log("QML: Received messagingComplete signal.");
-            // Finalize UI state, e.g., ensure input is enabled if it wasn't already
-            // inputField.enabled = !isLoading; // isLoading should already be false
+            // Ensure input is enabled if it wasn't already (isLoading should be false by now)
+            // inputField.enabled = !isLoading;
         }
     } // End Connections for conversationViewModel
 
@@ -988,18 +1070,19 @@ ApplicationWindow {
         target: settingsViewModel
         enabled: settingsViewModel !== null
 
-        // Example: Update model info text if settings change
         function onSettingChanged(key, value) {
             if (key === "model") {
                 modelInfoText.text = "Model: " + (value || "N/A");
             }
+            // Update other UI elements if needed based on single setting changes
         }
 
         function onSettingsChanged(settings) {
+            // Update UI based on the full settings object
             if (settings && settings.model) {
                 modelInfoText.text = "Model: " + settings.model;
             }
-            // Update any other relevant UI based on settings changes
+            // Potentially update theme, etc.
         }
     } // End Connections for settingsViewModel
 

@@ -212,13 +212,172 @@ class ConversationService: # Renamed class
             self.logger.error(f"Error deleting conversation {id} (sync): {str(e)}", exc_info=True)
             return False
 
-    # Note: Duplicating conversations synchronously can be complex due to relationships.
-    # This might be a candidate for keeping as a longer operation handled by a worker thread,
-    # even if the individual DB steps are sync. For now, let's comment it out.
-    # def duplicate_conversation(self, conversation_id: str, new_name: Optional[str] = None) -> Optional[Conversation]:
-    #     # ... Implementation would involve multiple sync session queries and object creation ...
-    #     self.logger.warning("Synchronous duplicate_conversation not fully implemented yet.")
-    #     return None
+    def duplicate_conversation(self, original_conversation_id: str, new_name: Optional[str] = None) -> Optional[Conversation]:
+        """
+        Creates a deep copy of a conversation and its messages (synchronous).
+
+        Args:
+            original_conversation_id: The ID of the conversation to duplicate.
+            new_name: The name for the new conversation. If None, uses "Original Name (Copy)".
+
+        Returns:
+            The newly created Conversation object (detached) or None if failed.
+        """
+        self.logger.info(f"Attempting to duplicate conversation {original_conversation_id} (sync)")
+        if not self.ensure_initialized():
+            self.logger.error("DB not initialized, cannot duplicate conversation.")
+            return None
+
+        try:
+            with self.db_manager.get_session() as session: # Use sync session context manager
+                # 1. Fetch the original conversation
+                # Use options to load relationships needed (system message is direct attribute)
+                original_conv = session.get(Conversation, original_conversation_id)
+                if not original_conv:
+                    self.logger.warning(f"Original conversation {original_conversation_id} not found for duplication.")
+                    return None
+
+                # Determine new name
+                final_new_name = new_name if new_name else f"{original_conv.name} (Copy)"
+
+                # 2. Create the new conversation object
+                new_conv_id = str(uuid.uuid4())
+                new_conv = Conversation(
+                    id=new_conv_id,
+                    name=final_new_name,
+                    system_message=original_conv.system_message,
+                    created_at=datetime.utcnow(), # Set new creation time
+                    modified_at=datetime.utcnow(), # Set new modification time
+                    # current_node_id will be set later
+                )
+                session.add(new_conv)
+                self.logger.debug(f"Created new conversation object {new_conv_id} ('{final_new_name}')")
+
+                # 3. Fetch all original messages (ordered by timestamp might help, though not strictly necessary)
+                original_messages_stmt = (
+                    select(Message)
+                    .where(Message.conversation_id == original_conversation_id)
+                    .order_by(Message.timestamp) # Order helps visualize, but logic relies on parent_id
+                    .options(selectinload(Message.file_attachments)) # Eager load attachments
+                )
+                original_messages = session.execute(original_messages_stmt).scalars().all()
+
+                if not original_messages:
+                     self.logger.warning(f"Conversation {original_conversation_id} has no messages to duplicate.")
+                     # Still create the empty conversation copy
+                     session.flush() # Ensure new_conv gets saved
+                     session.expunge(new_conv)
+                     # Add new conv to cache before returning
+                     self._conversation_cache[new_conv.id] = new_conv
+                     return new_conv # Return the empty copy
+
+                # 4. Create mapping and copy messages
+                message_id_map: Dict[str, str] = {} # original_id -> new_id
+                new_messages_map: Dict[str, Message] = {} # new_id -> new_message_object (transient state)
+
+                self.logger.debug(f"Duplicating {len(original_messages)} messages...")
+                for original_msg in original_messages:
+                    new_msg_id = str(uuid.uuid4())
+                    message_id_map[original_msg.id] = new_msg_id
+
+                    # Create the new message, initially without parent_id set
+                    new_msg = Message(
+                        id=new_msg_id,
+                        conversation_id=new_conv_id, # Link to the NEW conversation
+                        role=original_msg.role,
+                        content=original_msg.content,
+                        timestamp=original_msg.timestamp, # Keep original timestamp? Or set new? Let's keep original.
+                        response_id=original_msg.response_id,
+                        model_info=original_msg.model_info,
+                        parameters=original_msg.parameters,
+                        token_usage=original_msg.token_usage,
+                        reasoning_steps=original_msg.reasoning_steps,
+                        # parent_id will be set in the next loop
+                    )
+
+                    # Add the new message to the session *before* adding attachments
+                    session.add(new_msg)
+                    new_messages_map[new_msg_id] = new_msg # Keep track for parent linking
+
+                    # Copy attachments (if any)
+                    if original_msg.file_attachments:
+                         self.logger.debug(f"Duplicating {len(original_msg.file_attachments)} attachments for msg {original_msg.id} -> {new_msg_id}")
+                         for orig_att in original_msg.file_attachments:
+                              new_att_id = str(uuid.uuid4())
+                              new_att = FileAttachment(
+                                   id=new_att_id,
+                                   message_id=new_msg_id, # Link to NEW message
+                                   file_name=orig_att.file_name,
+                                   display_name=orig_att.display_name,
+                                   mime_type=orig_att.mime_type,
+                                   token_count=orig_att.token_count,
+                                   file_size=orig_att.file_size,
+                                   file_hash=orig_att.file_hash,
+                                   storage_type=orig_att.storage_type,
+                                   content_preview=orig_att.content_preview,
+                                   storage_path=orig_att.storage_path,
+                                   content=orig_att.content # Copy content if stored directly
+                              )
+                              session.add(new_att)
+                              # Association with new_msg happens automatically via relationship + message_id FK
+
+
+                # 5. Set parent_id links for the new messages
+                self.logger.debug("Setting parent links for duplicated messages...")
+                for original_id, new_id in message_id_map.items():
+                    # Find the original message object again to get its parent_id
+                    original_msg_obj = next((m for m in original_messages if m.id == original_id), None)
+                    if not original_msg_obj: continue # Should not happen
+
+                    original_parent_id = original_msg_obj.parent_id
+                    if original_parent_id:
+                        # Find the corresponding *new* parent ID from the map
+                        new_parent_id = message_id_map.get(original_parent_id)
+                        if new_parent_id:
+                            # Set parent_id on the new message object
+                            new_message_obj = new_messages_map.get(new_id)
+                            if new_message_obj:
+                                 new_message_obj.parent_id = new_parent_id
+                                 # session.add(new_message_obj) # Mark as dirty if needed, ORM should track changes
+                            else:
+                                 self.logger.warning(f"Could not find new message object for new_id {new_id} when setting parent.")
+                        else:
+                            # This shouldn't happen if all original messages were processed
+                            self.logger.warning(f"Could not find new parent ID mapping for original parent ID {original_parent_id}.")
+
+                # 6. Set the current_node_id for the new conversation
+                if original_conv.current_node_id:
+                    new_current_node_id = message_id_map.get(original_conv.current_node_id)
+                    if new_current_node_id:
+                        new_conv.current_node_id = new_current_node_id
+                        self.logger.debug(f"Set new conversation current_node_id to {new_current_node_id}")
+                    else:
+                         self.logger.warning(f"Could not map original current_node_id {original_conv.current_node_id} to a new message ID.")
+                         new_conv.current_node_id = None # Fallback to null if mapping fails
+                         # Alternatively, find the message in new_messages_map with the latest timestamp?
+                         # latest_msg = max(new_messages_map.values(), key=lambda m: m.timestamp) if new_messages_map else None
+                         # new_conv.current_node_id = latest_msg.id if latest_msg else None
+
+
+                # Commit happens automatically at end of 'with' block
+
+                # Detach the new conversation before returning
+                session.flush() # Ensure all IDs/FKs are populated before expunging
+                session.expunge(new_conv)
+                # Expunge messages too if they were needed on the returned object (usually not)
+                # for msg in new_messages_map.values(): session.expunge(msg)
+
+                self.logger.info(f"Successfully duplicated conversation {original_conversation_id} to {new_conv_id}")
+                # Add the new (detached) conversation to the cache.
+                self._conversation_cache[new_conv.id] = new_conv
+                return new_conv
+
+        except SQLAlchemyError as db_err:
+             self.logger.error(f"Database error duplicating conversation {original_conversation_id} (sync): {str(db_err)}", exc_info=True)
+             return None # Return None on error
+        except Exception as e:
+            self.logger.error(f"Unexpected error duplicating conversation {original_conversation_id} (sync): {str(e)}", exc_info=True)
+            return None # Return None on error
 
     def add_user_message(self, conversation_id: str, content: str, parent_id: Optional[str] = None) -> Optional[Message]:
         """Add a user message (synchronous)."""
