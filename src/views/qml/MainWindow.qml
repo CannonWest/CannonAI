@@ -30,6 +30,9 @@ ApplicationWindow {
     property var conversationViewModel: null
     property var settingsViewModel: null
 
+    // --- App Controller Reference (Set by Python) ---
+    property var appController: null // Expects the Python ApplicationController instance
+
     // --- Application State (Driven by ViewModel Signals) ---
     property bool isLoading: false // Global loading state (used by thinking indicator)
     property var currentConversation: null // Holds the fully loaded Conversation object/dict
@@ -53,24 +56,61 @@ ApplicationWindow {
 
     // --- Initialization ---
     Component.onCompleted: {
-        console.log("MainWindow: Component.onCompleted");
+        console.log("QML: MainWindow Component.onCompleted - QML structure loaded.");
+        // DO NOT call initializeApp() here anymore.
         conversationsModel.clear();
         messagesModel.clear();
         fileAttachmentsModel.clear();
-        initializeApp();
+        // Check appController availability early (might still be null here, but check later too)
+        // console.log("QML: appController in onCompleted:", appController);
     }
 
+    // --- Connections to Python Controller ---
+    Connections {
+        target: appController // Target the controller instance set from Python
+        enabled: appController !== null // Only connect if the controller exists
+
+        // Function name MUST match the signal name from Python (initializationComplete)
+        function onInitializationComplete() {
+            // <<< ADD QML LOGGING >>>
+            console.log("QML: >>> Received onInitializationComplete signal.");
+            console.log("QML: Checking appController:", appController); // Verify controller object
+            console.log("QML: Checking conversationViewModel:", conversationViewModel); // Verify VM object
+
+            // Now it's safe to initialize QML logic that depends on ViewModels
+            initializeApp();
+            // <<< ADD QML LOGGING >>>
+            console.log("QML: <<< Exited onInitializationComplete handler.");
+        }
+    }
+
+    // --- QML Initialization Function (Called by Signal Handler) ---
     function initializeApp() {
+        // <<< ADD QML LOGGING >>>
+        console.log("QML: >>> initializeApp() called.");
+        // Check if the conversationViewModel context property is actually available
         if (!conversationViewModel) {
-            console.error("initializeApp: conversationViewModel is not available!");
+            console.error("QML: initializeApp FATAL: conversationViewModel is null! Cannot load initial data.");
             errorDialog.title = "Initialization Error";
             errorDialog.text = "Critical component (conversationViewModel) missing. Application cannot function.";
             errorDialog.open();
             return;
         }
-        console.log("QML: Requesting initial conversation list load.");
-        // Trigger the threaded load in the ViewModel
-        conversationViewModel.load_all_conversations_threaded();
+
+        // If the ViewModel exists, trigger the initial load via its slot
+        console.log("QML: conversationViewModel found. Attempting to call load_all_conversations_threaded()...");
+        try {
+            conversationViewModel.load_all_conversations_threaded(); // <<< CALL REMAINS HERE
+            console.log("QML: Call to load_all_conversations_threaded() completed without JS error.");
+        } catch (e) {
+            // Catch potential JavaScript errors during the call itself
+            console.error("QML: *** JavaScript Error calling load_all_conversations_threaded():", e);
+            errorDialog.title = "QML Error";
+            errorDialog.text = "Failed to call initial load function: " + e;
+            errorDialog.open();
+        }
+        // <<< ADD QML LOGGING >>>
+        console.log("QML: <<< initializeApp() finished.");
     }
 
     // --- Window Closing Handler ---

@@ -644,11 +644,12 @@ class ConversationService: # Renamed class
     def _get_all_conversations_sync(self) -> List[Conversation]:
         """Synchronous helper to fetch all conversations."""
         self.logger.debug(">>> Entering _get_all_conversations_sync")
-        if not self.SyncSessionLocal:
-             self.logger.error("_get_all_conversations_sync: SyncSessionLocal not configured.")
-             return []
+        # Ensure db_manager and its SessionLocal are initialized (more robust check)
+        if not self.db_manager or not self.db_manager.SessionLocal:
+            self.logger.error("_get_all_conversations_sync: DatabaseManager or SessionLocal not configured.")
+            return []
 
-        with self.db_manager.get_session() as session: # Use sync session
+        with self.db_manager.get_session() as session:  # Use sync session
             try:
                 self.logger.debug("_get_all_conversations_sync: Querying database...")
                 query = select(Conversation).order_by(Conversation.modified_at.desc())

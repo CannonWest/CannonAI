@@ -47,25 +47,30 @@ class BaseWorker(QObject):
         self.conv_service: Optional[ConversationService] = kwargs.get('conversation_service')
         self.api_service: Optional[ApiService] = kwargs.get('api_service')
         self.view_model: Optional['ConversationViewModel'] = kwargs.get('view_model')
+        self.logger.debug("Worker initialized.")
         if not self.conv_service or not self.api_service or not self.view_model:
-             # Log error, but allow execution to continue to emit proper error signal
-             self.logger.error("Worker initialized without required services/viewmodel reference.")
-
+            # Log error, but allow execution to continue to emit proper error signal
+            self.logger.error("Worker initialized without required services/viewmodel reference.")
 
     @pyqtSlot()
     def run(self):
         """Main worker task. Override in subclasses."""
+        self.logger.info(f">>> Worker run() method started.")
         try:
             # Check for essential services again before running subclass logic
-             if not self.conv_service or not self.api_service or not self.view_model:
-                  raise ValueError("Required services or ViewModel reference missing.")
-             self._run_task() # Call the subclass implementation
+            if not self.conv_service or not self.api_service or not self.view_model:
+                raise ValueError("Required services or ViewModel reference missing.")
+            self.logger.debug("Calling _run_task()...")
+            self._run_task()  # Call the subclass implementation
+            self.logger.debug("_run_task() completed.")
         except Exception as e:
             self.logger.error(f"Unhandled exception in worker {self.__class__.__name__}: {e}", exc_info=True)
             self.error.emit(f"Worker error: {str(e)}")
         finally:
-             # Ensure finished is always emitted
-             self.finished.emit()
+            # Ensure finished is always emitted
+            self.logger.debug("Emitting finished signal.")
+            self.finished.emit()
+            self.logger.info(f"<<< Worker run() method finished.")
 
     def _run_task(self):
         """Subclasses must implement their specific task logic here."""
@@ -81,8 +86,10 @@ class LoadConversationsWorker(BaseWorker):
     # Emits conversationListResult from BaseWorker
 
     def _run_task(self):
-        self.logger.debug("LoadConversationsWorker running...")
+        self.logger.info(">>> LoadConversationsWorker _run_task entered.")
+        self.logger.debug("LoadConversationsWorker running...") # Keep existing debug log
         conversations = self.conv_service.get_all_conversations() # Sync call
+        self.logger.debug(f"Service call get_all_conversations returned {len(conversations)} items.")
         conv_list_dicts = []
         for conv in conversations:
             conv_id = getattr(conv, 'id', None)
@@ -95,7 +102,7 @@ class LoadConversationsWorker(BaseWorker):
                 })
         self.logger.debug(f"Worker emitting conversationListResult with {len(conv_list_dicts)} items.")
         self.conversationListResult.emit(conv_list_dicts)
-        self.logger.debug("LoadConversationsWorker finished successfully.")
+        self.logger.info("<<< LoadConversationsWorker _run_task finished successfully.") # Change level to INFO
 
 class LoadConversationWorker(BaseWorker):
     """Worker to fetch a specific conversation."""
@@ -490,40 +497,56 @@ class ConversationViewModel(QObject):
         self._initialized = self.conversation_service.ensure_initialized()
         if self._initialized:
             self.logger.info("ViewModel initialization completed successfully")
-            self.load_all_conversations_threaded() # Trigger initial load
         else:
             self.logger.error("ViewModel initialization failed: DB Service could not initialize.")
             self.errorOccurred.emit("Database initialization failed. Cannot load conversations.")
 
     # --- Worker Management ---
     def _start_worker(self, task_id: str, worker_class: type, *args, **kwargs):
+        # <<< ADD LOGGING >>>
+        self.logger.info(f">>> _start_worker entered for task: {task_id}, worker: {worker_class.__name__}")
+
         if task_id in self._threads and self._threads[task_id].isRunning():
             self.logger.warning(f"Task '{task_id}' is already running. Ignoring request.")
             return
 
         if task_id in self._threads:
             self.logger.warning(f"Cleaning up previous non-running thread for task: {task_id}")
-            del self._threads[task_id] # Should be cleaned up by _cleanup_thread, but belt-and-suspenders
+            try:
+                # Attempt graceful cleanup if possible, though shouldn't be necessary if finished signal worked
+                if not self._threads[task_id].isFinished():
+                    self._threads[task_id].quit()
+                    self._threads[task_id].wait(50) # Short wait
+                del self._threads[task_id]
+            except Exception as e:
+                 self.logger.error(f"Error cleaning up previous thread for {task_id}: {e}")
 
-        self.logger.debug(f"Starting worker {worker_class.__name__} for task: {task_id}")
+
+        self.logger.debug(f"Creating QThread for task: {task_id}")
         thread = QThread(self)
         kwargs['conversation_service'] = self.conversation_service
         kwargs['api_service'] = self.api_service
         kwargs['view_model'] = self
         kwargs['task_id'] = task_id
 
+        self.logger.debug(f"Instantiating worker {worker_class.__name__} for task: {task_id}")
         worker = worker_class(*args, **kwargs)
         worker.moveToThread(thread)
+        self.logger.debug(f"Worker moved to thread for task: {task_id}")
 
         # --- Connect signals from Worker to ViewModel Slots ---
+        self.logger.debug(f"Connecting worker signals for task: {task_id}...")
         worker.error.connect(self._handle_worker_error)
+        self.logger.debug(f"Connected worker.error for task: {task_id}")
         worker.finished.connect(thread.quit)
+        self.logger.debug(f"Connected worker.finished -> thread.quit for task: {task_id}")
 
         # Connect common result signals
-        if hasattr(worker, 'conversationResult'): worker.conversationResult.connect(self._handle_conversation_loaded)
-        if hasattr(worker, 'conversationListResult'): worker.conversationListResult.connect(self._handle_conversation_list_loaded)
-        if hasattr(worker, 'messageResult'): worker.messageResult.connect(self._handle_message_added)
-        if hasattr(worker, 'branchResult'): worker.branchResult.connect(self._handle_branch_changed)
+        if hasattr(worker, 'conversationResult'): worker.conversationResult.connect(self._handle_conversation_loaded); self.logger.debug(f"Connected worker.conversationResult for task: {task_id}")
+        if hasattr(worker, 'conversationListResult'): worker.conversationListResult.connect(self._handle_conversation_list_loaded); self.logger.debug(f"Connected worker.conversationListResult for task: {task_id}")
+        if hasattr(worker, 'messageResult'): worker.messageResult.connect(self._handle_message_added); self.logger.debug(f"Connected worker.messageResult for task: {task_id}")
+        if hasattr(worker, 'branchResult'): worker.branchResult.connect(self._handle_branch_changed); self.logger.debug(f"Connected worker.branchResult for task: {task_id}")
+
 
         # Connect specific worker signals
         if isinstance(worker, SendMessageWorker):
@@ -549,21 +572,32 @@ class ConversationViewModel(QObject):
             worker.messagingDone.connect(self._handle_messaging_done)
         elif isinstance(worker, DuplicateConversationWorker):
             worker.duplicationComplete.connect(self._handle_duplication_complete)
+        self.logger.debug(f"Finished connecting worker signals for task: {task_id}.")
 
         # --- Thread lifecycle ---
+        # <<< ADD LOGGING >>>
+        self.logger.debug(f"Connecting thread signals for task: {task_id}...")
         thread.finished.connect(worker.deleteLater)
+        self.logger.debug(f"Connected thread.finished -> worker.deleteLater for task: {task_id}")
         thread.finished.connect(thread.deleteLater)
+        self.logger.debug(f"Connected thread.finished -> thread.deleteLater for task: {task_id}")
         thread.started.connect(worker.run)
+        self.logger.debug(f"Connected thread.started -> worker.run for task: {task_id}")
         thread.finished.connect(lambda tid=task_id: self._cleanup_thread(tid))
+        self.logger.debug(f"Connected thread.finished -> _cleanup_thread for task: {task_id}")
+        self.logger.debug(f"Finished connecting thread signals for task: {task_id}.")
 
         self._threads[task_id] = thread
         # Update loading state only if this is the *first* thread starting
         if not self._is_loading:
             self._is_loading = True
             self.loadingStateChanged.emit(True)
-            self.logger.debug("Set loading state to True.")
+            self.logger.debug(f"Set loading state to True (task: {task_id}).")
 
+        # <<< ADD LOGGING >>>
+        self.logger.info(f"Starting thread for task: {task_id}...")
         thread.start()
+        self.logger.info(f"<<< Exiting _start_worker for task: {task_id}")
 
     def _cleanup_thread(self, task_id: str):
         self.logger.debug(f"Cleaning up finished thread for task: {task_id}")
@@ -735,12 +769,16 @@ class ConversationViewModel(QObject):
     @pyqtSlot()
     def load_all_conversations_threaded(self):
         """Loads all conversations using a background thread."""
+        # <<< ADD LOGGING >>>
+        self.logger.info(">>> load_all_conversations_threaded called")
         if not self._initialized:
-             self.logger.warning("Cannot load conversations: Service not initialized.")
-             self.conversationListUpdated.emit([])
-             return
+            self.logger.warning("Cannot load conversations: Service not initialized.")
+            self.conversationListUpdated.emit([])
+            return
         self.logger.debug("Initiating background load for all conversations.")
         self._start_worker("load_all_convs", LoadConversationsWorker)
+        # <<< ADD LOGGING >>>
+        self.logger.debug("<<< Exiting load_all_conversations_threaded")
 
     @pyqtSlot(str)
     def load_conversation(self, conversation_id: str):

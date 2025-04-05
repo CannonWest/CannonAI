@@ -23,7 +23,7 @@ logger = get_logger(__name__)
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtQml import QQmlApplicationEngine, QQmlError
 # Make sure QObject is imported if not already
-from PyQt6.QtCore import QUrl, QObject, QTimer, pyqtSlot, QCoreApplication, Qt, QThread
+from PyQt6.QtCore import QUrl, QObject, QTimer, pyqtSlot, QCoreApplication, Qt, QThread, pyqtSignal
 
 # 5. App-specific service imports (Synchronous/Threaded versions)
 from src.services.database.conversation_service import ConversationService
@@ -43,9 +43,12 @@ class ApplicationController(QObject):
     Main application controller using standard PyQt threading model.
     Manages initialization, QML engine, ViewModels, and application lifecycle.
     """
+    # Step 1: Define the signal
+    initializationComplete = pyqtSignal()
 
     def __init__(self):
         """Initialize the application controller."""
+        # ... (constructor code remains largely the same) ...
         super().__init__()
         self.logger = get_logger("ApplicationController")
         self.app = None
@@ -65,9 +68,12 @@ class ApplicationController(QObject):
             self._show_emergency_error(f"Initialization Failed: {str(e)}\n\nCheck logs for details.")
             sys.exit(1)
 
+
     def _initialize(self):
         """Initialize the application components."""
         self.logger.info("--- Starting Application Initialization (Threaded) ---")
+
+        # ... (Steps 1-6 remain the same) ...
 
         # 1. Initialize QApplication
         self.logger.debug("Step 1: Initializing QApplication...")
@@ -114,13 +120,15 @@ class ApplicationController(QObject):
         self.logger.debug("Step 5: Initializing ViewModels...")
         self.settings_vm = SettingsViewModel()
         self.settings_vm.initialize(self.api_service)
-        self.api_service.update_settings(self.settings_vm.get_settings())
+        # self.api_service.update_settings(self.settings_vm.get_settings()) # SettingsVM updates service on change
         self.logger.info("Initialized SettingsViewModel.")
 
         self.conversation_vm = ConversationViewModel()
         self.conversation_vm.conversation_service = self.db_service
         self.conversation_vm.api_service = self.api_service
         self.conversation_vm.settings_vm = self.settings_vm
+        # Call the VM's initializer AFTER setting services
+        self.conversation_vm.initialize_viewmodel()
         self.logger.info("Initialized ConversationViewModel.")
         self.logger.debug("ViewModels initialized.")
 
@@ -131,14 +139,21 @@ class ApplicationController(QObject):
 
         # 7. Register ViewModels and Bridge with QML
         self.logger.debug("Step 7: Registering context properties...")
-        if self.qml_bridge:
+        if self.qml_bridge and self.engine:
             self.qml_bridge.register_context_property("conversationViewModel", self.conversation_vm)
             self.qml_bridge.register_context_property("settingsViewModel", self.settings_vm)
             self.qml_bridge.register_context_property("bridge", self.qml_bridge)
-            self.logger.info("Registered ViewModels and Bridge with QML")
+            # Step 3: Register the controller itself
+            self.engine.rootContext().setContextProperty("appController", self)
+            self.logger.info("Registered ViewModels, Bridge, and AppController with QML")
+
+            # Step 2: Emit the signal AFTER properties are set
+            self.initializationComplete.emit()
+            self.logger.info("Emitted initializationComplete signal.")
+
         else:
-            self.logger.error("QML Bridge not initialized, cannot register properties.")
-            raise RuntimeError("QML Bridge failed to initialize.")
+            self.logger.error("QML Bridge or Engine not initialized, cannot register properties or emit signal.")
+            raise RuntimeError("QML Bridge/Engine failed to initialize.")
         self.logger.debug("Context properties registered.")
 
         # 8. Load Main QML File
@@ -402,10 +417,21 @@ def main():
     """Main application entry point."""
     logger.info(f"--- Starting CannonAI Application ---")
     logger.info(f"Python Version: {sys.version}")
-    try: from PyQt6 import Qt
-    except ImportError: Qt = None
-    logger.info(f"PyQt Version: {getattr(Qt, 'PYQT_VERSION_STR', 'N/A')}")
-    logger.info(f"Qt Version: {getattr(Qt, 'QT_VERSION_STR', 'N/A')}")
+
+    # Correctly get PyQt/Qt versions
+    qt_version = 'N/A'
+    pyqt_version = 'N/A'
+    try:
+        from PyQt6 import Qt # Import the Qt submodule
+        qt_version = getattr(Qt, 'QT_VERSION_STR', 'N/A')
+        pyqt_version = getattr(Qt, 'PYQT_VERSION_STR', 'N/A')
+    except ImportError:
+        logger.error("PyQt6 library not found.")
+    except AttributeError:
+         logger.error("Could not retrieve Qt/PyQt version strings.")
+
+    logger.info(f"PyQt Version: {pyqt_version}") # <<< UPDATED
+    logger.info(f"Qt Version: {qt_version}")     # <<< UPDATED
     logger.info(f"OS: {platform.system()} {platform.release()}")
     logger.info(f"Application Directory: {os.path.dirname(os.path.abspath(__file__))}")
 
@@ -413,8 +439,25 @@ def main():
     exit_code = 0
     try:
         controller = ApplicationController()
-        exit_code = controller.run()
+        # Ensure controller is fully initialized before running
+        if controller and controller.app and controller.engine and controller.main_window:
+             exit_code = controller.run()
+        else:
+             logger.critical("ApplicationController initialization failed before run().")
+             # Attempt to show error even if controller is partial
+             msg = "Application failed to initialize properly before running."
+             if controller and hasattr(controller, '_show_emergency_error'):
+                  controller._show_emergency_error(msg)
+             else: # Fallback if even controller init failed badly
+                  print(f"FATAL ERROR: {msg}", file=sys.stderr)
+                  # Attempt Tkinter fallback directly if possible
+                  try:
+                      ApplicationController._try_tkinter_fallback(None, msg + "\n\nCheck logs for details.")
+                  except Exception: pass # Ignore errors in fallback
+             exit_code = 1 # Ensure non-zero exit code
+
     except Exception as e:
+        # General exception handling remains the same...
         logger.critical(f"Fatal error during application startup or run: {e}", exc_info=True)
         if controller and controller.app:
              controller._show_emergency_error(f"Fatal Error: {e}\n\nCheck logs for details.")
@@ -422,8 +465,7 @@ def main():
              print(f"\nFATAL ERROR (Initialization Failed):\n{e}\n", file=sys.stderr)
              traceback.print_exc(file=sys.stderr)
              if not controller or not controller.app:
-                  # Can't guarantee ApplicationController() won't fail again,
-                  # so create a simpler fallback instance just for the message.
+                  # Fallback remains the same...
                   class DummyController:
                       def _try_tkinter_fallback(self, msg): ApplicationController._try_tkinter_fallback(None, msg) # Call static-like
                   dummy_controller = DummyController()
@@ -431,8 +473,11 @@ def main():
         exit_code = 1
     finally:
         logger.info(f"--- CannonAI Application Shutdown (Exit Code: {exit_code}) ---")
-        return exit_code
+        # Explicitly exit Python process if controller.run() didn't execute or failed early
+        # This ensures the script terminates even if the Qt event loop wasn't entered/exited cleanly.
+        sys.exit(exit_code) # Use sys.exit() in the final 'finally' block
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # The main() function now handles calling sys.exit() itself.
+    main()
