@@ -40,5 +40,3 @@ from src.utils.file_utils import (
     get_file_mime_type
 )
 
-# QML bridge
-from src.utils.qml_bridge import QmlBridge

@@ -129,18 +129,22 @@ ApplicationWindow {
             MenuItem {
                 id: newConvMenuItem
                 text: "New Conversation"
-                enabled: conversationViewModel !== null && !isLoading // Disable during general loading
+                enabled: conversationViewModel !== null && !isLoading
                 onTriggered: { if (conversationViewModel) conversationViewModel.create_new_conversation("New Conversation"); }
                 Shortcut {
-                    sequence: "Ctrl+N"; onActivated: newConvMenuItem.trigger()
+                    sequence: "Ctrl+N"
+                    // Call the action directly instead of trying to trigger the MenuItem
+                    onActivated: { if (conversationViewModel && !isLoading) conversationViewModel.create_new_conversation("New Conversation"); }
                 }
             }
+
             MenuItem {
                 id: saveConfMenuItem
                 text: "Save Confirmation"
                 onTriggered: saveDialog.open()
                 Shortcut {
-                    sequence: "Ctrl+S"; onActivated: saveConfMenuItem.trigger()
+                    sequence: "Ctrl+S"
+                    onActivated: saveDialog.open()
                 }
             }
             MenuSeparator {
@@ -150,7 +154,8 @@ ApplicationWindow {
                 text: "Exit"
                 onTriggered: mainWindow.close() // Triggers onClosing handler
                 Shortcut {
-                    sequence: "Ctrl+Q"; onActivated: exitMenuItem.trigger()
+                    sequence: "Ctrl+Q"
+                    onActivated: mainWindow.close()
                 }
             }
         }
@@ -162,7 +167,8 @@ ApplicationWindow {
                 enabled: conversationList.currentIndex >= 0 && !isLoading
                 onTriggered: renameDialog.open()
                 Shortcut {
-                    sequence: "F2"; onActivated: renameMenuItem.trigger()
+                    sequence: "F2"
+                    onActivated: { if (conversationList.currentIndex >= 0 && !isLoading) renameDialog.open(); }
                 }
             }
             MenuItem {
@@ -171,20 +177,28 @@ ApplicationWindow {
                 enabled: conversationList.currentIndex >= 0 && conversationViewModel !== null && !isLoading
                 onTriggered: duplicateConversation() // Calls updated QML function
                 Shortcut {
-                    sequence: "Ctrl+D"; onActivated: duplicateMenuItem.trigger()
+                    sequence: "Ctrl+D"
+                    onActivated: { if (conversationList.currentIndex >= 0 && conversationViewModel !== null && !isLoading) duplicateConversation(); }
                 }
             }
             MenuItem {
                 id: searchMenuItem
                 text: "Search Messages"
-                enabled: conversationViewModel !== null // Enable even if loading, dialog has own indicator
+                enabled: conversationViewModel !== null
                 onTriggered: {
                     const currentConvId = currentConversation ? currentConversation.id : null;
-                    searchDialog.initialize(currentConvId); // Initialize with current context
+                    searchDialog.initialize(currentConvId);
                     searchDialog.open();
                 }
                 Shortcut {
-                    sequence: "Ctrl+F"; onActivated: searchMenuItem.trigger()
+                    sequence: "Ctrl+F"
+                    onActivated: {
+                        if (conversationViewModel !== null) {
+                            const currentConvId = currentConversation ? currentConversation.id : null;
+                            searchDialog.initialize(currentConvId);
+                            searchDialog.open();
+                        }
+                    }
                 }
             }
         }

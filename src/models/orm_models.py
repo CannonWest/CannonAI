@@ -1,4 +1,6 @@
-# src/models/orm_models.py
+"""
+Database ORM models for the CannonAI web application.
+"""
 
 from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Boolean, JSON, Table
 from sqlalchemy.ext.declarative import declarative_base
@@ -44,6 +46,17 @@ class Conversation(Base):
         self.modified_at = self.created_at
         super().__init__(**kwargs)
 
+    def to_dict(self):
+        """Convert instance to dictionary for API responses"""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "system_message": self.system_message,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "modified_at": self.modified_at.isoformat() if self.modified_at else None,
+            "current_node_id": self.current_node_id
+        }
+
 
 class Message(Base):
     """
@@ -66,7 +79,7 @@ class Message(Base):
                             backref="parent",
                             remote_side=[id],
                             cascade="all, delete-orphan",
-                            single_parent=True)  # This flag is critical for the self-referential relationship
+                            single_parent=True)
 
     # Store JSON-serializable metadata
     model_info = Column(JSON)
@@ -85,6 +98,23 @@ class Message(Base):
         self.parent_id = parent_id
         self.timestamp = datetime.utcnow()
         super().__init__(**kwargs)
+
+    def to_dict(self):
+        """Convert instance to dictionary for API responses"""
+        return {
+            "id": self.id,
+            "conversation_id": self.conversation_id,
+            "parent_id": self.parent_id,
+            "role": self.role,
+            "content": self.content,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "response_id": self.response_id,
+            "model_info": self.model_info,
+            "parameters": self.parameters,
+            "token_usage": self.token_usage,
+            "reasoning_steps": self.reasoning_steps,
+            "file_attachments": [attachment.to_dict() for attachment in self.file_attachments] if self.file_attachments else []
+        }
 
 
 class FileAttachment(Base):
@@ -114,3 +144,20 @@ class FileAttachment(Base):
         self.file_name = file_name
         self.mime_type = mime_type
         super().__init__(**kwargs)
+
+    def to_dict(self):
+        """Convert instance to dictionary for API responses"""
+        return {
+            "id": self.id,
+            "message_id": self.message_id,
+            "file_name": self.file_name,
+            "display_name": self.display_name,
+            "mime_type": self.mime_type,
+            "token_count": self.token_count,
+            "file_size": self.file_size,
+            "file_hash": self.file_hash,
+            "storage_type": self.storage_type,
+            "content_preview": self.content_preview,
+            "storage_path": self.storage_path
+            # Note: We don't include raw content in API responses for security/performance
+        }

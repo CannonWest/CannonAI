@@ -1,198 +1,201 @@
-# src/services/database/db_manager.py
 """
-Synchronous database manager for SQLAlchemy operations.
+Database manager for SQLAlchemy operations.
+Adapted for web-based architecture with FastAPI.
 """
 
 import os
-import traceback
-import platform
-import threading
-import time
-
-# Use standard synchronous SQLAlchemy components
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker, Session, declarative_base
+import logging
 from contextlib import contextmanager
-from typing import Generator, Optional
+from typing import Generator, Optional, Dict, Any
 
-from src.utils.logging_utils import get_logger
-from src.utils.constants import DATABASE_DIR
+from sqlalchemy import create_engine, text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import QueuePool
 
-# Get a logger for this module
-logger = get_logger(__name__)
+# Import Base from models
+from src.models.orm_models import Base
 
-# Base class for ORM models (can be imported from models if preferred)
-Base = declarative_base()
+# Create logger for this module
+logger = logging.getLogger(__name__)
 
-# Set environment variable to enable SQLAlchemy engine debug
-if os.environ.get('DEBUG_SQLALCHEMY', '').lower() in ('1', 'true', 'yes'):
-    import logging
-    logging.getLogger('sqlalchemy.engine').setLevel(logging.INFO)
-    logging.getLogger('sqlalchemy.pool').setLevel(logging.DEBUG)
 
 class DatabaseManager:
     """
-    Manages synchronous database connections, session creation, and schema initialization.
-    Uses standard SQLAlchemy.
+    Manages database connections, session creation, and schema initialization.
+    Singleton pattern to ensure only one database connection pool exists.
     """
-    _GLOBAL_ENGINE = None
-    _GLOBAL_SESSION_MAKER = None
-    _INIT_LOCK = threading.Lock() # Keep lock for thread safety during init
+    _instance = None
+    _engine = None
+    _session_factory = None
+    _initialized = False
 
-    def __init__(self, connection_string=None):
+    def __new__(cls, *args, **kwargs):
+        """Implement singleton pattern."""
+        if cls._instance is None:
+            cls._instance = super(DatabaseManager, cls).__new__(cls)
+        return cls._instance
+
+    def __init__(self, connection_string: Optional[str] = None, db_dir: Optional[str] = None):
         """
-        Initialize the synchronous database manager.
+        Initialize the database manager if not already initialized.
 
         Args:
-            connection_string: SQLAlchemy connection string for the database.
-                               Must be compatible with synchronous drivers (e.g., sqlite:///, postgresql://, mysql+pymysql://).
+            connection_string: SQLAlchemy connection string. If None, uses SQLite.
+            db_dir: Directory for SQLite database file if using SQLite.
         """
-        db_path = os.path.join(DATABASE_DIR, 'conversations.db')
-        try:
-            os.makedirs(DATABASE_DIR, exist_ok=True)
-            logger.debug(f"Database directory ensured: {DATABASE_DIR}")
-        except Exception as e:
-            logger.error(f"Failed to create database directory {DATABASE_DIR}: {str(e)}")
-            raise
+        # Only initialize once due to singleton pattern
+        if self._initialized:
+            return
 
-        # Set default connection string if None is provided (use sync driver)
+        self.logger = logging.getLogger(f"{__name__}.DatabaseManager")
+
+        # Default database directory and path
+        if db_dir is None:
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            db_dir = os.path.join(base_dir, 'data', 'database')
+
+        os.makedirs(db_dir, exist_ok=True)
+        db_path = os.path.join(db_dir, 'conversations.db')
+
+        # Set connection string if not provided
         if connection_string is None:
-            # Default to standard sqlite driver
             connection_string = f'sqlite:///{db_path}'
-            logger.debug(f"Using default synchronous connection string: {connection_string}")
-        else:
-            # Remove async driver prefix if present from the async version
-            connection_string = connection_string.replace('+aiosqlite', '').replace('+asyncpg','').replace('+aiomysql','')
-
 
         self.connection_string = connection_string
-        self.engine = None
-        self.SessionLocal = None # Renamed from async_session
-        self._initialized = False # Instance initialization flag
+        self.logger.info(f"Initializing DatabaseManager with connection string: {connection_string}")
 
-        self.logger = get_logger(f"{__name__}.DatabaseManager")
-        # Attempt to initialize engine/session maker immediately
-        self._create_engine_sessionmaker()
-        self.logger.info(f"Initialized DatabaseManager with connection string: {connection_string}")
+        # Create engine and session factory
+        self._create_engine()
+        self._initialized = True
 
-
-    def _create_engine_sessionmaker(self):
-         """Creates the synchronous engine and session factory."""
-         # Use lock to prevent race conditions during global initialization
-         with DatabaseManager._INIT_LOCK:
-             # If global engine exists, reuse it
-             if DatabaseManager._GLOBAL_ENGINE is not None:
-                 self.engine = DatabaseManager._GLOBAL_ENGINE
-                 self.SessionLocal = DatabaseManager._GLOBAL_SESSION_MAKER
-                 self._initialized = True # Mark instance as initialized
-                 self.logger.debug("Using existing global synchronous engine and session factory.")
-                 return
-
-             # Create engine if it doesn't exist globally
-             self.logger.debug("Creating SQLAlchemy synchronous engine.")
-             try:
-                 self.engine = create_engine(
-                     self.connection_string,
-                     echo=False,
-                     # Standard pool settings (adjust as needed)
-                     pool_pre_ping=True,
-                     pool_recycle=3600, # Recycle connections hourly
-                     # SQLite specific args (needed if using threads with SQLite)
-                     connect_args={"check_same_thread": False} if self.connection_string.startswith('sqlite') else {}
-                 )
-                 # Create session factory
-                 self.SessionLocal = sessionmaker(
-                     autocommit=False, autoflush=False, bind=self.engine, class_=Session
-                 )
-                 # Store globally
-                 DatabaseManager._GLOBAL_ENGINE = self.engine
-                 DatabaseManager._GLOBAL_SESSION_MAKER = self.SessionLocal
-                 self._initialized = True # Mark instance as initialized
-                 self.logger.info("Synchronous engine and session factory created.")
-
-             except Exception as e:
-                 self.logger.error(f"Failed to create SQLAlchemy synchronous engine: {str(e)}", exc_info=True)
-                 self.engine = None
-                 self.SessionLocal = None
-                 raise RuntimeError(f"Failed to create database engine: {str(e)}") from e
-
-    def create_tables(self, sync_base):
-        """
-        Create all tables defined in the models (synchronously).
-
-        Args:
-            sync_base: The declarative base instance from your models file.
-        """
-        if not self.engine:
-            self.logger.error("Engine not initialized, cannot create tables.")
-            return False
-        self.logger.debug("Ensuring database tables exist (synchronously)...")
+    def _create_engine(self):
+        """Create SQLAlchemy engine and session factory."""
         try:
-            # Use the engine directly to create tables
-            # This is thread-safe if the engine is configured correctly (e.g., check_same_thread=False for SQLite)
-            sync_base.metadata.create_all(self.engine)
-            self.logger.info("Database tables created or verified successfully.")
+            # Configure engine with appropriate settings
+            engine_args = {
+                'echo': False,  # Set to True for SQL query logging
+                'pool_pre_ping': True,
+                'pool_recycle': 3600,  # Recycle connections after 1 hour
+            }
+
+            # Add SQLite-specific connect args if using SQLite
+            if self.connection_string.startswith('sqlite'):
+                engine_args['connect_args'] = {
+                    'check_same_thread': False  # Allow multi-threaded access for SQLite
+                }
+
+            # Create engine with connection pooling
+            self._engine = create_engine(
+                self.connection_string,
+                poolclass=QueuePool,
+                **engine_args
+            )
+
+            # Create session factory
+            self._session_factory = sessionmaker(
+                autocommit=False,
+                autoflush=False,
+                bind=self._engine
+            )
+
+            self.logger.info("SQLAlchemy engine and session factory created successfully")
+        except Exception as e:
+            self.logger.error(f"Error creating SQLAlchemy engine: {e}", exc_info=True)
+            raise
+
+    def create_tables(self):
+        """Create all database tables defined in models."""
+        if not self._engine:
+            self.logger.error("Cannot create tables: Engine not initialized")
+            return False
+
+        try:
+            Base.metadata.create_all(self._engine)
+            self.logger.info("Database tables created or verified successfully")
             return True
         except Exception as e:
-            self.logger.error(f"Error creating database tables: {str(e)}", exc_info=True)
+            self.logger.error(f"Error creating database tables: {e}", exc_info=True)
             return False
 
     @contextmanager
     def get_session(self) -> Generator[Session, None, None]:
         """
-        Provide a transactional scope around a series of operations (synchronous).
+        Provide a transactional scope around a series of operations.
 
         Usage:
             with db_manager.get_session() as session:
                 # Use session here
-        """
-        if not self.SessionLocal:
-            self.logger.error("Session factory not initialized. Cannot get session.")
-            raise RuntimeError("Database session factory not initialized.")
 
-        session = self.SessionLocal()
-        self.logger.debug(f"Sync Session {id(session)} acquired.")
+        Yields:
+            SQLAlchemy Session object
+        """
+        if not self._session_factory:
+            self.logger.error("Session factory not initialized")
+            raise RuntimeError("Database session factory not initialized")
+
+        session = self._session_factory()
+        session_id = id(session)
+        self.logger.debug(f"Session {session_id} acquired")
+
         try:
             yield session
             session.commit()
-            self.logger.debug(f"Sync Session {id(session)} committed.")
+            self.logger.debug(f"Session {session_id} committed")
         except Exception as e:
-            self.logger.error(f"Error in synchronous database session: {str(e)}", exc_info=True)
+            self.logger.error(f"Error in database session: {e}", exc_info=True)
             session.rollback()
-            self.logger.debug(f"Sync Session {id(session)} rolled back.")
-            raise # Re-raise the exception after rollback
+            self.logger.debug(f"Session {session_id} rolled back")
+            raise  # Re-raise the exception after rollback
         finally:
             session.close()
-            self.logger.debug(f"Sync Session {id(session)} closed.")
+            self.logger.debug(f"Session {session_id} closed")
+
+    def ping(self) -> bool:
+        """Test if the database connection is working."""
+        if not self._engine:
+            self.logger.error("Cannot ping: Engine not initialized")
+            return False
+
+        try:
+            with self._engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+            self.logger.debug("Database ping successful")
+            return True
+        except Exception as e:
+            self.logger.error(f"Database ping failed: {e}")
+            return False
 
     def close(self):
         """Dispose of the engine and close connections."""
-        # Note: Disposing the global engine affects all instances
-        with DatabaseManager._INIT_LOCK:
-            if DatabaseManager._GLOBAL_ENGINE is not None:
-                self.logger.info("Disposing synchronous database engine.")
-                try:
-                    DatabaseManager._GLOBAL_ENGINE.dispose()
-                    DatabaseManager._GLOBAL_ENGINE = None
-                    DatabaseManager._GLOBAL_SESSION_MAKER = None
-                    self._initialized = False # Reset instance state
-                except Exception as e:
-                    self.logger.error(f"Error disposing synchronous engine: {str(e)}", exc_info=True)
-            else:
-                 self.logger.debug("Synchronous engine already disposed or never created.")
+        if self._engine:
+            self.logger.info("Disposing database engine")
+            try:
+                self._engine.dispose()
+                self._engine = None
+                self._session_factory = None
+                self._initialized = False
+                self.logger.info("Database engine disposed successfully")
+            except Exception as e:
+                self.logger.error(f"Error disposing database engine: {e}", exc_info=True)
 
-    def ping(self) -> bool:
-        """Test if the database connection is working (synchronously)."""
-        if not self.engine:
-            self.logger.error("Cannot ping: Engine not initialized.")
-            return False
-        try:
-            with self.engine.connect() as connection:
-                connection.execute(text("SELECT 1"))
-            self.logger.debug("Database ping successful.")
-            return True
-        except Exception as e:
-            self.logger.error(f"Database ping failed: {str(e)}")
-            return False
+    # --- Dependency injection helper for FastAPI ---
 
-# --- End of Code ---
+    def get_db(self):
+        """
+        Dependency to use in FastAPI endpoints.
+
+        Usage:
+            @app.get("/items/")
+            def read_items(db: Session = Depends(db_manager.get_db)):
+                # Use db session here
+
+        Yields:
+            SQLAlchemy Session
+        """
+        with self.get_session() as session:
+            yield session
+
+
+# Initialize default database manager (can be overridden in app setup)
+default_db_manager = DatabaseManager()

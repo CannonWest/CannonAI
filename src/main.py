@@ -1,483 +1,628 @@
 """
-Main entry point for the CannonAI application using standard PyQt threading.
+Main FastAPI application for CannonAI.
+Provides API endpoints for conversations, messages, and AI interactions.
 """
-# 1. Standard library imports
-import sys
+
 import os
-os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
-
-import traceback
-import platform
+import uuid
+import logging
 from datetime import datetime
+from typing import List, Dict, Optional, Any, Union
+from pathlib import Path
 
-# 2. Third-party library imports (non-Qt)
-from dotenv import load_dotenv
+# FastAPI imports
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, status
+from fastapi import UploadFile, File, Form, Path as PathParam, Query, Body
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import APIKeyHeader
+from sqlalchemy.orm import Session
+import uvicorn
 
-# 3. Logging setup (must be before other app imports)
-from src.utils.logging_utils import configure_logging, get_logger
+# Pydantic models for request/response validation
+from pydantic import BaseModel, Field, validator
 
-configure_logging()
-logger = get_logger(__name__)
-
-# 4. Qt imports
-from PyQt6.QtWidgets import QApplication, QMessageBox
-from PyQt6.QtQml import QQmlApplicationEngine, QQmlError
-# Make sure QObject is imported if not already
-from PyQt6.QtCore import QUrl, QObject, QTimer, pyqtSlot, QCoreApplication, Qt, QThread, pyqtSignal
-
-# 5. App-specific service imports (Synchronous/Threaded versions)
+# Import models, services, and schemas
+from src.models.orm_models import Conversation, Message, FileAttachment
+from src.services.database.db_manager import DatabaseManager, default_db_manager
 from src.services.database.conversation_service import ConversationService
 from src.services.api.api_service import ApiService
 from src.services.storage.settings_manager import SettingsManager
 
-# 6. ViewModel imports (Threaded versions)
-from src.viewmodels.conversation_viewmodel import ConversationViewModel
-from src.viewmodels.settings_viewmodel import SettingsViewModel
+# --- Request/Response Models ---
 
-# 7. Utility imports
-from src.utils.qml_bridge import QmlBridge
+class ConversationCreate(BaseModel):
+    name: str = Field("New Conversation", min_length=1, max_length=100)
+    system_message: str = Field("You are a helpful assistant.", min_length=1)
 
+class ConversationUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    system_message: Optional[str] = Field(None, min_length=1)
 
-class ApplicationController(QObject):
-    """
-    Main application controller using standard PyQt threading model.
-    Manages initialization, QML engine, ViewModels, and application lifecycle.
-    """
-    # Step 1: Define the signal
-    initializationComplete = pyqtSignal()
+class MessageCreate(BaseModel):
+    content: str = Field(..., min_length=1)
+    parent_id: Optional[str] = None
 
+class ApiKeyValidation(BaseModel):
+    api_key: str = Field(..., min_length=1)
+
+class SearchParams(BaseModel):
+    query: str = Field(..., min_length=1)
+    conversation_id: Optional[str] = None
+    skip: int = Field(0, ge=0)
+    limit: int = Field(20, ge=1, le=100)
+
+# --- Configuration ---
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("app.log"),
+    ],
+)
+
+logger = logging.getLogger(__name__)
+
+# Define upload path
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+# Initialize services
+db_manager = default_db_manager
+conversation_service = ConversationService(db_manager)
+settings_manager = SettingsManager()
+api_service = ApiService()
+
+# Set API key from settings
+api_key = settings_manager.get_setting("api_key")
+if api_key:
+    api_service.set_api_key(api_key)
+    logger.info("API key loaded from settings")
+
+# Create FastAPI app
+app = FastAPI(
+    title="CannonAI API",
+    description="API for CannonAI chat application",
+    version="1.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+)
+
+# Configure CORS
+origins = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Exception Handlers ---
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": "Internal server error"},
+    )
+
+# --- Dependencies ---
+
+# Dependency for database sessions
+def get_db():
+    """Dependency for database sessions."""
+    with db_manager.get_session() as session:
+        yield session
+
+# WebSocket connection manager
+class ConnectionManager:
     def __init__(self):
-        """Initialize the application controller."""
-        # ... (constructor code remains largely the same) ...
-        super().__init__()
-        self.logger = get_logger("ApplicationController")
-        self.app = None
-        self.engine = None
-        self.qml_bridge = None
-        self.settings_manager = None
-        self.conversation_vm = None
-        self.settings_vm = None
-        self.api_service = None
-        self.db_service = None
-        self.main_window = None
+        self.active_connections: Dict[str, WebSocket] = {}
+
+    async def connect(self, websocket: WebSocket, client_id: str):
+        await websocket.accept()
+        self.active_connections[client_id] = websocket
+        logger.info(f"WebSocket connected: {client_id}")
+
+    def disconnect(self, client_id: str):
+        if client_id in self.active_connections:
+            del self.active_connections[client_id]
+            logger.info(f"WebSocket disconnected: {client_id}")
+
+    async def send_message(self, client_id: str, message: Dict[str, Any]):
+        if client_id in self.active_connections:
+            await self.active_connections[client_id].send_json(message)
+
+    async def broadcast(self, message: Dict[str, Any]):
+        """Send a message to all connected clients."""
+        for client_id in list(self.active_connections.keys()):
+            try:
+                await self.send_message(client_id, message)
+            except Exception as e:
+                logger.error(f"Error broadcasting to {client_id}: {e}")
+                self.disconnect(client_id)
+
+manager = ConnectionManager()
+
+# Serve static files (React/Vue/Angular build)
+STATIC_DIR = Path("static")
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+    logger.info(f"Serving static files from {STATIC_DIR}")
+
+# --- Health Check ---
+
+@app.get("/api/health")
+async def health_check():
+    """Check if the API is running."""
+    db_status = "online" if db_manager.ping() else "offline"
+    return {
+        "status": "healthy",
+        "version": "1.0.0",
+        "database": db_status,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+# --- Conversation Routes ---
+
+@app.get("/api/conversations")
+async def get_conversations(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
+    """Get all conversations with pagination."""
+    conversations = conversation_service.get_all_conversations(db, skip, limit)
+    return [conv.to_dict() for conv in conversations]
+
+@app.post("/api/conversations", status_code=status.HTTP_201_CREATED)
+async def create_conversation(
+    data: ConversationCreate,
+    db: Session = Depends(get_db)
+):
+    """Create a new conversation."""
+    conversation = conversation_service.create_conversation(db, data.name, data.system_message)
+    return conversation.to_dict()
+
+@app.get("/api/conversations/{conversation_id}")
+async def get_conversation(
+    conversation_id: str = PathParam(...),
+    db: Session = Depends(get_db)
+):
+    """Get a specific conversation by ID."""
+    conversation = conversation_service.get_conversation(db, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation.to_dict()
+
+@app.put("/api/conversations/{conversation_id}")
+async def update_conversation(
+    data: ConversationUpdate,
+    conversation_id: str = PathParam(...),
+    db: Session = Depends(get_db)
+):
+    """Update a conversation."""
+    # Filter out None values
+    update_data = {k: v for k, v in data.dict().items() if v is not None}
+    if not update_data:
+        return {"detail": "No updates provided"}
+
+    conversation = conversation_service.update_conversation(db, conversation_id, update_data)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation.to_dict()
+
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str = PathParam(...),
+    db: Session = Depends(get_db)
+):
+    """Delete a conversation."""
+    success = conversation_service.delete_conversation(db, conversation_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"success": True}
+
+@app.post("/api/conversations/{conversation_id}/duplicate")
+async def duplicate_conversation(
+    conversation_id: str = PathParam(...),
+    new_name: Optional[str] = Body(None),
+    db: Session = Depends(get_db)
+):
+    """Duplicate a conversation."""
+    conversation = conversation_service.duplicate_conversation(db, conversation_id, new_name)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found or duplication failed")
+    return conversation.to_dict()
+
+# --- Message Routes ---
+
+@app.get("/api/conversations/{conversation_id}/messages")
+async def get_messages(
+    conversation_id: str = PathParam(...),
+    db: Session = Depends(get_db)
+):
+    """Get all messages for a conversation."""
+    conversation = conversation_service.get_conversation_with_messages(db, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # Sort messages to ensure they're in chronological order
+    sorted_messages = sorted(conversation.messages, key=lambda msg: msg.timestamp)
+    return [msg.to_dict() for msg in sorted_messages]
+
+@app.get("/api/messages/{message_id}/branch")
+async def get_message_branch(
+    message_id: str = PathParam(...),
+    db: Session = Depends(get_db)
+):
+    """Get the branch of messages from root to the specified message."""
+    branch = conversation_service.get_message_branch(db, message_id)
+    if not branch:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return [msg.to_dict() for msg in branch]
+
+@app.post("/api/conversations/{conversation_id}/messages", status_code=status.HTTP_201_CREATED)
+async def add_message(
+    data: MessageCreate,
+    conversation_id: str = PathParam(...),
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db)
+):
+    """Add a user message and trigger assistant response."""
+    # First add the user message
+    user_message = conversation_service.add_user_message(db, conversation_id, data.content, data.parent_id)
+    if not user_message:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # Start background task to process assistant response
+    if background_tasks:
+        background_tasks.add_task(
+            process_assistant_response,
+            conversation_id=conversation_id,
+            user_message_id=user_message.id
+        )
+
+    return user_message.to_dict()
+
+async def process_assistant_response(conversation_id: str, user_message_id: str):
+    """Process assistant response in the background."""
+    with db_manager.get_session() as db:
+        # Get the message branch
+        branch = conversation_service.get_message_branch(db, user_message_id)
+        if not branch:
+            logger.error(f"Could not find message branch for {user_message_id}")
+            return
+
+        # Get settings
+        settings = settings_manager.get_settings()
 
         try:
-            self._initialize()
-        except Exception as e:
-            self.logger.critical(f"CRITICAL ERROR during application initialization: {e}", exc_info=True)
-            self._show_emergency_error(f"Initialization Failed: {str(e)}\n\nCheck logs for details.")
-            sys.exit(1)
+            # Stream response if WebSocket is active
+            client_id = f"conversation_{conversation_id}"
+            has_websocket = client_id in manager.active_connections
 
+            if has_websocket and settings.get("stream", True):
+                # Stream via WebSocket
+                content_buffer = []
 
-    def _initialize(self):
-        """Initialize the application components."""
-        self.logger.info("--- Starting Application Initialization (Threaded) ---")
+                async for chunk in api_service.get_streaming_completion_async(branch, settings):
+                    # Process chunk based on API type
+                    api_type = settings.get("api_type", "responses")
 
-        # ... (Steps 1-6 remain the same) ...
+                    if api_type == "responses":
+                        event_type = chunk.get('type')
+                        if event_type == 'response.output_text.delta' and 'delta' in chunk:
+                            text_chunk = chunk['delta']
+                            content_buffer.append(text_chunk)
+                            await manager.send_message(client_id, {
+                                "type": "stream",
+                                "content": text_chunk
+                            })
+                    else:  # chat_completions
+                        if 'choices' in chunk and chunk['choices']:
+                            delta = chunk['choices'][0].get('delta', {})
+                            if 'content' in delta and delta['content']:
+                                text_chunk = delta['content']
+                                content_buffer.append(text_chunk)
+                                await manager.send_message(client_id, {
+                                    "type": "stream",
+                                    "content": text_chunk
+                                })
 
-        # 1. Initialize QApplication
-        self.logger.debug("Step 1: Initializing QApplication...")
-        self.app = QApplication.instance() or QApplication(sys.argv)
-        QCoreApplication.setApplicationName("CannonAI")
-        QCoreApplication.setOrganizationName("YourOrganization")
-        QCoreApplication.setOrganizationDomain("yourdomain.com")
-        self.logger.debug("QApplication initialized.")
+                # Save the complete response
+                content = "".join(content_buffer)
 
-        # 2. Set up global exception handling
-        self.logger.debug("Step 2: Setting up global exception handler...")
-        sys.excepthook = self._global_exception_handler
-        self.logger.debug("Global exception handler set.")
+                # Get metadata from api_service
+                metadata = {
+                    "model_info": api_service.last_model,
+                    "token_usage": api_service.last_token_usage,
+                    "reasoning_steps": api_service.last_reasoning_steps,
+                    "response_id": api_service.last_response_id
+                }
 
-        # 3. Load environment variables
-        self.logger.debug("Step 3: Loading environment variables...")
-        self._load_env()
-        self.logger.debug("Environment variables loaded.")
+                # Add assistant message to database
+                assistant_message = conversation_service.add_assistant_message(
+                    db,
+                    conversation_id,
+                    content,
+                    parent_id=user_message_id,
+                    model_info=metadata.get("model_info"),
+                    token_usage=metadata.get("token_usage"),
+                    reasoning_steps=metadata.get("reasoning_steps"),
+                    response_id=metadata.get("response_id")
+                )
 
-        # 4. Initialize Services
-        self.logger.debug("Step 4: Creating service instances...")
-        self.settings_manager = SettingsManager()
-        self.logger.info("Created SettingsManager instance")
-
-        self.api_service = ApiService()
-        self.logger.info("Created ApiService instance")
-        api_key = os.environ.get("OPENAI_API_KEY") or self.settings_manager.get_settings().get("api_key")
-        if api_key:
-            self.api_service.set_api_key(api_key)
-            self.logger.info("Set API key for ApiService")
-        else:
-            self.logger.warning("No API key found in environment or settings.")
-
-        self.db_service = ConversationService()
-        if not self.db_service._initialized:
-             self.logger.critical("Database Service failed to initialize. Application might not function correctly.")
-             self._show_emergency_error("Database connection failed. Check logs.")
-             # sys.exit(1) # Optionally exit
-
-        self.logger.info("Created ConversationService instance")
-        self.logger.debug("Services created.")
-
-        # 5. Initialize ViewModels
-        self.logger.debug("Step 5: Initializing ViewModels...")
-        self.settings_vm = SettingsViewModel()
-        self.settings_vm.initialize(self.api_service)
-        # self.api_service.update_settings(self.settings_vm.get_settings()) # SettingsVM updates service on change
-        self.logger.info("Initialized SettingsViewModel.")
-
-        self.conversation_vm = ConversationViewModel()
-        self.conversation_vm.conversation_service = self.db_service
-        self.conversation_vm.api_service = self.api_service
-        self.conversation_vm.settings_vm = self.settings_vm
-        # Call the VM's initializer AFTER setting services
-        self.conversation_vm.initialize_viewmodel()
-        self.logger.info("Initialized ConversationViewModel.")
-        self.logger.debug("ViewModels initialized.")
-
-        # 6. Initialize QML Engine and Bridge
-        self.logger.debug("Step 6: Initializing QML engine and bridge...")
-        self._initialize_qml_engine()
-        self.logger.debug("QML engine and bridge initialized.")
-
-        # 7. Register ViewModels and Bridge with QML
-        self.logger.debug("Step 7: Registering context properties...")
-        if self.qml_bridge and self.engine:
-            self.qml_bridge.register_context_property("conversationViewModel", self.conversation_vm)
-            self.qml_bridge.register_context_property("settingsViewModel", self.settings_vm)
-            self.qml_bridge.register_context_property("bridge", self.qml_bridge)
-            # Step 3: Register the controller itself
-            self.engine.rootContext().setContextProperty("appController", self)
-            self.logger.info("Registered ViewModels, Bridge, and AppController with QML")
-
-            # Step 2: Emit the signal AFTER properties are set
-            self.initializationComplete.emit()
-            self.logger.info("Emitted initializationComplete signal.")
-
-        else:
-            self.logger.error("QML Bridge or Engine not initialized, cannot register properties or emit signal.")
-            raise RuntimeError("QML Bridge/Engine failed to initialize.")
-        self.logger.debug("Context properties registered.")
-
-        # 8. Load Main QML File
-        self.logger.debug("Step 8: Loading main QML file...")
-        self._load_qml()
-        self.logger.debug("Main QML file loaded successfully.")
-
-        # 9. Connect Signals
-        self.logger.debug("Step 9: Connecting essential QML signals...")
-        self._connect_qml_signals()
-        self.logger.debug("QML signals connected.")
-
-        # 10. Setup Application Exit Hook
-        self.logger.debug("Step 10: Setting up application exit handler...")
-        self.app.aboutToQuit.connect(self._on_about_to_quit)
-        self.logger.debug("Application exit handler set.")
-
-        self.logger.info("--- Application Initialization Sequence Complete ---")
-
-
-    def _load_env(self):
-        """Load environment variables from .env file"""
-        try:
-            load_dotenv()
-            if os.environ.get("OPENAI_API_KEY"):
-                self.logger.info("Loaded API key from environment variable.")
-        except Exception as e:
-            self.logger.warning(f"Could not load .env file: {e}")
-
-    def _initialize_qml_engine(self):
-        """Initialize the QML engine and the standard QML bridge."""
-        try:
-            self.engine = QQmlApplicationEngine()
-            # Connect signals *before* loading QML
-            self.engine.objectCreated.connect(self._on_object_created, Qt.ConnectionType.DirectConnection)
-            # Connect warnings signal to the correctly decorated slot
-            self.engine.warnings.connect(self._on_qml_warning) # <<< Connection should now work
-
-            self.engine.rootContext().setContextProperty("DEBUG_MODE", os.environ.get('DEBUG', 'False').lower() == 'true')
-
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            qml_dir = os.path.join(script_dir, "views", "qml")
-            self.engine.addImportPath(qml_dir)
-            self.engine.addImportPath(os.path.join(qml_dir, "components"))
-            self.engine.addImportPath(os.path.join(qml_dir, "utils"))
-            self.logger.debug(f"QML import paths added: {self.engine.importPathList()}")
-
-            self.qml_bridge = QmlBridge(self.engine)
-            if hasattr(self.qml_bridge, 'errorOccurred'):
-                self.qml_bridge.errorOccurred.connect(self._on_bridge_error)
-
-            self.logger.info("QML engine and QmlBridge initialized successfully")
-        except Exception as e:
-            self.logger.critical(f"Error initializing QML engine: {e}", exc_info=True)
-            raise
-
-    def _load_qml(self):
-        """Load the main QML file."""
-        try:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            qml_path = os.path.join(script_dir, "views", "qml", "MainWindow.qml")
-            if not os.path.exists(qml_path):
-                raise FileNotFoundError(f"QML file not found: {qml_path}")
-
-            self.logger.info(f"Attempting to load QML file: {qml_path}")
-            qml_url = QUrl.fromLocalFile(qml_path)
-            self.engine.load(qml_url)
-
-            if not self.engine.rootObjects():
-                self.logger.critical("Failed to load QML file - no root objects created.")
-                raise RuntimeError("Failed to load QML interface. Check logs for QML errors.")
+                # Notify completion
+                if assistant_message:
+                    await manager.send_message(client_id, {
+                        "type": "complete",
+                        "message": assistant_message.to_dict()
+                    })
             else:
-                self.logger.info("Root QML objects created.")
-                self.main_window = self.engine.rootObjects()[0]
-                if not self.main_window:
-                     self.logger.error("QML loaded but main_window object is None.")
-                     raise RuntimeError("Failed to get main window object after QML load.")
-                elif self.main_window.objectName() != "mainWindow":
-                     self.logger.warning(f"MainWindow QML root object found, but objectName is not 'mainWindow' (found: '{self.main_window.objectName()}').")
+                # Non-streaming response
+                response = await api_service.get_completion_async(branch, settings)
 
-        except FileNotFoundError as e:
-             self.logger.critical(f"{e}", exc_info=True)
-             raise
-        except Exception as e:
-            self.logger.critical(f"Error during QML loading or object creation: {e}", exc_info=True)
-            raise
+                # Add assistant message to database
+                assistant_message = conversation_service.add_assistant_message(
+                    db,
+                    conversation_id,
+                    response.get("content", ""),
+                    parent_id=user_message_id,
+                    model_info=response.get("model"),
+                    token_usage=response.get("token_usage"),
+                    reasoning_steps=response.get("reasoning_steps"),
+                    response_id=response.get("response_id")
+                )
 
-    def _connect_qml_signals(self):
-        """Connect essential QML signals to Python slots."""
-        try:
-            if not self.main_window:
-                 self.logger.error("Cannot connect QML signals: Main window object not available.")
-                 return
-
-            if hasattr(self.main_window, 'cleanupRequested'):
-                 self.main_window.cleanupRequested.connect(self._on_about_to_quit)
-                 self.logger.info("Connected mainWindow.cleanupRequested signal to _on_about_to_quit.")
-            else:
-                 self.logger.warning("MainWindow QML object does not have 'cleanupRequested' signal.")
-
-            if hasattr(self.main_window, 'errorOccurred'):
-                 self.main_window.errorOccurred.connect(self._on_qml_error)
-                 self.logger.info("Connected mainWindow.errorOccurred signal to _on_qml_error.")
+                # Notify via WebSocket if available
+                if has_websocket and assistant_message:
+                    await manager.send_message(client_id, {
+                        "type": "message",
+                        "message": assistant_message.to_dict()
+                    })
 
         except Exception as e:
-            self.logger.error(f"Error connecting QML signals: {e}", exc_info=True)
+            logger.error(f"Error processing assistant response: {e}", exc_info=True)
+            # Notify error via WebSocket if available
+            if client_id in manager.active_connections:
+                await manager.send_message(client_id, {
+                    "type": "error",
+                    "message": str(e)
+                })
 
-    # --- Slots for Application Lifecycle and Errors ---
+@app.post("/api/conversations/{conversation_id}/retry")
+async def retry_last_response(
+    conversation_id: str = PathParam(...),
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db)
+):
+    """Retry the last assistant response for this conversation."""
+    # Get the conversation
+    conversation = conversation_service.get_conversation(db, conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
 
-    @pyqtSlot()
-    def _on_about_to_quit(self):
-        """Slot called before application quit."""
-        self.logger.info("AboutToQuit signal received. Starting application cleanup...")
-        self._cleanup()
+    # Get the current message
+    current_message = db.get(Message, conversation.current_node_id)
+    if not current_message:
+        raise HTTPException(status_code=404, detail="Current message not found")
 
-    @pyqtSlot(QObject, QUrl)
-    def _on_object_created(self, obj: QObject, url: QUrl):
-        """Slot connected to QQmlApplicationEngine.objectCreated signal."""
-        if obj is None and url.isValid() and url.fileName() == "MainWindow.qml":
-            self.logger.error(f"Failed to create root QML object from URL: {url.toString()}. Check QML warnings.")
+    # Find the parent user message
+    if current_message.role == "assistant" and current_message.parent_id:
+        user_message_id = current_message.parent_id
+    else:
+        # If current message is not an assistant message or has no parent
+        raise HTTPException(status_code=400, detail="Cannot retry: current message is not an assistant response")
 
-    # Decorator changed to specify C++ signature
-    @pyqtSlot('QList<QQmlError>')
-    def _on_qml_warning(self, warnings: list): # Keep Python hint as list
-        """Handle QML warnings/errors reported by the engine."""
-        if warnings:
-            for warning in warnings: # warnings is now a Python list of QQmlError objects
-                try:
-                    detail = warning.toString()
-                    self.logger.warning(f"QML Info: {detail}")
-                    if "module \"QtQuick.Controls\" is not installed" in detail:
-                        self.logger.critical("Essential QML module QtQuick.Controls not found!")
-                    if "Cannot load library" in detail and "plugin.dll" in detail:
-                         self.logger.critical(f"Failed to load Qt plugin: {detail}. Check PyQt6 installation.")
-                    if "Type Menu unavailable" in detail or "Type MenuItem unavailable" in detail:
-                         self.logger.critical(f"Basic QML Control type unavailable: {detail}. Check PyQt6 installation.")
-                    if "Binding loop detected" in detail:
-                        self.logger.error("QML binding loop detected - review QML bindings.")
-                except Exception as e:
-                    # Log error processing the warning object itself
-                    self.logger.warning(f"Error processing QML warning object of type {type(warning)}: {e}")
+    # Start background task to process new assistant response
+    if background_tasks:
+        background_tasks.add_task(
+            process_assistant_response,
+            conversation_id=conversation_id,
+            user_message_id=user_message_id
+        )
 
-    @pyqtSlot(str, str)
-    def _on_bridge_error(self, error_type: str, message: str):
-        """Handle errors reported by the QML bridge."""
-        self.logger.error(f"QML Bridge Error ({error_type}): {message}")
+    return {"status": "Retry in progress"}
 
-    @pyqtSlot(str)
-    def _on_qml_error(self, message: str):
-        """Handles errors emitted from QML side."""
-        self.logger.error(f"Error signal received from QML: {message}")
+@app.post("/api/conversations/{conversation_id}/navigate/{message_id}")
+async def navigate_to_message(
+    conversation_id: str = PathParam(...),
+    message_id: str = PathParam(...),
+    db: Session = Depends(get_db)
+):
+    """Navigate to a specific message in the conversation."""
+    success = conversation_service.navigate_to_message(db, conversation_id, message_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Navigation failed")
+    return {"success": True}
 
-    def _cleanup(self):
-        """Perform application cleanup: Stop threads, close services."""
-        self.logger.info("Executing cleanup tasks...")
-        # Cleanup ViewModels first to stop threads
-        if self.conversation_vm and hasattr(self.conversation_vm, 'cleanup'):
-            self.logger.debug("Cleaning up ConversationViewModel...")
-            try: self.conversation_vm.cleanup()
-            except Exception as e: self.logger.error(f"Error cleaning up ConversationViewModel: {e}", exc_info=True)
-        if self.settings_vm and hasattr(self.settings_vm, 'cleanup'):
-            self.logger.debug("Cleaning up SettingsViewModel...")
-            try: self.settings_vm.cleanup()
-            except Exception as e: self.logger.error(f"Error cleaning up SettingsViewModel: {e}", exc_info=True)
+# --- Settings Routes ---
 
-        # Close Services
-        if self.db_service and hasattr(self.db_service, 'close'):
-            self.logger.debug("Closing DB service...")
-            try: self.db_service.close()
-            except Exception as e: self.logger.error(f"Error closing DB service: {e}", exc_info=True)
-        if self.api_service and hasattr(self.api_service, 'close'):
-            self.logger.debug("Closing API service...")
-            try: self.api_service.close()
-            except Exception as e: self.logger.error(f"Error closing API service: {e}", exc_info=True)
+@app.get("/api/settings")
+async def get_settings():
+    """Get application settings (for frontend)."""
+    return settings_manager.get_frontend_settings()
 
-        # Cleanup Bridge
-        if self.qml_bridge and hasattr(self.qml_bridge, 'cleanup'):
-            self.logger.debug("Cleaning up QmlBridge...")
-            self.qml_bridge.cleanup()
+@app.put("/api/settings")
+async def update_settings(settings: Dict[str, Any] = Body(...)):
+    """Update application settings."""
+    updated = settings_manager.update_settings(settings)
 
-        self.logger.info("Application cleanup finished.")
+    # Update API key in ApiService if present
+    if "api_key" in settings and settings["api_key"]:
+        api_service.set_api_key(settings["api_key"])
 
-    # --- Global Error Handling ---
-    def _global_exception_handler(self, exc_type, exc_value, exc_traceback):
-        """Global exception handler for uncaught exceptions."""
-        error_message = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-        self.logger.critical(f"Unhandled exception caught by global handler:\n{error_message}")
-        self._show_emergency_error(f"An unexpected error occurred: {exc_value}\n\nCheck logs for details.")
-        try:
-             self._cleanup()
-        except Exception as cleanup_e:
-             self.logger.error(f"Error during cleanup in global exception handler: {cleanup_e}", exc_info=True)
-        if self.app:
-             self.app.exit(1)
-        else:
-             sys.exit(1)
+    return updated
 
-    def _show_emergency_error(self, message: str):
-        """Displays a simple error message box if GUI is available."""
-        self.logger.error(f"Displaying emergency error: {message}")
-        try:
-            app = QApplication.instance()
-            if app:
-                 if QThread.currentThread() != app.thread():
-                      QTimer.singleShot(0, lambda: self._display_qmessagebox(message))
-                 else:
-                      self._display_qmessagebox(message)
-            else:
-                 print(f"CRITICAL ERROR (NO GUI): {message}", file=sys.stderr)
-                 self._try_tkinter_fallback(message)
-        except ImportError:
-             print(f"CRITICAL ERROR (PyQt6.QtWidgets not available): {message}", file=sys.stderr)
-             self._try_tkinter_fallback(message)
-        except Exception as e:
-             print(f"ERROR displaying error message: {e}", file=sys.stderr)
-             print(f"Original error: {message}", file=sys.stderr)
-             self._try_tkinter_fallback(message)
+@app.post("/api/settings/validate-api-key")
+async def validate_api_key(data: ApiKeyValidation):
+    """Validate an API key."""
+    is_valid, message = await api_service.validate_api_key(data.api_key)
+    return {"valid": is_valid, "message": message}
 
-    def _display_qmessagebox(self, message: str):
-        """Helper to display QMessageBox (must be called on main thread)."""
-        try:
-            msg_box = QMessageBox()
-            msg_box.setIcon(QMessageBox.Icon.Critical)
-            msg_box.setWindowTitle("CannonAI - Critical Error")
-            msg_box.setText("A critical error occurred:")
-            msg_box.setInformativeText(message)
-            msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
-            msg_box.exec()
-        except Exception as e:
-             self.logger.error(f"Failed to display QMessageBox: {e}", exc_info=True)
-             print(f"CRITICAL ERROR (QMessageBox failed): {message}", file=sys.stderr)
+@app.post("/api/settings/reset-to-defaults")
+async def reset_settings_to_defaults():
+    """Reset settings to defaults (preserving API key)."""
+    return settings_manager.reset_to_defaults()
 
+# --- Search Routes ---
 
-    def _try_tkinter_fallback(self, message: str):
-        """Attempt to show a Tkinter error box if Qt fails."""
-        try:
-            import tkinter as tk
-            from tkinter import messagebox
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror("CannonAI - Critical Error", f"Application failed:\n\n{message}")
-            root.destroy()
-        except ImportError: pass
-        except Exception as tk_e: print(f"Error showing Tkinter fallback message: {tk_e}", file=sys.stderr)
+@app.get("/api/search")
+async def search_messages(
+    query: str = Query(..., min_length=1),
+    conversation_id: Optional[str] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db)
+):
+    """Search for messages containing the query text."""
+    results = conversation_service.search_conversations(db, query, conversation_id, skip, limit)
+    return results
 
-    # --- Run Method ---
-    def run(self):
-        """Run the application's main event loop."""
-        if not self.app or not self.engine or not self.main_window:
-             self.logger.critical("Application not fully initialized. Cannot run.")
-             self._show_emergency_error("Application failed to initialize properly.")
-             return 1
+# --- WebSocket Route ---
 
-        self.logger.info("Entering Qt main event loop (app.exec)...")
-        result = self.app.exec()
-        self.logger.info(f"Exited Qt main event loop with result: {result}")
-        return result
-
-
-def main():
-    """Main application entry point."""
-    logger.info(f"--- Starting CannonAI Application ---")
-    logger.info(f"Python Version: {sys.version}")
-
-    # Correctly get PyQt/Qt versions
-    qt_version = 'N/A'
-    pyqt_version = 'N/A'
+@app.websocket("/api/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    """WebSocket endpoint for streaming responses."""
+    await manager.connect(websocket, client_id)
     try:
-        from PyQt6 import Qt # Import the Qt submodule
-        qt_version = getattr(Qt, 'QT_VERSION_STR', 'N/A')
-        pyqt_version = getattr(Qt, 'PYQT_VERSION_STR', 'N/A')
-    except ImportError:
-        logger.error("PyQt6 library not found.")
-    except AttributeError:
-         logger.error("Could not retrieve Qt/PyQt version strings.")
+        while True:
+            # Keep connection alive and wait for messages
+            data = await websocket.receive_json()
+            # Here you could handle client-to-server messages if needed
 
-    logger.info(f"PyQt Version: {pyqt_version}") # <<< UPDATED
-    logger.info(f"Qt Version: {qt_version}")     # <<< UPDATED
-    logger.info(f"OS: {platform.system()} {platform.release()}")
-    logger.info(f"Application Directory: {os.path.dirname(os.path.abspath(__file__))}")
-
-    controller = None
-    exit_code = 0
-    try:
-        controller = ApplicationController()
-        # Ensure controller is fully initialized before running
-        if controller and controller.app and controller.engine and controller.main_window:
-             exit_code = controller.run()
-        else:
-             logger.critical("ApplicationController initialization failed before run().")
-             # Attempt to show error even if controller is partial
-             msg = "Application failed to initialize properly before running."
-             if controller and hasattr(controller, '_show_emergency_error'):
-                  controller._show_emergency_error(msg)
-             else: # Fallback if even controller init failed badly
-                  print(f"FATAL ERROR: {msg}", file=sys.stderr)
-                  # Attempt Tkinter fallback directly if possible
-                  try:
-                      ApplicationController._try_tkinter_fallback(None, msg + "\n\nCheck logs for details.")
-                  except Exception: pass # Ignore errors in fallback
-             exit_code = 1 # Ensure non-zero exit code
-
+            # Example of handling incoming messages:
+            if "type" in data:
+                if data["type"] == "ping":
+                    await manager.send_message(client_id, {"type": "pong"})
+    except WebSocketDisconnect:
+        manager.disconnect(client_id)
     except Exception as e:
-        # General exception handling remains the same...
-        logger.critical(f"Fatal error during application startup or run: {e}", exc_info=True)
-        if controller and controller.app:
-             controller._show_emergency_error(f"Fatal Error: {e}\n\nCheck logs for details.")
-        else:
-             print(f"\nFATAL ERROR (Initialization Failed):\n{e}\n", file=sys.stderr)
-             traceback.print_exc(file=sys.stderr)
-             if not controller or not controller.app:
-                  # Fallback remains the same...
-                  class DummyController:
-                      def _try_tkinter_fallback(self, msg): ApplicationController._try_tkinter_fallback(None, msg) # Call static-like
-                  dummy_controller = DummyController()
-                  dummy_controller._try_tkinter_fallback(f"Application failed to start:\n\n{e}\n\nCheck logs for details.")
-        exit_code = 1
-    finally:
-        logger.info(f"--- CannonAI Application Shutdown (Exit Code: {exit_code}) ---")
-        # Explicitly exit Python process if controller.run() didn't execute or failed early
-        # This ensures the script terminates even if the Qt event loop wasn't entered/exited cleanly.
-        sys.exit(exit_code) # Use sys.exit() in the final 'finally' block
+        logger.error(f"WebSocket error: {e}", exc_info=True)
+        manager.disconnect(client_id)
 
+# --- File Routes ---
 
+@app.post("/api/files")
+async def upload_file(
+    file: UploadFile = File(...),
+):
+    """Upload a file and return metadata."""
+    # Create a unique ID for the file
+    file_id = str(uuid.uuid4())
+
+    # Get file content and metadata
+    content = await file.read()
+    file_size = len(content)
+
+    # Sanitize filename to prevent path traversal attacks
+    safe_filename = os.path.basename(file.filename)
+
+    # Save file to disk
+    file_path = UPLOAD_DIR / f"{file_id}_{safe_filename}"
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    # Get MIME type
+    mime_type = file.content_type or "application/octet-stream"
+
+    # TODO: Count tokens if it's a text file
+    token_count = 0
+    if mime_type.startswith("text/") or mime_type in ("application/json", "application/xml"):
+        # Implement token counting here
+        pass
+
+    return {
+        "id": file_id,
+        "file_name": safe_filename,
+        "mime_type": mime_type,
+        "file_size": file_size,
+        "token_count": token_count,
+        "file_path": str(file_path)
+    }
+
+@app.get("/api/files/{file_id}")
+async def get_file(file_id: str = PathParam(...)):
+    """Download a file by ID."""
+    # Find the file in the uploads directory
+    for filename in os.listdir(UPLOAD_DIR):
+        if filename.startswith(file_id):
+            file_path = UPLOAD_DIR / filename
+            return FileResponse(
+                path=file_path,
+                filename=filename[len(file_id)+1:],  # Original filename without ID prefix
+                media_type="application/octet-stream"
+            )
+
+    raise HTTPException(status_code=404, detail="File not found")
+
+@app.delete("/api/files/{file_id}")
+async def delete_file(file_id: str = PathParam(...)):
+    """Delete an uploaded file."""
+    # Find the file in the uploads directory
+    for filename in os.listdir(UPLOAD_DIR):
+        if filename.startswith(file_id):
+            file_path = UPLOAD_DIR / filename
+            os.remove(file_path)
+            return {"success": True}
+
+    raise HTTPException(status_code=404, detail="File not found")
+
+@app.post("/api/messages/{message_id}/attachments")
+async def add_file_attachment(
+    message_id: str = PathParam(...),
+    file_info: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Add a file attachment to a message."""
+    attachment = conversation_service.add_file_attachment(db, message_id, file_info)
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return attachment.to_dict()
+
+# --- Main Routes ---
+
+@app.get("/")
+async def root():
+    """Serve the frontend application."""
+    index_path = Path("static/index.html")
+    if index_path.exists():
+        return FileResponse(index_path)
+    else:
+        return {"message": "CannonAI API Server is running. Frontend not yet deployed."}
+
+@app.get("/{path:path}")
+async def catch_all(path: str):
+    """Catch-all route to serve the frontend for client-side routing."""
+    index_path = Path("static/index.html")
+    if index_path.exists():
+        return FileResponse(index_path)
+    else:
+        raise HTTPException(status_code=404, detail="Resource not found")
+
+# Run the application (for development)
 if __name__ == "__main__":
-    # The main() function now handles calling sys.exit() itself.
-    main()
+    # Ensure db is initialized
+    if not db_manager.ping():
+        logger.warning("Database connection failed. Attempting to create tables...")
+        db_manager.create_tables()
+
+    # Start the server
+    port = int(os.environ.get("PORT", 8000))
+    logger.info(f"Starting FastAPI server on port {port}")
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
