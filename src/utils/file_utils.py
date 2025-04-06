@@ -11,7 +11,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 # Third-party imports
 import tiktoken
-# Removed QObject/pyqtSignal as AsyncFileProcessor is gone
 
 # Local application imports
 from src.utils.logging_utils import get_logger, log_exception

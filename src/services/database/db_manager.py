@@ -1,3 +1,4 @@
+#src/services/database/db_manager.py
 """
 Database manager for SQLAlchemy operations.
 Adapted for web-based architecture with FastAPI.

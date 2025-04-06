@@ -1,3 +1,4 @@
+#src/services/database/conversation_service.py
 """
 Service class for managing conversations and messages using SQLAlchemy.
 Adapted for web-based architecture with FastAPI.

@@ -1,3 +1,4 @@
+# src/utils/constants.py
 """
 Constants and configuration values for the OpenAI Chat application.
 """

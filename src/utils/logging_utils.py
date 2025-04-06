@@ -1,3 +1,4 @@
+# src/utils/logging_utils.py
 """
 Logging utilities for the OpenAI Chat application.
 """

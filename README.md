@@ -114,4 +114,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## Acknowledgments
 
 - [OpenAI](https://openai.com/) for providing the API used in this application
-- [PyQt](https://www.riverbankcomputing.com/software/pyqt/) for the GUI framework

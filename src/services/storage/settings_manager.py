@@ -1,3 +1,4 @@
+#src/services/storage/settings_manager.py
 """
 Settings manager for saving and loading application configuration.
 Adapted for web-based architecture with FastAPI.

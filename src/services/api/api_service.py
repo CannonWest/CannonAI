@@ -1,3 +1,4 @@
+#src/services/api/api_service.py
 """
 Service for interacting with OpenAI API.
 Adapted for web-based architecture with FastAPI.

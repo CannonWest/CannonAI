@@ -1,3 +1,4 @@
+#src/services/database/__init__.py
 """
 Database services package for the CannonAI application.
 Provides synchronous database operations using SQLAlchemy 2.0.
