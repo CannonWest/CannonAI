@@ -1,42 +1,35 @@
-import React, { useEffect, useRef } from 'react';
-import Message from './Message';
+import React, { useRef, useEffect } from 'react';
 import MessageInput from './MessageInput';
-import { useSettings } from '../context/SettingsContext';
+import Message from './Message';
+import TypingIndicator from './TypingIndicator';
 
 const ChatInterface = ({ conversationContext }) => {
-  const messagesEndRef = useRef(null);
   const { 
     currentConversation, 
-    messages,
-    isStreaming,
-    sendUserMessage,
-    streamResponse,
-    navigateHistory
+    messages, 
+    isStreaming, 
+    sendMessage, 
+    navigateToMessage 
   } = conversationContext || {};
   
-  const { settings } = useSettings();
+  const messagesEndRef = useRef(null);
   
-  // Scroll to bottom when messages change
+  // Auto-scroll to bottom when messages update or when streaming
   useEffect(() => {
     if (messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages]);
+  }, [messages, isStreaming]);
   
   const handleSendMessage = (content) => {
-    if (settings?.stream) {
-      // Use streaming response
-      streamResponse?.(content);
-    } else {
-      // Use non-streaming (send and wait for response)
-      sendUserMessage?.(content);
+    if (sendMessage && content.trim()) {
+      sendMessage(content);
     }
   };
   
-  // Handle navigation to a specific message in history
   const handleNavigate = (messageId) => {
-    if (messageId) {
-      navigateHistory?.(messageId);
+    if (navigateToMessage) {
+      navigateToMessage(messageId);
     }
   };
   
@@ -56,13 +49,16 @@ const ChatInterface = ({ conversationContext }) => {
                 <p>Send a message to start chatting with the AI.</p>
               </div>
             ) : (
-              messages.map(message => (
-                <Message 
-                  key={message.id || `streaming-${Date.now()}`} 
-                  message={message}
-                  onNavigate={handleNavigate}
-                />
-              ))
+              <>
+                {messages.map(message => (
+                  <Message 
+                    key={message.id || `tmp-${Date.now()}-${Math.random()}`} 
+                    message={message}
+                    onNavigate={handleNavigate}
+                  />
+                ))}
+                {isStreaming && <TypingIndicator />}
+              </>
             )}
             <div ref={messagesEndRef} />
           </div>
@@ -70,7 +66,7 @@ const ChatInterface = ({ conversationContext }) => {
           <MessageInput 
             onSend={handleSendMessage} 
             disabled={isStreaming}
-            placeholder={isStreaming ? "Waiting for response..." : "Type a message..."}
+            placeholder={isStreaming ? "AI is responding..." : "Type your message here..."}
           />
         </>
       )}

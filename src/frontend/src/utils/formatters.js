@@ -27,11 +27,10 @@ export const formatDate = (dateString) => {
 
 // Format token usage for display
 export const formatTokenUsage = (usage) => {
-  if (!usage) return 'No token usage data';
-  
-  const promptTokens = usage.prompt_tokens || 0;
-  const completionTokens = usage.completion_tokens || 0;
-  const totalTokens = usage.total_tokens || (promptTokens + completionTokens);
+  // Extract token counts from usage object
+  const promptTokens = usage?.prompt_tokens || 0;
+  const completionTokens = usage?.completion_tokens || 0;
+  const totalTokens = usage?.total_tokens || promptTokens + completionTokens;
   
   // Calculate approximate cost (very rough estimate)
   // These rates are approximate and will vary by model

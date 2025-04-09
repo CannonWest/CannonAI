@@ -1,5 +1,4 @@
-import React, { useState } from 'react';
-import { formatDate } from '../utils/formatters';
+import React, { useState, useEffect } from 'react';
 
 const ConversationList = ({ 
   conversations, 
@@ -9,27 +8,60 @@ const ConversationList = ({
   onDelete,
   onRename
 }) => {
-  const [searchTerm, setSearchTerm] = useState('');
-  const [showConfirmDelete, setShowConfirmDelete] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [newName, setNewName] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showConfirmDelete, setShowConfirmDelete] = useState(null);
   
   // Filter conversations based on search term
-  const filteredConversations = conversations.filter(conv => 
-    conv.name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredConversations = searchTerm
+    ? conversations.filter(conv => 
+        conv.name.toLowerCase().includes(searchTerm.toLowerCase()))
+    : conversations;
+  
+  // Reset confirm delete when clicking elsewhere
+  useEffect(() => {
+    const handleClickOutside = () => {
+      setShowConfirmDelete(null);
+    };
+    
+    document.addEventListener('click', handleClickOutside);
+    return () => {
+      document.removeEventListener('click', handleClickOutside);
+    };
+  }, []);
   
   const handleDelete = (id, e) => {
     e.stopPropagation(); // Prevent triggering selection
     
     if (showConfirmDelete === id) {
-      // Confirmed - actually delete
+      // Confirmed delete
       onDelete(id);
       setShowConfirmDelete(null);
     } else {
       // First click - show confirmation
       setShowConfirmDelete(id);
+      e.nativeEvent.stopImmediatePropagation(); // Prevent document click from clearing it immediately
     }
+  };
+  
+  const formatDate = (timestamp) => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    const now = new Date();
+    
+    // Same day - show time only
+    if (date.toDateString() === now.toDateString()) {
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    
+    // This year - show month and day
+    if (date.getFullYear() === now.getFullYear()) {
+      return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    }
+    
+    // Different year - show date with year
+    return date.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
   };
   
   const handleEdit = (conv, e) => {

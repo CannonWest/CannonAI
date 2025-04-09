@@ -3,16 +3,37 @@
  * Note: This is a very rough estimate. For accurate counts, you would need a tokenizer like GPT-2/3 BPE
  */
 
-// Simple estimator - roughly 4 characters per token on average
+/**
+ * Simple token estimator for displaying approximate token counts.
+ * This is a rough approximation - actual tokenization will vary by model.
+ * 
+ * For production use, consider using a more accurate tokenizer like:
+ * - GPT-3 Tokenizer (https://github.com/latitudegames/GPT-3-Encoder)
+ * - tiktoken (for Python)
+ */
+
+// Very rough approximation - for English text:
+// 1 token ≈ 4 characters or 0.75 words
 export const estimateTokenCount = (text) => {
   if (!text) return 0;
   
-  // Count the characters, excluding whitespace
-  const charCount = text.length;
+  // Remove excess whitespace
+  const trimmedText = text.trim().replace(/\s+/g, ' ');
   
-  // Apply a simple ratio (GPT models use roughly 4 chars per token on average)
-  return Math.ceil(charCount / 4);
+  // Count characters and words
+  const charCount = trimmedText.length;
+  const wordCount = trimmedText.split(' ').length;
+  
+  // Use the average of character-based and word-based estimates
+  const charBasedEstimate = Math.ceil(charCount / 4);
+  const wordBasedEstimate = Math.ceil(wordCount / 0.75);
+  
+  // Return the average, with a minimum of 1 token for any non-empty text
+  return Math.max(1, Math.round((charBasedEstimate + wordBasedEstimate) / 2));
 };
+
+// For more accurate estimation, this function can be replaced with
+// a proper tokenizer implementation in the future
 
 // More refined estimation based on word boundaries and special tokens
 export const estimateTokenCountBetter = (text) => {

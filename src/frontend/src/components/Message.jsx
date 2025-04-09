@@ -1,134 +1,108 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { formatDate, formatTokenUsage } from '../utils/formatters';
-
-// Simple component for code blocks - no syntax highlighting
-const SimpleCodeBlock = ({ children, className }) => {
-  // Extract language from className if available
-  const language = className ? className.replace('language-', '') : '';
-  return (
-    <pre className={`code-block ${language ? `language-${language}` : ''}`}>
-      <code>{children}</code>
-    </pre>
-  );
-};
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { formatTokenUsage } from '../utils/formatters';
 
 const Message = ({ message, onNavigate }) => {
-  const [showDetails, setShowDetails] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const { role, content, reasoning, token_usage, timestamp, id } = message || {};
   
   if (!message) return null;
   
-  const { role, content, timestamp, token_usage, is_streaming } = message;
+  const formattedTime = timestamp ? new Date(timestamp).toLocaleTimeString() : '';
   
   // Determine message class based on role
-  const messageClass = `message message-${role}`;
+  const messageClass = `message message-${role || 'user'}`;
   
-  // Get user-friendly role name
-  const getRoleName = (role) => {
-    switch (role) {
-      case 'user': return 'You';
-      case 'assistant': return 'AI';
-      case 'system': return 'System';
-      default: return role;
+  // Format the display name based on role
+  const displayName = role === 'user' ? 'You' : 
+                      role === 'system' ? 'System' : 
+                      role === 'assistant' ? 'AI Assistant' : 
+                      'Unknown';
+  
+  // Custom renderer for code blocks in markdown
+  const renderers = {
+    code({ node, inline, className, children, ...props }) {
+      const match = /language-(\w+)/.exec(className || '');
+      const language = match ? match[1] : '';
+      
+      return !inline && language ? (
+        <div className="code-block-wrapper">
+          <div className="code-block-header">
+            <span className="code-language">{language}</span>
+            <button 
+              className="copy-button"
+              onClick={() => {
+                navigator.clipboard.writeText(String(children).replace(/\n$/, ''));
+              }}
+            >
+              Copy
+            </button>
+          </div>
+          <SyntaxHighlighter
+            language={language}
+            PreTag="div"
+            style={{
+              backgroundColor: '#282a36',
+              padding: '1rem',
+              borderRadius: '0 0 4px 4px',
+              overflow: 'auto'
+            }}
+            {...props}
+          >
+            {String(children).replace(/\n$/, '')}
+          </SyntaxHighlighter>
+        </div>
+      ) : (
+        <code className={className} {...props}>
+          {children}
+        </code>
+      );
     }
   };
   
-  // Render file attachments if present
-  const renderAttachments = () => {
-    if (!message.file_attachments || message.file_attachments.length === 0) {
-      return null;
-    }
-    
-    return (
-      <div className="message-attachments">
-        <h4>Attachments:</h4>
-        <ul>
-          {message.file_attachments.map(file => (
-            <li key={file.id} className="attachment">
-              <span className="attachment-name">{file.display_name || file.file_name}</span>
-              <span className="attachment-type">{file.mime_type}</span>
-              {file.token_count > 0 && 
-                <span className="attachment-tokens">{file.token_count} tokens</span>
-              }
-            </li>
-          ))}
-        </ul>
-      </div>
-    );
+  // Handle reasoning toggle
+  const toggleReasoning = () => {
+    setIsExpanded(!isExpanded);
   };
-  
-  // Show a pulsing indicator for streaming messages
-  const streamingIndicator = is_streaming && (
-    <div className="streaming-indicator">
-      <span className="dot"></span>
-      <span className="dot"></span>
-      <span className="dot"></span>
-    </div>
-  );
   
   return (
-    <div className={messageClass}>
+    <div className={messageClass} id={`message-${id}`}>
       <div className="message-header">
-        <span className="message-role">{getRoleName(role)}</span>
-        {timestamp && (
-          <span className="message-time" title={new Date(timestamp).toLocaleString()}>
-            {formatDate(timestamp)}
-          </span>
-        )}
-        {!is_streaming && message.id && (
-          <button 
-            className="message-navigate-btn" 
-            onClick={() => onNavigate && onNavigate(message.id)}
-            title="Navigate to this message"
-          >
-            →
-          </button>
-        )}
+        <span className="message-name">{displayName}</span>
+        <span className="message-time">{formattedTime}</span>
       </div>
       
-      {renderAttachments()}
-      
-      {message.reasoning_steps && message.reasoning_steps.length > 0 && (
-        <div className="reasoning-steps-summary">
-          <h4>AI used {message.reasoning_steps.length} reasoning steps</h4>
-        </div>
-      )}
-      
       <div className="message-content">
-        <ReactMarkdown 
-          components={{ 
-            code: SimpleCodeBlock
-          }}
-        >
+        {reasoning && (
+          <div className="message-reasoning">
+            <button 
+              className="reasoning-toggle" 
+              onClick={toggleReasoning}
+            >
+              {isExpanded ? 'Hide Reasoning' : 'Show Reasoning'}
+            </button>
+            
+            {isExpanded && (
+              <div className="reasoning-content">
+                <ReactMarkdown components={renderers}>
+                  {reasoning}
+                </ReactMarkdown>
+              </div>
+            )}
+          </div>
+        )}
+        
+        <ReactMarkdown components={renderers}>
           {content || ''}
         </ReactMarkdown>
         
-        {streamingIndicator}
+        {token_usage && (
+          <div className="message-tokens">
+            {formatTokenUsage(token_usage)}
+          </div>
+        )}
       </div>
-      
-      {token_usage && (
-        <div className="message-footer">
-          <button 
-            className="details-toggle" 
-            onClick={() => setShowDetails(!showDetails)}
-          >
-            {showDetails ? 'Hide Details' : 'Show Details'}
-          </button>
-          
-          {showDetails && (
-            <div className="message-details">
-              <div className="token-usage">
-                {formatTokenUsage(token_usage)}
-              </div>
-              {message.model_info && (
-                <div className="model-info">
-                  Model: {message.model_info.name || message.model_info.model}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 };
