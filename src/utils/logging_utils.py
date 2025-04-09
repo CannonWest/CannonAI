@@ -8,6 +8,7 @@ import sys
 import logging
 from logging.handlers import RotatingFileHandler
 from typing import Dict, Optional, Any
+import inspect
 
 from src.utils.constants import DATA_DIR
 
@@ -122,36 +123,20 @@ def monitor_stack_depth(max_depth=500):
         def my_recursive_function(...):
             ...
     """
-    import sys
-    import traceback
-    import functools
 
     def decorator(func):
-        @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            frame = sys._getframe()
-            depth = 0
-
-            # Count stack frames
-            while frame:
-                depth += 1
-                frame = frame.f_back
-
-                # Check if we're approaching a dangerous depth
-                if depth > max_depth:
-                    # Get the stack trace
-                    stack_trace = traceback.format_stack()
-                    # Log warning with stack trace
-                    print(f"WARNING: Deep recursion detected in {func.__name__} - depth {depth} exceeds {max_depth}")
-                    print("Stack trace:")
-                    for line in stack_trace[-20:]:  # Print the last 20 frames
-                        print(line.strip())
-                    # Return early to prevent stack overflow
-                    return None
-
-            # Call the original function
+            # Get current stack depth
+            current_depth = len(inspect.stack())
+            logger = logging.getLogger(__name__)
+            
+            if current_depth > max_depth:
+                msg = f"Stack depth exceeded {max_depth} in {func.__name__}. Current depth: {current_depth}"
+                logger.warning(msg)
+                raise RecursionError(msg)
+            
             return func(*args, **kwargs)
-
+        
         return wrapper
 
     return decorator

@@ -1,0 +1,282 @@
+/* Global styles for the CannonAI Chat Application */
+
+:root {
+  --primary-color: #6272A4;
+  --secondary-color: #44475A;
+  --background-color: #2B2B2B;
+  --text-color: #F8F8F2;
+  --user-message-color: #50FA7B;
+  --assistant-message-color: #8BE9FD;
+  --system-message-color: #FFB86C;
+  --error-color: #FF5555;
+  --border-color: #6272A4;
+  --input-bg-color: #383A59;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--background-color);
+  color: var(--text-color);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-header {
+  padding: 1rem;
+  background-color: var(--secondary-color);
+  border-bottom: 1px solid var(--primary-color);
+}
+
+.app-container {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: 250px;
+  border-right: 1px solid var(--secondary-color);
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 1rem;
+}
+
+.settings-panel {
+  width: 300px;
+  border-left: 1px solid var(--secondary-color);
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.app-footer {
+  padding: 0.5rem;
+  text-align: center;
+  background-color: var(--secondary-color);
+  border-top: 1px solid var(--primary-color);
+  font-size: 0.8rem;
+}
+
+/* Chat interface */
+.chat-interface {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.messages-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.message-input {
+  border-top: 1px solid var(--border-color);
+  padding: 1rem;
+}
+
+.message-input textarea {
+  width: 100%;
+  background-color: var(--input-bg-color);
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 0.5rem;
+  resize: none;
+  min-height: 40px;
+}
+
+.input-controls {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.5rem;
+}
+
+.send-button {
+  background-color: var(--primary-color);
+  color: var(--text-color);
+  border: none;
+  border-radius: 4px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+}
+
+.send-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.empty-state, .empty-conversation {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  text-align: center;
+  color: #888;
+}
+
+/* Message styling */
+.message {
+  margin-bottom: 1rem;
+  padding: 0.5rem;
+  border-radius: 8px;
+}
+
+.message-user {
+  background-color: rgba(80, 250, 123, 0.1);
+  border-left: 3px solid var(--user-message-color);
+}
+
+.message-assistant {
+  background-color: rgba(139, 233, 253, 0.1);
+  border-left: 3px solid var(--assistant-message-color);
+}
+
+.message-system {
+  background-color: rgba(255, 184, 108, 0.1);
+  border-left: 3px solid var(--system-message-color);
+}
+
+.message-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.message-role {
+  font-weight: bold;
+}
+
+/* Settings */
+.settings h2 {
+  margin-top: 0;
+}
+
+.settings-section {
+  margin-bottom: 1.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 1rem;
+}
+
+.form-group {
+  margin-bottom: 1rem;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.form-group input, .form-group select {
+  width: 100%;
+  padding: 0.5rem;
+  background-color: var(--input-bg-color);
+  color: var(--text-color);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+}
+
+/* Debug info */
+.debug-info {
+  position: fixed;
+  bottom: 10px;
+  right: 10px;
+  background: rgba(0,0,0,0.7);
+  color: white;
+  padding: 5px;
+  font-size: 12px;
+  z-index: 1000;
+}
+
+/* Add code block styling since we removed the syntax highlighter */
+.code-block {
+  background-color: #282c34;
+  border-radius: 6px;
+  padding: 1rem;
+  margin: 1rem 0;
+  overflow-x: auto;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #f8f8f2;
+  border-left: 3px solid var(--primary-color);
+}
+
+.code-block code {
+  display: block;
+  white-space: pre;
+}
+
+/* Language-specific styling */
+.language-javascript, .language-js {
+  border-left-color: #f7df1e;
+}
+
+.language-typescript, .language-ts {
+  border-left-color: #3178c6;
+}
+
+.language-python, .language-py {
+  border-left-color: #306998;
+}
+
+.language-html {
+  border-left-color: #e34c26;
+}
+
+.language-css {
+  border-left-color: #563d7c;
+}
+
+/* Streaming indicator */
+.streaming-indicator {
+  display: flex;
+  justify-content: center;
+  margin-top: 1rem;
+}
+
+.streaming-indicator .dot {
+  width: 8px;
+  height: 8px;
+  margin: 0 4px;
+  background-color: var(--primary-color);
+  border-radius: 50%;
+  animation: dot-pulse 1.5s infinite ease-in-out;
+}
+
+.streaming-indicator .dot:nth-child(2) {
+  animation-delay: 0.3s;
+}
+
+.streaming-indicator .dot:nth-child(3) {
+  animation-delay: 0.6s;
+}
+
+@keyframes dot-pulse {
+  0%, 80%, 100% {
+    transform: scale(0.8);
+    opacity: 0.6;
+  }
+  40% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+}

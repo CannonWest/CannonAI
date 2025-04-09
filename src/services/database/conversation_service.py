@@ -6,8 +6,10 @@ Adapted for web-based architecture with FastAPI.
 
 import uuid
 import logging
+import os
 from datetime import datetime
 from typing import List, Dict, Optional, Any, Tuple, Union
+from pathlib import Path
 
 from sqlalchemy import select, delete, update, or_, func
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -19,6 +21,9 @@ from src.services.database.db_manager import DatabaseManager
 # Create logger for this module
 logger = logging.getLogger(__name__)
 
+# Define the project root directory
+PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+DATA_DIR = PROJECT_ROOT / "data" / "database"
 
 class ConversationService:
     """
@@ -37,6 +42,9 @@ class ConversationService:
 
         # Use provided db_manager or get the default one
         self.db_manager = db_manager or DatabaseManager()
+        
+        # Ensure the data directory exists
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
 
         # Initialize database if needed
         self._initialized = self.initialize()

@@ -1,25 +1,41 @@
 # src/utils/constants.py
 """
-Constants and configuration values for the OpenAI Chat application.
+Constants used throughout the application.
 """
 
 import os
+import sys
+from pathlib import Path
 from typing import Dict, Any
+
+# Determine base directory for the application
+if getattr(sys, 'frozen', False):
+    # If the application is run as a bundle (frozen)
+    ROOT_DIR = Path(sys.executable).parent
+else:
+    # If the application is run from script
+    ROOT_DIR = Path(__file__).parent.parent.parent
+
+# Data directory is at the project root level
+DATA_DIR = os.path.join(ROOT_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# Define other important directories
+DATABASE_DIR = os.path.join(DATA_DIR, "database")
+os.makedirs(DATABASE_DIR, exist_ok=True)
+
+# Define the database path
+DATABASE_PATH = os.path.join(DATABASE_DIR, "conversation.db")
 
 # Default OpenAI API key
 DEFAULT_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 # Application paths
-APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-DATA_DIR = os.path.join(APP_DIR, "data")
-CONFIG_DIR = os.path.join(APP_DIR, "config")
+CONFIG_DIR = os.path.join(ROOT_DIR, "config")
 SETTINGS_FILE = os.path.join(CONFIG_DIR, "settings.json")
-DATABASE_DIR = os.path.join(DATA_DIR, "database")
-DATABASE_FILE = os.path.join(DATABASE_DIR, "conversations.db")
 
 # Ensure directories exist
 os.makedirs(CONFIG_DIR, exist_ok=True)
-os.makedirs(DATABASE_DIR, exist_ok=True)
 
 # Main models (latest aliases)
 MODELS = {

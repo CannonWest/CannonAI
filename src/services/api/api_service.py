@@ -346,6 +346,127 @@ class ApiService:
             duration = time.time() - start_time
             self.logger.debug(f"API streaming request finished in {duration:.3f} seconds")
 
+    # Additional helper for WebSocket streaming
+    def get_stream_events(self, messages: List[Dict], settings: Optional[Dict] = None) -> Iterator[Dict]:
+        """
+        Get a streaming completion with events optimized for WebSocket transmission.
+        This is a wrapper around get_streaming_completion that formats events for the WebSocket API.
+        
+        Args:
+            messages: List of message objects.
+            settings: Optional settings to override the default settings.
+            
+        Yields:
+            Formatted event dictionaries suitable for WebSocket transmission.
+        """
+        try:
+            for chunk in self.get_streaming_completion(messages, settings):
+                # Format the chunk for WebSocket transmission
+                if "choices" in chunk and len(chunk["choices"]) > 0:
+                    # Chat completions API
+                    choice = chunk["choices"][0]
+                    if "delta" in choice and "content" in choice["delta"]:
+                        yield {
+                            "type": "content",
+                            "content": choice["delta"]["content"]
+                        }
+                    elif choice.get("finish_reason"):
+                        # End of stream
+                        yield {
+                            "type": "end",
+                            "token_usage": self.last_token_usage,
+                            "model": self.last_model,
+                            "response_id": self.last_response_id
+                        }
+                elif "type" in chunk:
+                    # Response API
+                    chunk_type = chunk["type"]
+                    
+                    if chunk_type == "content_block_delta":
+                        delta = chunk.get("delta", {}).get("text", "")
+                        yield {
+                            "type": "content",
+                            "content": delta
+                        }
+                    elif chunk_type == "response.thinking_step":
+                        # Pass through reasoning steps
+                        yield chunk
+                    elif chunk_type == "response.completed":
+                        # End of stream
+                        yield {
+                            "type": "end",
+                            "token_usage": self.last_token_usage,
+                            "model": self.last_model,
+                            "response_id": self.last_response_id,
+                            "reasoning_steps": self.last_reasoning_steps
+                        }
+        except Exception as e:
+            # Send error event
+            yield {
+                "type": "error",
+                "message": str(e)
+            }
+
+    # Similar async version for WebSocket streaming
+    async def get_stream_events_async(self, messages: List[Dict], settings: Optional[Dict] = None) -> AsyncGenerator[Dict, None]:
+        """
+        Async version of get_stream_events.
+        
+        Args:
+            messages: List of message objects.
+            settings: Optional settings to override the default settings.
+            
+        Yields:
+            Formatted event dictionaries suitable for WebSocket transmission.
+        """
+        try:
+            async for chunk in self.get_streaming_completion_async(messages, settings):
+                # Format the chunk for WebSocket transmission
+                if "choices" in chunk and len(chunk["choices"]) > 0:
+                    # Chat completions API
+                    choice = chunk["choices"][0]
+                    if "delta" in choice and "content" in choice["delta"]:
+                        yield {
+                            "type": "content",
+                            "content": choice["delta"]["content"]
+                        }
+                    elif choice.get("finish_reason"):
+                        # End of stream
+                        yield {
+                            "type": "end",
+                            "token_usage": self.last_token_usage,
+                            "model": self.last_model,
+                            "response_id": self.last_response_id
+                        }
+                elif "type" in chunk:
+                    # Response API
+                    chunk_type = chunk["type"]
+                    
+                    if chunk_type == "content_block_delta":
+                        delta = chunk.get("delta", {}).get("text", "")
+                        yield {
+                            "type": "content",
+                            "content": delta
+                        }
+                    elif chunk_type == "response.thinking_step":
+                        # Pass through reasoning steps
+                        yield chunk
+                    elif chunk_type == "response.completed":
+                        # End of stream
+                        yield {
+                            "type": "end",
+                            "token_usage": self.last_token_usage,
+                            "model": self.last_model,
+                            "response_id": self.last_response_id,
+                            "reasoning_steps": self.last_reasoning_steps
+                        }
+        except Exception as e:
+            # Send error event
+            yield {
+                "type": "error",
+                "message": str(e)
+            }
+
     # Internal methods - Synchronous API calls
 
     def _call_response_api(self, messages: List[Dict], settings: Dict) -> Dict[str, Any]:

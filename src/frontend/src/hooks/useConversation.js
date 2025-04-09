@@ -1,0 +1,286 @@
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { 
+  getConversations, 
+  getConversationById, 
+  createConversation, 
+  updateConversation,
+  deleteConversation,
+  sendMessage,
+  getMessages,
+  navigateToMessage,
+  streamChat
+} from '../services/api';
+
+export const useConversation = (initialConversationId = null) => {
+  const [conversations, setConversations] = useState([]);
+  const [currentConversation, setCurrentConversation] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [streamingMessage, setStreamingMessage] = useState(null);
+  
+  // Ref to store the active streaming request
+  const streamingRef = useRef(null);
+  
+  // Function to load all conversations
+  const loadConversations = useCallback(async () => {
+    try {
+      setLoading(true);
+      const data = await getConversations();
+      setConversations(data);
+      setError(null);
+    } catch (err) {
+      setError(err.toString());
+      console.error('Error loading conversations:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  
+  // Function to load a specific conversation with its messages
+  const loadConversation = useCallback(async (id) => {
+    if (!id) return;
+    
+    try {
+      setLoading(true);
+      const conversation = await getConversationById(id);
+      setCurrentConversation(conversation);
+      
+      // Load messages for this conversation
+      const conversationMessages = await getMessages(id);
+      setMessages(conversationMessages);
+      
+      setError(null);
+    } catch (err) {
+      setError(err.toString());
+      console.error(`Error loading conversation ${id}:`, err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  
+  // Create a new conversation
+  const newConversation = useCallback(async (name = 'New Conversation', systemMessage = 'You are a helpful assistant.') => {
+    try {
+      setLoading(true);
+      const created = await createConversation({ name, system_message: systemMessage });
+      
+      // Add to conversations list and set as current
+      setConversations(prev => [created, ...prev]);
+      setCurrentConversation(created);
+      setMessages([]);
+      
+      return created;
+    } catch (err) {
+      setError(err.toString());
+      console.error('Error creating conversation:', err);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  
+  // Send a message in the current conversation
+  const sendUserMessage = useCallback(async (content, parentId = null) => {
+    if (!currentConversation?.id) {
+      setError('No conversation selected');
+      return null;
+    }
+    
+    try {
+      const userMessage = await sendMessage(
+        currentConversation.id, 
+        content,
+        parentId || currentConversation.current_node_id
+      );
+      
+      // Add to messages
+      setMessages(prev => [...prev, userMessage]);
+      
+      return userMessage;
+    } catch (err) {
+      setError(err.toString());
+      console.error('Error sending message:', err);
+      return null;
+    }
+  }, [currentConversation]);
+  
+  // Stream a chat response
+  const streamResponse = useCallback((content, parentId = null) => {
+    if (!currentConversation?.id) {
+      setError('No conversation selected');
+      return;
+    }
+    
+    // Cancel any existing streaming request
+    if (streamingRef.current) {
+      streamingRef.current.abort();
+    }
+    
+    const controller = new AbortController();
+    streamingRef.current = controller;
+    
+    // Initialize a placeholder for the streaming message
+    setStreamingMessage({
+      id: 'streaming',
+      role: 'assistant',
+      content: '',
+      is_streaming: true
+    });
+    
+    // Handle incoming chunks
+    const handleChunk = (chunk) => {
+      if (chunk.content) {
+        setStreamingMessage(prev => ({
+          ...prev,
+          content: prev.content + chunk.content
+        }));
+      }
+    };
+    
+    // Handle completion
+    const handleComplete = (finalMessage) => {
+      streamingRef.current = null;
+      
+      // Replace streaming message with the final message
+      setStreamingMessage(null);
+      
+      // Add the final message to the messages array
+      setMessages(prev => [...prev, finalMessage]);
+      
+      // Update current conversation state if needed
+      setCurrentConversation(prev => ({
+        ...prev,
+        current_node_id: finalMessage.id
+      }));
+    };
+    
+    // Handle errors
+    const handleError = (err) => {
+      streamingRef.current = null;
+      setStreamingMessage(null);
+      setError(err.toString());
+    };
+    
+    // Start streaming
+    streamChat(
+      currentConversation.id,
+      content,
+      parentId || currentConversation.current_node_id,
+      handleChunk,
+      handleComplete,
+      handleError
+    );
+    
+    // Return abort function
+    return () => {
+      if (streamingRef.current) {
+        streamingRef.current.abort();
+        streamingRef.current = null;
+        setStreamingMessage(null);
+      }
+    };
+  }, [currentConversation]);
+  
+  // Navigate to a specific message in the conversation history
+  const navigateHistory = useCallback(async (messageId) => {
+    if (!currentConversation?.id || !messageId) return;
+    
+    try {
+      await navigateToMessage(currentConversation.id, messageId);
+      
+      // Update current conversation with new current_node_id
+      setCurrentConversation(prev => ({
+        ...prev,
+        current_node_id: messageId
+      }));
+      
+      return true;
+    } catch (err) {
+      setError(err.toString());
+      console.error('Error navigating to message:', err);
+      return false;
+    }
+  }, [currentConversation]);
+  
+  // Update conversation details (name, system message)
+  const updateCurrentConversation = useCallback(async (updates) => {
+    if (!currentConversation?.id) return;
+    
+    try {
+      const updated = await updateConversation(currentConversation.id, updates);
+      
+      // Update in state
+      setCurrentConversation(updated);
+      
+      // Update in conversations list
+      setConversations(prev => 
+        prev.map(conv => conv.id === updated.id ? updated : conv)
+      );
+      
+      return updated;
+    } catch (err) {
+      setError(err.toString());
+      console.error('Error updating conversation:', err);
+      return null;
+    }
+  }, [currentConversation]);
+  
+  // Delete a conversation
+  const removeConversation = useCallback(async (id) => {
+    if (!id) return false;
+    
+    try {
+      await deleteConversation(id);
+      
+      // Remove from conversations list
+      setConversations(prev => prev.filter(conv => conv.id !== id));
+      
+      // Clear current conversation if it was deleted
+      if (currentConversation?.id === id) {
+        setCurrentConversation(null);
+        setMessages([]);
+      }
+      
+      return true;
+    } catch (err) {
+      setError(err.toString());
+      console.error('Error deleting conversation:', err);
+      return false;
+    }
+  }, [currentConversation]);
+  
+  // Load initial conversation if ID is provided
+  useEffect(() => {
+    if (initialConversationId) {
+      loadConversation(initialConversationId);
+    } else {
+      // Just load the list of conversations
+      loadConversations();
+    }
+  }, [initialConversationId, loadConversation, loadConversations]);
+  
+  // Helper to get a flat list of all messages including streaming
+  const getAllMessages = useCallback(() => {
+    return streamingMessage 
+      ? [...messages, streamingMessage]
+      : messages;
+  }, [messages, streamingMessage]);
+  
+  return {
+    conversations,
+    currentConversation,
+    messages: getAllMessages(),
+    loading,
+    error,
+    loadConversations,
+    loadConversation,
+    newConversation,
+    sendUserMessage,
+    streamResponse,
+    navigateHistory,
+    updateCurrentConversation,
+    removeConversation,
+    isStreaming: !!streamingMessage
+  };
+};

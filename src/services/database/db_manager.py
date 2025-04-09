@@ -8,6 +8,7 @@ import os
 import logging
 from contextlib import contextmanager
 from typing import Generator, Optional, Dict, Any
+from pathlib import Path
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
@@ -16,10 +17,12 @@ from sqlalchemy.pool import QueuePool
 
 # Import Base from models
 from src.models.orm_models import Base
+from src.config.paths import DATABASE_DIR, PROJECT_ROOT
 
 # Create logger for this module
 logger = logging.getLogger(__name__)
 
+db_path = os.path.join(DATABASE_DIR, "conversations.db")
 
 class DatabaseManager:
     """
@@ -37,34 +40,19 @@ class DatabaseManager:
             cls._instance = super(DatabaseManager, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, connection_string: Optional[str] = None, db_dir: Optional[str] = None):
-        """
-        Initialize the database manager if not already initialized.
-
-        Args:
-            connection_string: SQLAlchemy connection string. If None, uses SQLite.
-            db_dir: Directory for SQLite database file if using SQLite.
-        """
-        # Only initialize once due to singleton pattern
+    def __init__(self, db_url: str, echo: bool = False):
+        """Initialize the database manager."""
         if self._initialized:
             return
 
+        self.db_url = db_url
+        self.echo = echo
         self.logger = logging.getLogger(f"{__name__}.DatabaseManager")
 
-        # Default database directory and path
-        if db_dir is None:
-            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            db_dir = os.path.join(base_dir, 'data', 'database')
-
-        os.makedirs(db_dir, exist_ok=True)
-        db_path = os.path.join(db_dir, 'conversations.db')
-
-        # Set connection string if not provided
-        if connection_string is None:
-            connection_string = f'sqlite:///{db_path}'
-
-        self.connection_string = connection_string
-        self.logger.info(f"Initializing DatabaseManager with connection string: {connection_string}")
+        # Log the database location for debugging
+        if db_url.startswith('sqlite:///'):
+            db_path = db_url[10:]  # Remove 'sqlite:///'
+            self.logger.info(f"Using SQLite database at: {db_path}")
 
         # Create engine and session factory
         self._create_engine()
@@ -75,20 +63,20 @@ class DatabaseManager:
         try:
             # Configure engine with appropriate settings
             engine_args = {
-                'echo': False,  # Set to True for SQL query logging
+                'echo': self.echo,  # Set to True for SQL query logging
                 'pool_pre_ping': True,
                 'pool_recycle': 3600,  # Recycle connections after 1 hour
             }
 
             # Add SQLite-specific connect args if using SQLite
-            if self.connection_string.startswith('sqlite'):
+            if self.db_url.startswith('sqlite'):
                 engine_args['connect_args'] = {
                     'check_same_thread': False  # Allow multi-threaded access for SQLite
                 }
 
             # Create engine with connection pooling
             self._engine = create_engine(
-                self.connection_string,
+                self.db_url,
                 poolclass=QueuePool,
                 **engine_args
             )
@@ -198,5 +186,5 @@ class DatabaseManager:
             yield session
 
 
-# Initialize default database manager (can be overridden in app setup)
-default_db_manager = DatabaseManager()
+# Initialize default database manager with the correct database
+default_db_manager = DatabaseManager(f"sqlite:///{db_path}")

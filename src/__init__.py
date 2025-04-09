@@ -9,7 +9,6 @@ __version__ = "1.0.0" # Consider updating version if making significant changes
 # Import core components (ensure these align with exports from sub-packages)
 from src.models import Conversation, Message, FileAttachment, Base
 from src.services import ApiService, ConversationService, SettingsManager, DatabaseManager # Use correct service names
-from src.viewmodels import ConversationViewModel, SettingsViewModel # Use correct ViewModel names
 
 
 # Optional: Define __all__ for explicit public API

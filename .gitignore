@@ -43,3 +43,5 @@ test.py
 data/database/conversations.db
 /.codebuddy
 /deprec/
+/src/frontend/node_modules
+/src/static/assets

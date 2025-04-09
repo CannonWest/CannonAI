@@ -19,12 +19,10 @@ from src.utils.constants import (
     DARK_MODE,
 
     # Paths
-    APP_DIR,
     DATA_DIR,
     CONFIG_DIR,
     SETTINGS_FILE,
     DATABASE_DIR,
-    DATABASE_FILE
 )
 
 from src.utils.logging_utils import (
