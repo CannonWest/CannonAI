@@ -26,12 +26,17 @@ export const useConversation = (initialConversationId = null) => {
   const loadConversations = useCallback(async () => {
     try {
       setLoading(true);
+      console.log("Loading conversations...");
       const data = await getConversations();
-      setConversations(data);
+      console.log("Loaded conversations:", data?.length || 0);
+      setConversations(data || []);
       setError(null);
+      return data; // Return data for chaining
     } catch (err) {
-      setError(err.toString());
-      console.error('Error loading conversations:', err);
+      const errorMsg = `Error loading conversations: ${err.toString()}`;
+      console.error(errorMsg);
+      setError(errorMsg);
+      return []; // Return empty array on error
     } finally {
       setLoading(false);
     }
@@ -39,21 +44,26 @@ export const useConversation = (initialConversationId = null) => {
   
   // Function to load a specific conversation with its messages
   const loadConversation = useCallback(async (id) => {
-    if (!id) return;
+    if (!id) return null;
     
     try {
       setLoading(true);
+      console.log(`Loading conversation: ${id}`);
       const conversation = await getConversationById(id);
       setCurrentConversation(conversation);
       
       // Load messages for this conversation
+      console.log(`Loading messages for conversation: ${id}`);
       const conversationMessages = await getMessages(id);
-      setMessages(conversationMessages);
+      setMessages(conversationMessages || []);
       
       setError(null);
+      return conversation;
     } catch (err) {
-      setError(err.toString());
-      console.error(`Error loading conversation ${id}:`, err);
+      const errorMsg = `Error loading conversation ${id}: ${err.toString()}`;
+      console.error(errorMsg);
+      setError(errorMsg);
+      return null;
     } finally {
       setLoading(false);
     }
@@ -63,7 +73,15 @@ export const useConversation = (initialConversationId = null) => {
   const newConversation = useCallback(async (name = 'New Conversation', systemMessage = 'You are a helpful assistant.') => {
     try {
       setLoading(true);
+      console.log(`Creating new conversation: "${name}"`);
       const created = await createConversation({ name, system_message: systemMessage });
+      
+      if (!created) {
+        console.error("Failed to create conversation: API returned null or undefined");
+        throw new Error("Failed to create conversation");
+      }
+      
+      console.log("Conversation created:", created);
       
       // Add to conversations list and set as current
       setConversations(prev => [created, ...prev]);
@@ -72,8 +90,9 @@ export const useConversation = (initialConversationId = null) => {
       
       return created;
     } catch (err) {
-      setError(err.toString());
-      console.error('Error creating conversation:', err);
+      const errorMsg = `Error creating conversation: ${err.toString()}`;
+      console.error(errorMsg);
+      setError(errorMsg);
       return null;
     } finally {
       setLoading(false);
@@ -252,12 +271,20 @@ export const useConversation = (initialConversationId = null) => {
   
   // Load initial conversation if ID is provided
   useEffect(() => {
-    if (initialConversationId) {
-      loadConversation(initialConversationId);
-    } else {
-      // Just load the list of conversations
-      loadConversations();
-    }
+    let mounted = true;
+    
+    const initialize = async () => {
+      // Always load the conversation list first
+      await loadConversations();
+      
+      if (initialConversationId && mounted) {
+        await loadConversation(initialConversationId);
+      }
+    };
+    
+    initialize();
+    
+    return () => { mounted = false; };
   }, [initialConversationId, loadConversation, loadConversations]);
   
   // Helper to get a flat list of all messages including streaming

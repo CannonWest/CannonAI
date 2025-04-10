@@ -302,17 +302,12 @@ body {
   border-radius: 4px;
   padding: 0.5rem 1rem;
   cursor: pointer;
-  font-weight: 500;
-  transition: background-color 0.2s, transform 0.1s;
+  font-weight: bold;
+  transition: background-color 0.2s;
 }
 
 .new-conversation-btn:hover {
-  background-color: var(--primary-hover-color, #a884f3);
-  transform: translateY(-1px);
-}
-
-.new-conversation-btn:active {
-  transform: translateY(0);
+  background-color: var(--primary-hover-color, #caa5ff);
 }
 
 .search-box {

@@ -45,3 +45,4 @@ data/database/conversations.db
 /deprec/
 /src/frontend/node_modules
 /src/static/assets
+src/frontend/package-lock.json

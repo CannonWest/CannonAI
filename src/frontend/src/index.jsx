@@ -1,26 +1,24 @@
 import React from 'react';
-import ReactDOM from 'react-dom/client';
+import { createRoot } from 'react-dom/client';
 import App from './App';
 import { AuthProvider } from './context/AuthContext';
 import { SettingsProvider } from './context/SettingsContext';
-import { ConversationProvider } from './context/ConversationContext';
 import { ToastProvider } from './context/ToastContext';
+import { ConversationProvider } from './context/ConversationContext';
 import './styles.css';
 
-// Create root
-const root = ReactDOM.createRoot(document.getElementById('root'));
+const root = createRoot(document.getElementById('root'));
 
-// Render app with context providers
 root.render(
   <React.StrictMode>
-    <AuthProvider>
-      <SettingsProvider>
-        <ConversationProvider>
-          <ToastProvider>
+    <ToastProvider>
+      <AuthProvider>
+        <SettingsProvider>
+          <ConversationProvider>
             <App />
-          </ToastProvider>
-        </ConversationProvider>
-      </SettingsProvider>
-    </AuthProvider>
+          </ConversationProvider>
+        </SettingsProvider>
+      </AuthProvider>
+    </ToastProvider>
   </React.StrictMode>
 );

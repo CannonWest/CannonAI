@@ -61,9 +61,10 @@ const MessageInput = ({ onSend, disabled, placeholder = "Type your message here.
   };
   
   return (
-    <div className="message-input">
+    <div className="message-input-container">
       <textarea 
         ref={textareaRef}
+        className="message-input"
         value={message}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
@@ -73,7 +74,6 @@ const MessageInput = ({ onSend, disabled, placeholder = "Type your message here.
         placeholder={placeholder}
         disabled={disabled}
         rows={1} // Start with one row, will auto-expand
-        className={disabled ? 'disabled' : ''}
       />
       
       <div className="input-controls">

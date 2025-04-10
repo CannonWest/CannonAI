@@ -3,7 +3,10 @@
 import axios from 'axios';
 import { formatError } from '../utils/formatters';
 
-const API_BASE_URL = '/api';
+// Update the API_BASE_URL to ensure it points to the correct backend endpoint
+const API_BASE_URL = process.env.NODE_ENV === 'production' 
+  ? '/api' 
+  : 'http://localhost:8000/api'; // Use absolute URL in development
 
 // Create axios instance with common configuration
 const apiClient = axios.create({
@@ -16,12 +19,35 @@ const apiClient = axios.create({
 
 // Add response interceptor for error handling
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // Log successful responses in development
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`API Success [${response.config.method} ${response.config.url}]:`, 
+        response.status, response.data ? (Array.isArray(response.data) ? `(${response.data.length} items)` : 'data') : 'no data');
+    }
+    return response;
+  },
   (error) => {
-    console.error('API Error:', error);
+    console.error('API Error:', error.response?.status || 'Network Error', 
+      error.response?.data || error.message, 
+      'URL:', error.config?.url);
     return Promise.reject(formatError(error));
   }
 );
+
+// Intercept requests to include auth header
+apiClient.interceptors.request.use(config => {
+  // Log outgoing requests in development
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`API Request [${config.method}]:`, config.url, config.params ? config.params : '');
+  }
+  
+  const apiKey = localStorage.getItem('cannon_ai_api_key');
+  if (apiKey) {
+    config.headers['Authorization'] = `Bearer ${apiKey}`;
+  }
+  return config;
+});
 
 // Conversations endpoints
 export const getConversations = async (skip = 0, limit = 100) => {
@@ -233,3 +259,5 @@ export const streamChatWebSocket = (conversationId, content, parentId = null, on
   // Return the controller to allow aborting
   return controller;
 };
+
+export default apiClient;
