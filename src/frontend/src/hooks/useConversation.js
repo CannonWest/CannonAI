@@ -125,7 +125,7 @@ export const useConversation = (initialConversationId = null) => {
   }, [currentConversation]);
   
   // Stream a chat response
-  const streamResponse = useCallback((content, parentId = null) => {
+  const streamResponse = useCallback((content, userMessageId = null) => {
     if (!currentConversation?.id) {
       setError('No conversation selected');
       return;
@@ -181,11 +181,11 @@ export const useConversation = (initialConversationId = null) => {
       setError(err.toString());
     };
     
-    // Start streaming
+    // Start streaming - pass the user message ID to avoid duplication
     streamChat(
       currentConversation.id,
       content,
-      parentId || currentConversation.current_node_id,
+      userMessageId || currentConversation.current_node_id,
       handleChunk,
       handleComplete,
       handleError

@@ -366,20 +366,34 @@ async def validate_api_key(data: ApiKeyValidation):
 @app.websocket("/ws/chat/{conversation_id}")
 async def websocket_chat(websocket: WebSocket, conversation_id: str):
     """WebSocket endpoint for streaming chat responses."""
-    await websocket.accept()
-    
     try:
+        await websocket.accept()
+        
         # Get the conversation
-        with db_manager.get_session() as db:
-            conversation = conversation_service.get_conversation(db, conversation_id)
-            if not conversation:
-                await websocket.send_json({"error": "Conversation not found"})
-                await websocket.close()
-                return
+        try:
+            with db_manager.get_session() as db:
+                conversation = conversation_service.get_conversation(db, conversation_id)
+                if not conversation:
+                    await websocket.send_json({"error": "Conversation not found"})
+                    await websocket.close()
+                    return
+        except Exception as e:
+            logger.error(f"Error retrieving conversation {conversation_id}: {e}", exc_info=True)
+            await websocket.send_json({"error": f"Database error: {str(e)}"})
+            await websocket.close()
+            return
         
         while True:
             # Wait for the client to send a message
-            data = await websocket.receive_json()
+            try:
+                data = await websocket.receive_json()
+            except WebSocketDisconnect:
+                logger.info(f"WebSocket client disconnected for conversation {conversation_id}")
+                break
+            except Exception as e:
+                logger.error(f"Error receiving message: {e}", exc_info=True)
+                await websocket.send_json({"error": f"Message error: {str(e)}"})
+                continue
             
             # Extract message content and parent ID
             content = data.get("content")
@@ -390,85 +404,170 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
                 continue
             
             # Try to start processing this message - this is our deduplication barrier
-            can_process, existing_message_id = await ws_buffer.start_processing(conversation_id, content, parent_id)
-            
-            if not can_process:
-                if existing_message_id:
-                    # This is a duplicate of a message we've already processed
-                    await websocket.send_json({
-                        "type": "warning",
-                        "message": "This message was already processed",
-                        "duplicate_message_id": existing_message_id
-                    })
-                else:
-                    # This message is currently being processed
-                    await websocket.send_json({
-                        "type": "warning",
-                        "message": "A similar message is currently being processed"
-                    })
+            try:
+                can_process, existing_message_id = await ws_buffer.start_processing(conversation_id, content, parent_id)
+                
+                if not can_process:
+                    if existing_message_id:
+                        # This is a duplicate of a message we've already processed
+                        await websocket.send_json({
+                            "type": "warning",
+                            "message": "This message was already processed",
+                            "duplicate_message_id": existing_message_id
+                        })
+                    else:
+                        # This message is currently being processed
+                        await websocket.send_json({
+                            "type": "warning",
+                            "message": "A similar message is currently being processed"
+                        })
+                    continue
+            except Exception as e:
+                logger.error(f"Error in message deduplication: {e}", exc_info=True)
+                await websocket.send_json({"error": f"Server error: {str(e)}"})
                 continue
             
+            # Process the message
             try:
-                # Add user message to conversation
-                with db_manager.get_session() as db:
-                    user_message = conversation_service.add_user_message(
-                        db, 
-                        conversation_id=conversation_id,
-                        content=content,
-                        parent_id=parent_id
-                    )
-                    
-                    if not user_message:
-                        await websocket.send_json({"error": "Failed to add user message"})
-                        # Mark processing as complete (with no result)
+                # Check if we need to add a user message or use an existing one
+                user_message_id = None
+                parent_message = None
+                
+                # If parent_id is provided, check if it exists and is valid
+                if parent_id:
+                    try:
+                        with db_manager.get_session() as db:
+                            parent_message = conversation_service.get_message(db, parent_id)
+                            if parent_message and parent_message.role == "user" and parent_message.conversation_id == conversation_id:
+                                # Use the existing user message
+                                user_message_id = parent_id
+                                
+                                # Notify client that we're using an existing message
+                                await websocket.send_json({
+                                    "type": "user_message",
+                                    "message": parent_message.to_dict(),
+                                    "status": "existing"
+                                })
+                                logger.debug(f"Using existing user message {parent_id} for conversation {conversation_id}")
+                    except Exception as db_error:
+                        logger.error(f"Error checking parent message: {db_error}", exc_info=True)
+                        # We'll fall back to creating a new message
+                
+                # If no valid parent_id, create a new user message
+                if not user_message_id:
+                    try:
+                        with db_manager.get_session() as db:
+                            user_message = conversation_service.add_user_message(
+                                db, 
+                                conversation_id=conversation_id,
+                                content=content,
+                                parent_id=conversation.current_node_id
+                            )
+                            
+                            if not user_message:
+                                await websocket.send_json({"error": "Failed to add user message"})
+                                await ws_buffer.complete_processing(conversation_id, content, parent_id)
+                                continue
+                            
+                            user_message_id = user_message.id
+                            
+                            # Send confirmation that user message was added
+                            await websocket.send_json({
+                                "type": "user_message",
+                                "message": user_message.to_dict(),
+                                "status": "new"
+                            })
+                            logger.debug(f"Created new user message {user_message_id} for conversation {conversation_id}")
+                    except Exception as db_error:
+                        logger.error(f"Error creating user message: {db_error}", exc_info=True)
+                        await websocket.send_json({"error": f"Failed to create message: {str(db_error)}"})
                         await ws_buffer.complete_processing(conversation_id, content, parent_id)
                         continue
-                    
-                    # Send confirmation that user message was added
-                    await websocket.send_json({
-                        "type": "user_message",
-                        "message": user_message.to_dict()
-                    })
-                    
-                    # Record the message ID as our result
-                    await ws_buffer.complete_processing(conversation_id, content, parent_id, user_message.id)
-                    
-                    # Get current settings for API call
-                    settings = settings_manager.get_settings()
-                    
-                    # Force streaming to be enabled
-                    settings["stream"] = True
-                    
-                    # Prepare message list for API
-                    messages = []
-                    
-                    # Get the conversation branch up to the current message
-                    message_branch = conversation_service.get_message_branch(db, user_message.id)
-                    
-                    # Add system message
-                    messages.append({
-                        "role": "system",
-                        "content": conversation.system_message
-                    })
-                    
-                    # Add conversation messages (excluding system message)
-                    for msg in message_branch:
-                        if msg.role != "system":
-                            messages.append({
-                                "role": msg.role,
-                                "content": msg.content
-                            })
                 
-                # ...rest of the existing code...
-            
-            except Exception as e:
-                logger.error(f"Error processing message: {e}", exc_info=True)
+                # Record the message ID as our result for deduplication
+                await ws_buffer.complete_processing(conversation_id, content, parent_id, user_message_id)
+                
+                # Get current settings for API call
+                settings = settings_manager.get_settings()
+                
+                # Force streaming to be enabled
+                settings["stream"] = True
+                
+                # Prepare message list for API
+                try:
+                    with db_manager.get_session() as db:
+                        # Get the conversation branch up to the current message
+                        message_branch = conversation_service.get_message_branch(db, user_message_id)
+                        
+                        # Create messages list for the API
+                        messages = []
+                        
+                        # Add system message
+                        messages.append({
+                            "role": "system",
+                            "content": conversation.system_message
+                        })
+                        
+                        # Add conversation messages (excluding system message)
+                        for msg in message_branch:
+                            if msg.role != "system":
+                                messages.append({
+                                    "role": msg.role,
+                                    "content": msg.content
+                                })
+                    
+                    # Start streaming API response
+                    async for chunk in api_service.get_stream_events_async(messages, settings):
+                        # Send each chunk to the WebSocket client
+                        await websocket.send_json(chunk)
+                        
+                        # If this is the end of the stream, save the assistant message
+                        if chunk.get("type") == "end":
+                            try:
+                                with db_manager.get_session() as db:
+                                    assistant_content = "".join([msg.get("content", "") for msg in messages if msg.get("role") == "assistant"])
+                                    
+                                    # Create assistant message
+                                    assistant_message = conversation_service.add_assistant_message(
+                                        db,
+                                        conversation_id=conversation_id,
+                                        content=assistant_content,
+                                        parent_id=user_message_id,
+                                        model_info={"model": chunk.get("model")},
+                                        token_usage=chunk.get("token_usage"),
+                                        reasoning_steps=chunk.get("reasoning_steps"),
+                                        response_id=chunk.get("response_id")
+                                    )
+                                    
+                                    if assistant_message:
+                                        # Send final message saved confirmation
+                                        await websocket.send_json({
+                                            "type": "assistant_message_saved",
+                                            "message": assistant_message.to_dict()
+                                        })
+                            except Exception as save_error:
+                                logger.error(f"Error saving assistant message: {save_error}", exc_info=True)
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "message": f"Failed to save response: {str(save_error)}"
+                                })
+                except Exception as api_error:
+                    logger.error(f"API error during streaming: {api_error}", exc_info=True)
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"API error: {str(api_error)}"
+                    })
+            except Exception as processing_error:
+                logger.error(f"Unexpected error processing message: {processing_error}", exc_info=True)
                 await websocket.send_json({
-                    "type": "error",
-                    "message": str(e)
+                    "type": "error", 
+                    "message": f"Server error: {str(processing_error)}"
                 })
-                # Make sure we mark processing as complete even on error
-                await ws_buffer.complete_processing(conversation_id, content, parent_id)
+                # Ensure we mark processing as complete even on error
+                try:
+                    await ws_buffer.complete_processing(conversation_id, content, parent_id)
+                except Exception:
+                    pass
     
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected for conversation {conversation_id}")
@@ -476,9 +575,10 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
         logger.error(f"WebSocket error: {e}", exc_info=True)
         try:
             await websocket.send_json({"error": str(e)})
-        except:
+            await websocket.close()
+        except Exception:
             pass
-
+        
 # --- Serve Frontend Static Files ---
 # Mount the frontend static files
 if FRONTEND_DIR.exists():

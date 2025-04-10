@@ -150,14 +150,12 @@ export const streamChat = async (conversationId, content, parentId = null, onChu
   if (!content) throw new Error('Message content is required');
   
   try {
-    // Create user message first
-    const userMessage = await sendMessage(conversationId, content, parentId);
-    
-    // Start streaming response
+    // Send the content directly to the streaming endpoint without creating a user message first
     const response = await apiClient.post(
       `/conversations/${conversationId}/stream`,
       {
-        parent_id: userMessage.id
+        content: content,  // Include the content directly
+        parent_id: parentId // Use parentId if provided
       },
       {
         responseType: 'stream',

@@ -149,14 +149,15 @@ const ConversationProvider = ({ children }) => {
       // Start streaming the response
       streamResponse(content);
       
-      return userMessage;
+      // Return successful status without reference to userMessage
+      return true;
     } catch (err) {
       setError(err.toString());
       toast.error('Failed to send message');
       return null;
     }
-  }, [currentConversationId, createConversation, sendUserMessage, streamResponse, toast]);
-  
+  }, [currentConversationId, createConversation, streamResponse, toast]);
+
   // Context value with conversation data and methods
   const contextForCurrentConversation = {
     currentConversation,
