@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
-import './Settings.css'; // We'll create a separate CSS file for settings
+import './Settings.css'; // We'll keep using the existing Settings CSS
 
-const Settings = ({ onClose }) => {
+const Settings = () => {
   const { apiKey, login, logout } = useAuth();
   const { settings, updateSettings, resetToDefaults, isReasoningModel } = useSettings();
   
@@ -90,12 +90,6 @@ const Settings = ({ onClose }) => {
     <div className="cannon-settings">
       <div className="cannon-settings-header">
         <h2>Settings</h2>
-        <button className="cannon-close-button" onClick={onClose}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
       </div>
       
       <div className="cannon-settings-content">
