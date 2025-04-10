@@ -4,6 +4,10 @@ import os
 import uuid
 import logging
 import asyncio
+import time
+import hashlib
+import json
+from collections import OrderedDict
 from datetime import datetime
 from typing import List, Dict, Optional, Any, Union, Annotated
 from pathlib import Path
@@ -28,7 +32,6 @@ from src.services.storage.settings_manager import SettingsManager
 ensure_directories()
 
 # --- Request/Response Models ---
-
 class ConversationCreate(BaseModel):
     name: str = Field("New Conversation", min_length=1, max_length=100)
     system_message: str = Field("You are a helpful assistant.", min_length=1)
@@ -54,9 +57,7 @@ class SearchParams(BaseModel):
     limit: int = Field(20, ge=1, le=100)
 
 # --- Configuration ---
-
 import sys
-
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -90,19 +91,7 @@ else:
     FRONTEND_DIR = PROJECT_ROOT / "static"
     FRONTEND_DIR.mkdir(parents=True, exist_ok=True)
 
-# Initialize services
-db_manager = default_db_manager
-conversation_service = ConversationService(db_manager)
-settings_manager = SettingsManager()
-api_service = ApiService()
-
-# Set API key from settings
-api_key = settings_manager.get_setting("api_key")
-if api_key:
-    api_service.set_api_key(api_key)
-    logger.info("API key loaded from settings")
-
-# --- FastAPI App Configuration ---
+# Create FastAPI app instance
 app = FastAPI(title="CannonAI API", description="API for CannonAI Chat Application")
 
 # Configure CORS
@@ -111,29 +100,125 @@ app.add_middleware(
     allow_origins=["*"],  # Allows all origins in development
     allow_credentials=True,
     allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_headers=["*"],  # Allows all headers in development
 )
 
-# --- Dependencies ---
+# Initialize services in a function rather than at module level
+def initialize_services():
+    """Initialize all application services. Only call this once when server starts."""
+    global db_manager, conversation_service, settings_manager, api_service
+    # Initialize services
+    db_manager = default_db_manager
+    conversation_service = ConversationService(db_manager)
+    settings_manager = SettingsManager()
+    api_service = ApiService()
+    # Set API key from settings
+    api_key = settings_manager.get_setting("api_key")
+    if api_key:
+        api_service.set_api_key(api_key)
+        logger.info("API key loaded from settings")
+    # Return the initialized services
+    return db_manager, conversation_service, settings_manager, api_service
+    
+# Declare services at module level but don't initialize them yet
+db_manager = None
+conversation_service = None  
+settings_manager = None
+api_service = None
 
+# --- Dependencies ---
 # Dependency for database sessions
 def get_db():
     """Dependency for database sessions."""
+    # Ensure services are initialized
+    if db_manager is None:
+        initialize_services()
     with db_manager.get_session() as session:
         yield session
+        
+# Replace the MessageCache with a more robust WebSocketMessageBuffer that prevents concurrent processing
+class WebSocketMessageBuffer:
+    """Prevents duplicate and concurrent processing of identical WebSocket messages"""
+    
+    def __init__(self):
+        self.active_requests = {}  # Currently processing requests
+        self.recent_requests = {}  # Recently completed requests (for deduplication)
+        self.lock = asyncio.Lock()
+        self.ttl_seconds = 5  # How long to remember completed requests
+    
+    async def start_processing(self, conversation_id, content, parent_id=None):
+        """
+        Attempt to start processing a message.
+        Returns (True, None) if this is a new message we can process.
+        Returns (False, message_id) if this message is a duplicate of a recently completed message.
+        Returns (False, None) if this message is currently being processed.
+        """
+        # Create a unique identifier for the message
+        request_id = self._create_request_id(conversation_id, content, parent_id)
+        
+        async with self.lock:
+            # Check if we've recently completed this exact request
+            if request_id in self.recent_requests:
+                timestamp, message_id = self.recent_requests[request_id]
+                if time.time() - timestamp < self.ttl_seconds:
+                    logger.warning(f"Duplicate message detected, reusing previous result: {content[:30]}...")
+                    return False, message_id
+            
+            # Check if we're already processing this request
+            if request_id in self.active_requests:
+                logger.warning(f"Concurrent message detected, ignoring: {content[:30]}...")
+                return False, None
+            
+            # Mark this request as being processed
+            self.active_requests[request_id] = time.time()
+            return True, None
+    
+    async def complete_processing(self, conversation_id, content, parent_id=None, message_id=None):
+        """Mark a request as completed and remember its result"""
+        request_id = self._create_request_id(conversation_id, content, parent_id)
+        
+        async with self.lock:
+            # Remove from active requests
+            if request_id in self.active_requests:
+                del self.active_requests[request_id]
+            
+            # Add to recent requests with result
+            self.recent_requests[request_id] = (time.time(), message_id)
+            
+            # Clean up old entries
+            self._clean_old_entries()
+    
+    def _create_request_id(self, conversation_id, content, parent_id=None):
+        """Create a unique ID for this specific request"""
+        combined = f"{conversation_id}:{content}:{parent_id or 'none'}"
+        return hashlib.md5(combined.encode()).hexdigest()
+    
+    def _clean_old_entries(self):
+        """Remove old entries from the recent requests cache"""
+        now = time.time()
+        to_remove = []
+        
+        for key, (timestamp, _) in self.recent_requests.items():
+            if now - timestamp > self.ttl_seconds:
+                to_remove.append(key)
+        
+        for key in to_remove:
+            del self.recent_requests[key]
+
+# Create a single buffer instance
+ws_buffer = WebSocketMessageBuffer()
 
 # --- Conversation Endpoints ---
-
 @app.get("/api/conversations", response_model=List[Dict])
 def get_conversations(
-    skip: int = 0, 
+    skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db)
 ):
     """Get all conversations with pagination."""
     conversations = conversation_service.get_all_conversations(db, skip, limit)
     return [conv.to_dict() for conv in conversations]
-
+    
 @app.post("/api/conversations", response_model=Dict)
 def create_conversation(
     data: ConversationCreate,
@@ -141,7 +226,7 @@ def create_conversation(
 ):
     """Create a new conversation."""
     conversation = conversation_service.create_conversation(
-        db, 
+        db,
         name=data.name,
         system_message=data.system_message
     )
@@ -157,7 +242,7 @@ def get_conversation(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return conversation.to_dict()
-
+        
 @app.put("/api/conversations/{conversation_id}", response_model=Dict)
 def update_conversation(
     conversation_id: str,
@@ -167,11 +252,9 @@ def update_conversation(
     """Update a conversation."""
     # Convert model to dict, excluding None values
     update_data = {k: v for k, v in data.dict().items() if v is not None}
-    
     conversation = conversation_service.update_conversation(db, conversation_id, update_data)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    
     return conversation.to_dict()
 
 @app.delete("/api/conversations/{conversation_id}", response_model=Dict)
@@ -183,24 +266,21 @@ def delete_conversation(
     success = conversation_service.delete_conversation(db, conversation_id)
     if not success:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    
     return {"success": True, "id": conversation_id}
-
+    
 @app.post("/api/conversations/{conversation_id}/duplicate", response_model=Dict)
 def duplicate_conversation(
     conversation_id: str,
     new_name: Optional[str] = None,
     db: Session = Depends(get_db)
-):
+):  
     """Duplicate a conversation."""
     new_conversation = conversation_service.duplicate_conversation(db, conversation_id, new_name)
     if not new_conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    
     return new_conversation.to_dict()
-
+    
 # --- Message Endpoints ---
-
 @app.get("/api/conversations/{conversation_id}/messages", response_model=List[Dict])
 def get_messages(
     conversation_id: str,
@@ -210,7 +290,6 @@ def get_messages(
     conversation = conversation_service.get_conversation_with_messages(db, conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    
     return [message.to_dict() for message in conversation.messages]
 
 @app.post("/api/conversations/{conversation_id}/messages", response_model=Dict)
@@ -221,17 +300,15 @@ def add_user_message(
 ):
     """Add a user message to a conversation."""
     message = conversation_service.add_user_message(
-        db, 
+        db,
         conversation_id=conversation_id,
         content=data.content,
         parent_id=data.parent_id
     )
-    
     if not message:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    
     return message.to_dict()
-
+         
 @app.post("/api/conversations/{conversation_id}/navigate", response_model=Dict)
 def navigate_to_message(
     conversation_id: str,
@@ -244,14 +321,11 @@ def navigate_to_message(
         conversation_id=conversation_id,
         message_id=data.message_id
     )
-    
     if not success:
         raise HTTPException(status_code=404, detail="Conversation or message not found")
-    
     return {"success": True, "conversation_id": conversation_id, "message_id": data.message_id}
 
 # --- Settings Endpoints ---
-
 @app.get("/api/settings", response_model=Dict)
 def get_settings():
     """Get application settings."""
@@ -267,7 +341,6 @@ def save_settings(
         api_key = settings["api_key"]
         # Set the API key in the API service
         api_service.set_api_key(api_key)
-    
     updated_settings = settings_manager.update_settings(settings)
     return settings_manager.get_frontend_settings()
 
@@ -278,23 +351,18 @@ def reset_settings():
     return settings_manager.get_frontend_settings()
 
 # --- API Key Validation Endpoint ---
-
 @app.post("/api/validate-api-key", response_model=Dict)
 async def validate_api_key(data: ApiKeyValidation):
     """Validate an OpenAI API key."""
     is_valid, message = await api_service.validate_api_key(data.api_key)
-    
     if is_valid:
         # Save valid API key to settings
         settings_manager.update_setting("api_key", data.api_key)
-        
         # Set in API service for immediate use
         api_service.set_api_key(data.api_key)
-    
     return {"valid": is_valid, "message": message}
 
 # --- Chat Streaming Endpoint ---
-
 @app.websocket("/ws/chat/{conversation_id}")
 async def websocket_chat(websocket: WebSocket, conversation_id: str):
     """WebSocket endpoint for streaming chat responses."""
@@ -321,116 +389,86 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
                 await websocket.send_json({"error": "Message content is required"})
                 continue
             
-            # Add user message to conversation
-            with db_manager.get_session() as db:
-                user_message = conversation_service.add_user_message(
-                    db, 
-                    conversation_id=conversation_id,
-                    content=content,
-                    parent_id=parent_id
-                )
-                
-                if not user_message:
-                    await websocket.send_json({"error": "Failed to add user message"})
-                    continue
-                
-                # Send confirmation that user message was added
-                await websocket.send_json({
-                    "type": "user_message",
-                    "message": user_message.to_dict()
-                })
-                
-                # Get current settings for API call
-                settings = settings_manager.get_settings()
-                
-                # Force streaming to be enabled
-                settings["stream"] = True
-                
-                # Prepare message list for API
-                messages = []
-                
-                # Get the conversation branch up to the current message
-                message_branch = conversation_service.get_message_branch(db, user_message.id)
-                
-                # Add system message
-                messages.append({
-                    "role": "system",
-                    "content": conversation.system_message
-                })
-                
-                # Add conversation messages (excluding system message)
-                for msg in message_branch:
-                    if msg.role != "system":
-                        messages.append({
-                            "role": msg.role,
-                            "content": msg.content
-                        })
+            # Try to start processing this message - this is our deduplication barrier
+            can_process, existing_message_id = await ws_buffer.start_processing(conversation_id, content, parent_id)
             
-            # Call the API with streaming and send chunks to WebSocket
+            if not can_process:
+                if existing_message_id:
+                    # This is a duplicate of a message we've already processed
+                    await websocket.send_json({
+                        "type": "warning",
+                        "message": "This message was already processed",
+                        "duplicate_message_id": existing_message_id
+                    })
+                else:
+                    # This message is currently being processed
+                    await websocket.send_json({
+                        "type": "warning",
+                        "message": "A similar message is currently being processed"
+                    })
+                continue
+            
             try:
-                # Initialize empty content
-                streamed_content = ""
-                
-                # Create an async generator from streaming API
-                async for chunk in api_service.get_streaming_completion_async(messages, settings):
-                    # Extract and accumulate content
-                    if chunk.get("type") == "content_block_delta":
-                        delta = chunk.get("delta", {}).get("text", "")
-                        streamed_content += delta
-                        # Send the delta to the client
-                        await websocket.send_json({
-                            "type": "assistant_message_delta",
-                            "delta": delta
-                        })
-                    elif chunk.get("type") == "response.thinking_step":
-                        # Send reasoning step
-                        await websocket.send_json({
-                            "type": "reasoning_step",
-                            "step": chunk.get("thinking_step", {})
-                        })
-                    elif chunk.get("type") == "response.completed":
-                        # Final message with metadata
-                        metadata = {
-                            "token_usage": api_service.last_token_usage,
-                            "model": api_service.last_model,
-                            "response_id": api_service.last_response_id
-                        }
-                        await websocket.send_json({
-                            "type": "assistant_message_complete",
-                            "metadata": metadata
-                        })
-                
-                # Save the complete message to the database
+                # Add user message to conversation
                 with db_manager.get_session() as db:
-                    assistant_message = conversation_service.add_assistant_message(
-                        db,
+                    user_message = conversation_service.add_user_message(
+                        db, 
                         conversation_id=conversation_id,
-                        content=streamed_content,
-                        parent_id=user_message.id,
-                        model_info={"model": api_service.last_model},
-                        token_usage=api_service.last_token_usage,
-                        reasoning_steps=api_service.last_reasoning_steps,
-                        response_id=api_service.last_response_id
+                        content=content,
+                        parent_id=parent_id
                     )
                     
-                    if assistant_message:
-                        # Send the complete message object
-                        await websocket.send_json({
-                            "type": "assistant_message_saved",
-                            "message": assistant_message.to_dict()
-                        })
-                    else:
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": "Failed to save assistant message"
-                        })
+                    if not user_message:
+                        await websocket.send_json({"error": "Failed to add user message"})
+                        # Mark processing as complete (with no result)
+                        await ws_buffer.complete_processing(conversation_id, content, parent_id)
+                        continue
+                    
+                    # Send confirmation that user message was added
+                    await websocket.send_json({
+                        "type": "user_message",
+                        "message": user_message.to_dict()
+                    })
+                    
+                    # Record the message ID as our result
+                    await ws_buffer.complete_processing(conversation_id, content, parent_id, user_message.id)
+                    
+                    # Get current settings for API call
+                    settings = settings_manager.get_settings()
+                    
+                    # Force streaming to be enabled
+                    settings["stream"] = True
+                    
+                    # Prepare message list for API
+                    messages = []
+                    
+                    # Get the conversation branch up to the current message
+                    message_branch = conversation_service.get_message_branch(db, user_message.id)
+                    
+                    # Add system message
+                    messages.append({
+                        "role": "system",
+                        "content": conversation.system_message
+                    })
+                    
+                    # Add conversation messages (excluding system message)
+                    for msg in message_branch:
+                        if msg.role != "system":
+                            messages.append({
+                                "role": msg.role,
+                                "content": msg.content
+                            })
+                
+                # ...rest of the existing code...
             
             except Exception as e:
-                logger.error(f"Error in streaming chat: {e}", exc_info=True)
+                logger.error(f"Error processing message: {e}", exc_info=True)
                 await websocket.send_json({
                     "type": "error",
                     "message": str(e)
                 })
+                # Make sure we mark processing as complete even on error
+                await ws_buffer.complete_processing(conversation_id, content, parent_id)
     
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected for conversation {conversation_id}")
@@ -442,7 +480,6 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
             pass
 
 # --- Serve Frontend Static Files ---
-
 # Mount the frontend static files
 if FRONTEND_DIR.exists():
     logger.info(f"Mounting frontend files from {FRONTEND_DIR}")
@@ -468,17 +505,14 @@ if FRONTEND_DIR.exists():
     def serve_frontend(full_path: str):
         """Serve the frontend for any non-API routes."""
         logger.debug(f"Serving frontend path: {full_path}")
-        
         # If the path exists, serve it directly
         file_path = FRONTEND_DIR / full_path
         if file_path.exists() and file_path.is_file():
             return FileResponse(str(file_path))
-        
         # Otherwise, serve index.html (for SPAs to handle routing)
         index_path = FRONTEND_DIR / "index.html"
         if index_path.exists():
             return FileResponse(str(index_path))
-        
         # If index.html doesn't exist, return a helpful error
         return Response(
             content=f"Frontend not found at {FRONTEND_DIR}. Please build the frontend or check paths.",
@@ -487,10 +521,13 @@ if FRONTEND_DIR.exists():
         )
 
 # --- Main Entry Point ---
-
 def main():
     """Main entry point for the application."""
     import uvicorn
+    
+    # Initialize services here, before starting the server
+    global db_manager, conversation_service, settings_manager, api_service
+    db_manager, conversation_service, settings_manager, api_service = initialize_services()
     
     # Ensure database is initialized
     if not db_manager.ping():

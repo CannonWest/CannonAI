@@ -14,7 +14,7 @@ const MessageInput = ({ onSend, disabled, placeholder = "Type your message here.
     // Reset height to auto to get the correct scrollHeight
     textareaRef.current.style.height = 'auto';
     // Set to scrollHeight to ensure all content is visible
-    textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
   }, [message]);
   
   // Update token count when message changes
@@ -61,10 +61,9 @@ const MessageInput = ({ onSend, disabled, placeholder = "Type your message here.
   };
   
   return (
-    <div className="message-input-container">
+    <div className="message-input">
       <textarea 
         ref={textareaRef}
-        className="message-input"
         value={message}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
@@ -74,10 +73,14 @@ const MessageInput = ({ onSend, disabled, placeholder = "Type your message here.
         placeholder={placeholder}
         disabled={disabled}
         rows={1} // Start with one row, will auto-expand
+        className={disabled ? 'disabled' : ''}
       />
       
       <div className="input-controls">
         <div className="token-counter" title="Estimated token count">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '4px' }}>
+            <polyline points="9 18 15 12 9 6"></polyline>
+          </svg>
           {tokenCount} tokens
         </div>
         
@@ -86,7 +89,17 @@ const MessageInput = ({ onSend, disabled, placeholder = "Type your message here.
           onClick={handleSend}
           disabled={!message.trim() || disabled}
         >
-          Send
+          {disabled ? (
+            <span>Processing...</span>
+          ) : (
+            <>
+              <span>Send</span>
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </>
+          )}
         </button>
       </div>
     </div>

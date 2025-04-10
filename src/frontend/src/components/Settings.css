@@ -1,0 +1,276 @@
+/* Settings component styles */
+.cannon-settings {
+    height: 100%;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    background-color: var(--cannon-bg-content);
+    color: var(--cannon-text-light);
+  }
+  
+  .cannon-settings-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px;
+    border-bottom: 1px solid var(--cannon-border);
+  }
+  
+  .cannon-settings-header h2 {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 600;
+  }
+  
+  .cannon-close-button {
+    background: none;
+    border: none;
+    color: var(--cannon-text-light);
+    cursor: pointer;
+    padding: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+  }
+  
+  .cannon-close-button:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+  }
+  
+  .cannon-settings-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+  }
+  
+  .cannon-settings-section {
+    margin-bottom: 24px;
+    padding: 16px;
+    border-radius: 8px;
+    background-color: var(--cannon-bg-message);
+    border: 1px solid var(--cannon-border);
+  }
+  
+  .cannon-settings-section h3 {
+    margin-top: 0;
+    margin-bottom: 16px;
+    font-size: 18px;
+    font-weight: 500;
+  }
+  
+  .cannon-form-group {
+    margin-bottom: 16px;
+  }
+  
+  .cannon-form-group label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 500;
+    color: var(--cannon-text-light);
+  }
+  
+  .cannon-form-group input[type="text"],
+  .cannon-form-group input[type="number"],
+  .cannon-form-group input[type="password"],
+  .cannon-form-group select {
+    width: 100%;
+    padding: 10px 12px;
+    background-color: rgba(255, 255, 255, 0.05);
+    color: var(--cannon-text-light);
+    border: 1px solid var(--cannon-border-light);
+    border-radius: 6px;
+    font-size: 14px;
+    transition: border-color 0.2s;
+  }
+  
+  .cannon-form-group input:focus,
+  .cannon-form-group select:focus {
+    outline: none;
+    border-color: var(--cannon-primary);
+  }
+  
+  .cannon-form-group input[type="range"] {
+    width: 100%;
+    height: 6px;
+    appearance: none;
+    background: linear-gradient(to right, var(--cannon-primary) 0%, var(--cannon-primary) 50%, rgba(255, 255, 255, 0.2) 50%, rgba(255, 255, 255, 0.2) 100%);
+    border-radius: 3px;
+    outline: none;
+  }
+  
+  .cannon-form-group input[type="range"]::-webkit-slider-thumb {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: var(--cannon-primary);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: transform 0.1s;
+  }
+  
+  .cannon-form-group input[type="range"]::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+  }
+  
+  .cannon-range-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    margin-top: 6px;
+    color: var(--cannon-text-dim);
+  }
+  
+  .cannon-form-group.cannon-checkbox {
+    display: flex;
+    align-items: center;
+  }
+  
+  .cannon-form-group.cannon-checkbox input {
+    margin-right: 10px;
+    width: auto;
+  }
+  
+  .cannon-form-group.cannon-checkbox label {
+    margin-bottom: 0;
+    cursor: pointer;
+  }
+  
+  /* API Key section */
+  .cannon-api-key-form {
+    display: flex;
+    gap: 10px;
+  }
+  
+  .cannon-api-key-form input {
+    flex: 1;
+    padding: 10px 12px;
+    background-color: rgba(255, 255, 255, 0.05);
+    color: var(--cannon-text-light);
+    border: 1px solid var(--cannon-border-light);
+    border-radius: 6px;
+    outline: none;
+  }
+  
+  .cannon-api-key-form input:focus {
+    border-color: var(--cannon-primary);
+  }
+  
+  .cannon-api-key-form button {
+    background-color: var(--cannon-primary);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 0 16px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.2s;
+  }
+  
+  .cannon-api-key-form button:hover:not(:disabled) {
+    background-color: var(--cannon-primary-light);
+  }
+  
+  .cannon-api-key-form button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  
+  .cannon-api-key-status {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .cannon-key-actions {
+    display: flex;
+    gap: 10px;
+  }
+  
+  .cannon-show-key-toggle,
+  .cannon-remove-key {
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+  }
+  
+  .cannon-show-key-toggle {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: var(--cannon-text-light);
+    border: 1px solid var(--cannon-border-light);
+  }
+  
+  .cannon-remove-key {
+    background-color: rgba(239, 68, 68, 0.15);
+    color: var(--cannon-error);
+    border: 1px solid var(--cannon-error);
+  }
+  
+  .cannon-show-key-toggle:hover {
+    background-color: rgba(255, 255, 255, 0.2);
+  }
+  
+  .cannon-remove-key:hover {
+    background-color: rgba(239, 68, 68, 0.25);
+  }
+  
+  /* Form actions */
+  .cannon-settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    align-items: center;
+    margin-top: 20px;
+  }
+  
+  .cannon-save-success {
+    color: var(--cannon-success);
+    font-weight: 500;
+    margin-right: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  
+  .cannon-save-success::before {
+    content: '✓';
+    display: inline-block;
+  }
+  
+  .cannon-reset-btn,
+  .cannon-save-btn {
+    padding: 10px 16px;
+    border-radius: 6px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    font-size: 14px;
+  }
+  
+  .cannon-reset-btn {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: var(--cannon-text-light);
+    border: 1px solid var(--cannon-border-light);
+  }
+  
+  .cannon-save-btn {
+    background-color: var(--cannon-primary);
+    color: white;
+    border: none;
+  }
+  
+  .cannon-reset-btn:hover {
+    background-color: rgba(255, 255, 255, 0.2);
+  }
+  
+  .cannon-save-btn:hover:not(:disabled) {
+    background-color: var(--cannon-primary-light);
+  }
+  
+  .cannon-save-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
