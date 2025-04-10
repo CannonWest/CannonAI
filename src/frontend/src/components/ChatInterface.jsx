@@ -1,5 +1,4 @@
 import React, { useRef, useEffect } from 'react';
-import Message from './Message';
 import MessageInput from './MessageInput';
 
 const TypingIndicator = () => (
@@ -38,6 +37,12 @@ const ChatInterface = ({ conversationContext }) => {
     if (navigateToMessage) {
       navigateToMessage(messageId);
     }
+  };
+  
+  // Format timestamp
+  const formatTime = (timestamp) => {
+    if (!timestamp) return '';
+    return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
   
   // If no conversation is selected, show empty state
@@ -81,7 +86,7 @@ const ChatInterface = ({ conversationContext }) => {
                      'Unknown'}
                   </span>
                   <span className="cannon-message-time">
-                    {message.timestamp ? new Date(message.timestamp).toLocaleTimeString() : ''}
+                    {formatTime(message.timestamp)}
                   </span>
                 </div>
                 <div className="cannon-message-content">
@@ -89,7 +94,9 @@ const ChatInterface = ({ conversationContext }) => {
                 </div>
                 {message.token_usage && (
                   <div className="cannon-message-tokens">
-                    Tokens: {message.token_usage.total_tokens || 0}
+                    {message.token_usage.total_tokens 
+                      ? `Tokens: ${message.token_usage.total_tokens}` 
+                      : ''}
                   </div>
                 )}
               </div>

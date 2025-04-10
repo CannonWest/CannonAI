@@ -34,8 +34,10 @@
   --cannon-radius: 8px;
   
   --cannon-sidebar-width: 280px;
+  --cannon-settings-width: 350px;
   --cannon-transition: all 0.3s ease;
 }
+
 /* Update the main layout container */
 .cannon-app {
   display: flex;
@@ -69,6 +71,12 @@
   background-color: var(--cannon-bg-content);
   position: relative; /* Create stacking context */
   height: 100%; /* Ensure full height */
+  transition: margin-right var(--cannon-transition);
+}
+
+/* When settings are open, make room for the settings sidebar */
+.cannon-content.settings-open {
+  margin-right: var(--cannon-settings-width);
 }
 
 .cannon-sidebar-content {
@@ -84,6 +92,31 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* Settings toggle button - Fixed position on the right side */
+.cannon-settings-toggle {
+  position: fixed;
+  top: 16px;
+  right: 16px; /* When settings are closed */
+  width: 44px;
+  height: 44px;
+  border-radius: var(--cannon-radius);
+  background-color: var(--cannon-bg-message);
+  border: none;
+  z-index: 101;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--cannon-shadow);
+  transition: var(--cannon-transition);
+}
+
+/* Move the button when settings are open */
+.cannon-settings-toggle.active {
+  right: calc(var(--cannon-settings-width) + 16px);
+  background-color: var(--cannon-primary-dark);
 }
 
 .cannon-settings-button {
@@ -117,6 +150,26 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
+}
+
+/* Settings sidebar */
+.cannon-settings-sidebar {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--cannon-settings-width);
+  background-color: var(--cannon-bg-sidebar);
+  z-index: 100;
+  border-left: 1px solid var(--cannon-border);
+  transform: translateX(100%); /* Hide offscreen initially */
+  transition: transform var(--cannon-transition);
+  overflow-y: auto;
+}
+
+/* Show settings sidebar when active */
+.cannon-settings-sidebar.visible {
+  transform: translateX(0);
 }
 
 /* Mobile Menu */
@@ -157,6 +210,18 @@
 .cannon-hamburger-menu span::after {
   position: absolute;
   bottom: -7px;
+}
+
+/* Overlay for closing sidebars on mobile */
+.cannon-sidebar-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 99;
+  display: none;
 }
 
 /* Conversations List Styling */
@@ -214,6 +279,23 @@
   border-color: var(--cannon-primary);
 }
 
+.cannon-clear-search {
+  position: absolute;
+  right: 25px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--cannon-text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+}
+
 .cannon-conversations-list {
   flex: 1;
   overflow-y: auto;
@@ -227,6 +309,9 @@
   cursor: pointer;
   transition: var(--cannon-transition);
   background-color: rgba(255, 255, 255, 0.05);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .cannon-conversation-item:hover {
@@ -236,6 +321,11 @@
 .cannon-conversation-item.active {
   background-color: rgba(123, 104, 238, 0.2);
   border-left: 3px solid var(--cannon-primary);
+}
+
+.cannon-conversation-details {
+  flex: 1;
+  overflow: hidden;
 }
 
 .cannon-conversation-name {
@@ -249,6 +339,64 @@
 .cannon-conversation-time {
   font-size: 12px;
   color: var(--cannon-text-dim);
+}
+
+.cannon-conversation-actions {
+  display: flex;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.cannon-conversation-item:hover .cannon-conversation-actions {
+  opacity: 1;
+}
+
+.cannon-edit-btn, 
+.cannon-delete-btn {
+  background: none;
+  border: none;
+  color: var(--cannon-text-dim);
+  cursor: pointer;
+  padding: 4px;
+  margin-left: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cannon-edit-btn:hover, 
+.cannon-delete-btn:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--cannon-text-light);
+}
+
+.cannon-delete-btn.confirm {
+  color: var(--cannon-error);
+}
+
+.cannon-rename-form {
+  display: flex;
+  width: 100%;
+  gap: 8px;
+}
+
+.cannon-rename-form input {
+  flex: 1;
+  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--cannon-text-light);
+  border: 1px solid var(--cannon-primary);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+
+.cannon-rename-form button {
+  background-color: var(--cannon-primary);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
 }
 
 /* Chat Interface Styling */
@@ -312,6 +460,14 @@
 
 .cannon-message-content {
   line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.cannon-message-tokens {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--cannon-text-dim);
+  text-align: right;
 }
 
 /* Message Input Area */
@@ -415,6 +571,7 @@
   background-color: var(--cannon-ai-msg);
   border-radius: var(--cannon-radius);
   align-self: flex-start;
+  border-bottom-left-radius: 0;
 }
 
 .cannon-typing-indicator span {
@@ -470,27 +627,31 @@
     transform: translateX(0);
   }
   
+  /* Adjust settings sidebar for mobile */
+  .cannon-settings-sidebar {
+    width: 90%; /* Wider on mobile */
+  }
+  
   .cannon-content {
     width: 100%; /* Full width on mobile */
     padding-top: 60px; /* Space for hamburger menu */
     margin-left: 0; /* No margin when sidebar is hidden */
+    margin-right: 0 !important; /* Override margin-right on mobile */
+  }
+  
+  /* Adjust settings toggle position on mobile */
+  .cannon-settings-toggle.active {
+    right: 16px; /* Keep on same side on mobile */
   }
   
   /* When sidebar is visible on mobile, add overlay */
-  .cannon-sidebar-overlay {
-    display: none;
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: rgba(0,0,0,0.5);
-    z-index: 90;
-  }
-  
-  .cannon-sidebar.visible ~ .cannon-sidebar-overlay {
+  .cannon-sidebar.visible ~ .cannon-sidebar-overlay,
+  .cannon-settings-sidebar.visible ~ .cannon-sidebar-overlay {
     display: block;
   }
+  
+  /* Make messages wider on mobile */
+  .cannon-message {
+    max-width: 90%;
+  }
 }
-
-

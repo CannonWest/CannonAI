@@ -29,8 +29,8 @@ const AppLayout = ({
   const handleOverlayClick = () => {
     if (window.innerWidth <= 768) {
       setSidebarVisible(false);
-      setSettingsVisible(false);
     }
+    setSettingsVisible(false);
   };
 
   return (
@@ -64,7 +64,12 @@ const AppLayout = ({
         </div>
       </div>
       
-      {/* Settings toggle button */}
+      {/* Main content area */}
+      <div className={`cannon-content ${settingsVisible ? 'settings-open' : ''}`}>
+        {content}
+      </div>
+      
+      {/* Settings toggle button - Now positioned correctly using CSS */}
       <button 
         className={`cannon-settings-toggle ${settingsVisible ? 'active' : ''}`}
         onClick={toggleSettings}
@@ -76,21 +81,18 @@ const AppLayout = ({
         </svg>
       </button>
       
-      {/* Main content area */}
-      <div className={`cannon-content ${settingsVisible ? 'settings-open' : ''}`}>
-        {content}
-      </div>
-      
       {/* Right settings sidebar */}
       <div className={`cannon-settings-sidebar ${settingsVisible ? 'visible' : ''}`}>
         {settingsPanel}
       </div>
       
       {/* Overlay for mobile - closes sidebars when clicked */}
-      <div 
-        className="cannon-sidebar-overlay" 
-        onClick={handleOverlayClick}
-      ></div>
+      {(sidebarVisible && window.innerWidth <= 768) || settingsVisible ? (
+        <div 
+          className="cannon-sidebar-overlay" 
+          onClick={handleOverlayClick}
+        ></div>
+      ) : null}
     </div>
   );
 };
