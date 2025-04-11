@@ -195,20 +195,22 @@ export const useConversation = (initialConversationId = null) => {
       
       // Show the error in the UI by converting the streaming message to an error message
       setStreamingMessage(prev => prev ? {
-        ...prev,
-        role: 'system',
-        content: `Error: ${err}`,
-        is_error: true
+          ...prev,
+          role: 'system',
+          content: `Error: ${err}`,
+          is_error: true
       } : null);
       
       // Set the global error state
       setError(err.toString());
       
-      // After a delay, remove the error message
+      // After a delay, remove the error message AND reset loading state
       setTimeout(() => {
-        setStreamingMessage(null);
+          setStreamingMessage(null);
+          // Make sure loading state is reset
+          setLoading(false);
       }, 5000);
-    };
+  };
     
     // Start streaming - pass the user message ID to avoid duplication
     try {

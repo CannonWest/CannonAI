@@ -367,6 +367,9 @@ async def validate_api_key(data: ApiKeyValidation):
 @app.websocket("/ws/chat/{conversation_id}")
 async def websocket_chat(websocket: WebSocket, conversation_id: str):
     """WebSocket endpoint for streaming chat responses."""
+    # Track the current user message to allow rollback on error
+    current_user_message_id = None
+    
     try:
         await websocket.accept()
         
@@ -380,7 +383,8 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
             await websocket.close()
             return
         
-        # Get the conversation
+        # Get the conversation data properly with a fresh session
+        conversation_data = None
         try:
             with db_manager.get_session() as db:
                 conversation = conversation_service.get_conversation(db, conversation_id)
@@ -388,12 +392,23 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
                     await websocket.send_json({"error": "Conversation not found"})
                     await websocket.close()
                     return
+                
+                # Extract all data we need as simple Python types
+                conversation_data = {
+                    "id": str(conversation.id),  # Make sure we get string, not sqlalchemy.util._collections.immutabledict
+                    "system_message": str(conversation.system_message),
+                    "current_node_id": str(conversation.current_node_id) if conversation.current_node_id else None,
+                    "name": str(conversation.name)
+                }
+                
+                logger.debug(f"Loaded conversation data for WS: {conversation_data['id']}")
         except Exception as e:
             logger.error(f"Error retrieving conversation {conversation_id}: {e}", exc_info=True)
             await websocket.send_json({"error": f"Database error: {str(e)}"})
             await websocket.close()
             return
         
+        # Now process websocket messages
         while True:
             # Wait for the client to send a message
             try:
@@ -413,25 +428,13 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
             if not content:
                 await websocket.send_json({"error": "Message content is required"})
                 continue
-            
-            # Try to start processing this message - this is our deduplication barrier
+                
+            # Try to start processing this message
             try:
                 can_process, existing_message_id = await ws_buffer.start_processing(conversation_id, content, parent_id)
                 
                 if not can_process:
-                    if existing_message_id:
-                        # This is a duplicate of a message we've already processed
-                        await websocket.send_json({
-                            "type": "warning",
-                            "message": "This message was already processed",
-                            "duplicate_message_id": existing_message_id
-                        })
-                    else:
-                        # This message is currently being processed
-                        await websocket.send_json({
-                            "type": "warning",
-                            "message": "A similar message is currently being processed"
-                        })
+                    # Handle duplicate message case
                     continue
             except Exception as e:
                 logger.error(f"Error in message deduplication: {e}", exc_info=True)
@@ -516,7 +519,7 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
                         # Add system message
                         messages.append({
                             "role": "system",
-                            "content": conversation.system_message
+                            "content": conversation_data["system_message"]
                         })
                         
                         # Add conversation messages (excluding system message)
@@ -577,6 +580,7 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
                                         )
                                         
                                         if assistant_message:
+                                            conversation_data["current_node_id"] = assistant_message.id
                                             # Send final message saved confirmation
                                             await websocket.send_json({
                                                 "type": "assistant_message_saved",
@@ -625,16 +629,18 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
                     })
             except Exception as processing_error:
                 logger.error(f"Unexpected error processing message: {processing_error}", exc_info=True)
+                # Send a specific error type that the frontend can recognize and handle
                 await websocket.send_json({
                     "type": "error", 
-                    "message": f"Server error: {str(processing_error)}"
+                    "message": f"Server error: {str(processing_error)}",
+                    "code": "processing_failed"  # Add an error code for the frontend to identify
                 })
                 # Ensure we mark processing as complete even on error
                 try:
                     await ws_buffer.complete_processing(conversation_id, content, parent_id)
-                except Exception:
-                    pass
-    
+                except Exception as e:
+                    logger.error(f"Error cleaning up buffer: {e}", exc_info=True)
+                
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected for conversation {conversation_id}")
     except Exception as e:

@@ -14,9 +14,18 @@ const ChatInterface = ({ conversationContext }) => {
     currentConversation, 
     messages, 
     isStreaming, 
+    error,
     sendMessage, 
     navigateToMessage 
   } = conversationContext || {};
+  
+  // Add error state display
+  useEffect(() => {
+    if (error) {
+      // You could use the toast system here to show errors
+      toast.error(error);
+    }
+  }, [error]);
   
   const messagesEndRef = useRef(null);
   
@@ -62,6 +71,14 @@ const ChatInterface = ({ conversationContext }) => {
   
   return (
     <div className="cannon-chat-interface">
+      {error && (
+        <div className="cannon-error-message">
+          <div className="cannon-error-content">
+            {error}
+            <button onClick={() => setError(null)}>Dismiss</button>
+          </div>
+        </div>
+      )}
       <div className="cannon-messages-container">
         {(!messages || messages.length === 0) ? (
           <div className="cannon-empty-state">
