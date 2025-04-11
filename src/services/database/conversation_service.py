@@ -132,14 +132,21 @@ class ConversationService:
         # Check cache first if enabled
         if use_cache and id in self._conversation_cache:
             self.logger.debug(f"Using cached conversation: {id}")
-            return self._conversation_cache[id]
+            # IMPORTANT: Don't use cached object directly, merge it with current session
+            try:
+                cached_conv = self._conversation_cache[id]
+                # Merge with current session to avoid detached instance errors
+                return db.merge(cached_conv)
+            except Exception as e:
+                self.logger.warning(f"Error merging cached conversation {id}: {e}")
+                # Fall through to database query on error
 
         # Query database
         query = select(Conversation).where(Conversation.id == id)
         conversation = db.execute(query).scalars().first()
 
         if conversation:
-            # Update cache
+            # Update cache with a new reference
             self._conversation_cache[id] = conversation
         else:
             self.logger.warning(f"Conversation {id} not found")
@@ -563,6 +570,24 @@ class ConversationService:
 
         self.logger.debug(f"Found {len(branch)} messages in branch")
         return branch
+
+    async def get_conversation_current_node_id(self, session, conversation_id: str) -> Optional[str]:
+        """
+        Safely get the current_node_id for a conversation within an active session.
+        This helps avoid detached instance errors.
+        """
+        try:
+            # Always fetch fresh from the database
+            result = await session.execute(
+                select(Conversation.current_node_id)
+                .where(Conversation.id == conversation_id)
+            )
+            node_id = result.scalar_one_or_none()
+            self.logger.debug(f"Retrieved current_node_id={node_id} for conversation {conversation_id}")
+            return node_id
+        except SQLAlchemyError as e:
+            self.logger.error(f"Error retrieving current_node_id for conversation {conversation_id}: {e}")
+            return None
 
     def navigate_to_message(self, db: Session, conversation_id: str, message_id: str) -> bool:
         """
