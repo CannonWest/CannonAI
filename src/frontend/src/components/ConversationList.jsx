@@ -147,6 +147,11 @@ const ConversationList = ({
                       <div className="cannon-conversation-name">{conv.name}</div>
                       <div className="cannon-conversation-time">
                         {formatDate(conv.modified_at || conv.created_at)}
+                        {conv.message_count > 0 && (
+                          <span className="cannon-message-count">
+                            {conv.message_count} message{conv.message_count !== 1 ? 's' : ''}
+                          </span>
+                        )}
                       </div>
                     </div>
                     

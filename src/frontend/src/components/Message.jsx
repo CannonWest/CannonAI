@@ -66,6 +66,23 @@ const Message = ({ message, onNavigate }) => {
     setIsExpanded(!isExpanded);
   };
   
+  // Format reasoning steps if available
+  const formatReasoningTitle = (reasoning) => {
+    if (!reasoning) return 'Show Reasoning';
+    
+    // Check if it's just a simple string
+    if (typeof reasoning === 'string') {
+      return isExpanded ? 'Hide Reasoning' : 'Show Reasoning';
+    }
+    
+    // If it's an array of steps
+    if (Array.isArray(reasoning) && reasoning.length > 0) {
+      return isExpanded ? 'Hide Reasoning Steps' : `Show Reasoning (${reasoning.length} steps)`;
+    }
+    
+    return isExpanded ? 'Hide Reasoning' : 'Show Reasoning';
+  };
+  
   return (
     <div className={messageClass} id={`message-${id}`}>
       <div className="message-header">
@@ -80,14 +97,27 @@ const Message = ({ message, onNavigate }) => {
               className="reasoning-toggle" 
               onClick={toggleReasoning}
             >
-              {isExpanded ? 'Hide Reasoning' : 'Show Reasoning'}
+              {formatReasoningTitle(reasoning)}
             </button>
             
             {isExpanded && (
               <div className="reasoning-content">
-                <ReactMarkdown components={renderers}>
-                  {reasoning}
-                </ReactMarkdown>
+                {Array.isArray(reasoning) ? (
+                  <div className="reasoning-steps">
+                    {reasoning.map((step, index) => (
+                      <div key={index} className="reasoning-step">
+                        <h4>{step.name || `Step ${index + 1}`}</h4>
+                        <ReactMarkdown components={renderers}>
+                          {step.content || ''}
+                        </ReactMarkdown>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <ReactMarkdown components={renderers}>
+                    {reasoning}
+                  </ReactMarkdown>
+                )}
               </div>
             )}
           </div>

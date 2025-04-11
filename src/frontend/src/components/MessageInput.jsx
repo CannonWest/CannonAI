@@ -13,7 +13,7 @@ const MessageInput = ({ onSend, disabled, placeholder = "Type your message here.
     
     // Reset height to auto to get the correct scrollHeight
     textareaRef.current.style.height = 'auto';
-    // Set to scrollHeight to ensure all content is visible
+    // Set to scrollHeight to ensure all content is visible (with a max height)
     textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
   }, [message]);
   
@@ -51,41 +51,34 @@ const MessageInput = ({ onSend, disabled, placeholder = "Type your message here.
     }
   };
   
-  const handlePaste = (e) => {
-    // Handle file paste
-    if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length > 0) {
-      // TODO: Implement file attachment handling
-      console.log('File pasted:', e.clipboardData.files);
-      e.preventDefault();
-    }
-  };
-  
   return (
-    <div className="message-input">
+    <div className="cannon-message-input">
       <textarea 
         ref={textareaRef}
+        className="cannon-message-textarea"
         value={message}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
         onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
-        onPaste={handlePaste}
         placeholder={placeholder}
         disabled={disabled}
         rows={1} // Start with one row, will auto-expand
-        className={disabled ? 'disabled' : ''}
       />
       
-      <div className="input-controls">
-        <div className="token-counter" title="Estimated token count">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: '4px' }}>
-            <polyline points="9 18 15 12 9 6"></polyline>
+      <div className="cannon-input-controls">
+        <div className="cannon-token-counter">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M8 14s1.5 2 4 2 4-2 4-2"></path>
+            <line x1="9" y1="9" x2="9.01" y2="9"></line>
+            <line x1="15" y1="9" x2="15.01" y2="9"></line>
           </svg>
           {tokenCount} tokens
         </div>
         
         <button 
-          className="send-button"
+          className="cannon-send-button"
           onClick={handleSend}
           disabled={!message.trim() || disabled}
         >
@@ -94,7 +87,7 @@ const MessageInput = ({ onSend, disabled, placeholder = "Type your message here.
           ) : (
             <>
               <span>Send</span>
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="22" y1="2" x2="11" y2="13"></line>
                 <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
               </svg>

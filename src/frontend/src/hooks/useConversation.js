@@ -136,9 +136,6 @@ export const useConversation = (initialConversationId = null) => {
       streamingRef.current.abort();
     }
     
-    const controller = new AbortController();
-    streamingRef.current = controller;
-    
     // Initialize a placeholder for the streaming message
     setStreamingMessage({
       id: 'streaming',
@@ -147,8 +144,23 @@ export const useConversation = (initialConversationId = null) => {
       is_streaming: true
     });
     
+    // Set a timeout to show an error if nothing happens after a while
+    const streamTimeout = setTimeout(() => {
+      if (streamingRef.current) {
+        // If we still have an active streaming request but no content after 15 seconds
+        handleError('The AI service is taking too long to respond. This might be due to high demand or service issues.');
+        if (streamingRef.current) {
+          streamingRef.current.abort();
+          streamingRef.current = null;
+        }
+      }
+    }, 15000);
+    
     // Handle incoming chunks
     const handleChunk = (chunk) => {
+      // Clear the timeout since we got a response
+      clearTimeout(streamTimeout);
+      
       if (chunk.content) {
         setStreamingMessage(prev => ({
           ...prev,
@@ -159,6 +171,7 @@ export const useConversation = (initialConversationId = null) => {
     
     // Handle completion
     const handleComplete = (finalMessage) => {
+      clearTimeout(streamTimeout);
       streamingRef.current = null;
       
       // Replace streaming message with the final message
@@ -176,30 +189,51 @@ export const useConversation = (initialConversationId = null) => {
     
     // Handle errors
     const handleError = (err) => {
+      clearTimeout(streamTimeout);
+      console.error('Streaming error:', err);
       streamingRef.current = null;
-      setStreamingMessage(null);
+      
+      // Show the error in the UI by converting the streaming message to an error message
+      setStreamingMessage(prev => prev ? {
+        ...prev,
+        role: 'system',
+        content: `Error: ${err}`,
+        is_error: true
+      } : null);
+      
+      // Set the global error state
       setError(err.toString());
+      
+      // After a delay, remove the error message
+      setTimeout(() => {
+        setStreamingMessage(null);
+      }, 5000);
     };
     
     // Start streaming - pass the user message ID to avoid duplication
-    streamChat(
-      currentConversation.id,
-      content,
-      userMessageId || currentConversation.current_node_id,
-      handleChunk,
-      handleComplete,
-      handleError
-    );
+    try {
+      streamingRef.current = streamChat(
+        currentConversation.id,
+        content,
+        userMessageId || currentConversation.current_node_id,
+        handleChunk,
+        handleComplete,
+        handleError
+      );
+    } catch (err) {
+      handleError(err.toString());
+    }
     
     // Return abort function
     return () => {
+      clearTimeout(streamTimeout);
       if (streamingRef.current) {
         streamingRef.current.abort();
         streamingRef.current = null;
         setStreamingMessage(null);
       }
     };
-  }, [currentConversation]);
+  }, [currentConversation, streamChat]);
   
   // Navigate to a specific message in the conversation history
   const navigateHistory = useCallback(async (messageId) => {

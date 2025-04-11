@@ -9,6 +9,7 @@ const ConversationProvider = ({ children }) => {
   const [currentConversationId, setCurrentConversationId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [conversationLoaded, setConversationLoaded] = useState(false);
   
   const {
     loadConversations,
@@ -53,6 +54,7 @@ const ConversationProvider = ({ children }) => {
       if (created) {
         setConversations(prev => [created, ...prev]);
         setCurrentConversationId(created.id);
+        setConversationLoaded(true);
         toast.success('New conversation created');
       }
       return created;
@@ -67,20 +69,31 @@ const ConversationProvider = ({ children }) => {
   
   // Select and load a conversation
   const selectConversation = useCallback(async (id) => {
-    if (id === currentConversationId) return;
+    if (id === currentConversationId && conversationLoaded) return;
     
     try {
       setLoading(true);
-      await loadConversation(id);
-      setCurrentConversationId(id);
-      setError(null);
+      setConversationLoaded(false);
+      console.log(`Loading conversation: ${id}`);
+      const result = await loadConversation(id);
+      
+      if (result) {
+        setCurrentConversationId(id);
+        setConversationLoaded(true);
+        setError(null);
+        console.log(`Conversation loaded successfully: ${id}`);
+      } else {
+        toast.error('Could not load conversation');
+        setError('Could not load conversation');
+      }
     } catch (err) {
+      console.error(`Error loading conversation: ${err}`);
       setError(err.toString());
       toast.error('Failed to load conversation');
     } finally {
       setLoading(false);
     }
-  }, [currentConversationId, loadConversation, toast]);
+  }, [currentConversationId, loadConversation, toast, conversationLoaded]);
   
   // Delete a conversation
   const deleteConversation = useCallback(async (id) => {
@@ -94,6 +107,7 @@ const ConversationProvider = ({ children }) => {
         // If current conversation was deleted, select another one or clear
         if (currentConversationId === id) {
           setCurrentConversationId(null);
+          setConversationLoaded(false);
         }
         
         toast.success('Conversation deleted');
@@ -137,32 +151,63 @@ const ConversationProvider = ({ children }) => {
   const sendMessage = useCallback(async (content) => {
     if (!currentConversationId) {
       // Create a new conversation if none exists
-      const created = await createConversation('New Conversation');
-      if (!created) return null;
+      try {
+        const created = await createConversation('New Conversation');
+        if (!created) {
+          toast.error('Could not create a new conversation');
+          return null;
+        }
+      } catch (err) {
+        setError(err.toString());
+        toast.error('Failed to create conversation: ' + err.toString());
+        return null;
+      }
     }
     
     try {
+      // Set a loading state to show the user something is happening
+      setLoading(true);
+      
       // Send the user message
       const userMessage = await sendUserMessage(content);
-      if (!userMessage) return null;
+      if (!userMessage) {
+        toast.error('Failed to send message');
+        return null;
+      }
       
       // Start streaming the response
-      streamResponse(content);
+      const abortController = streamResponse(content);
       
-      // Return successful status without reference to userMessage
-      return true;
+      // Return the abort controller so the UI can cancel if needed
+      return abortController;
     } catch (err) {
       setError(err.toString());
-      toast.error('Failed to send message');
+      
+      // Provide more specific error messages based on common issues
+      if (err.message?.includes('API key')) {
+        toast.error('Invalid or missing API key. Please add a valid OpenAI API key in Settings.');
+      } else if (err.message?.includes('429') || err.message?.includes('rate limit')) {
+        toast.error('OpenAI rate limit exceeded. Please try again later.');
+      } else if (err.message?.includes('Network') || err.message?.includes('timeout')) {
+        toast.error('Network error. Please check your internet connection.');
+      } else {
+        toast.error('Failed to send message: ' + err.toString());
+      }
+      
       return null;
+    } finally {
+      setLoading(false);
     }
-  }, [currentConversationId, createConversation, streamResponse, toast]);
+  }, [currentConversationId, createConversation, streamResponse, sendUserMessage, toast]);
 
   // Context value with conversation data and methods
   const contextForCurrentConversation = {
     currentConversation,
     messages,
     isStreaming,
+    loading,
+    error,
+    conversationLoaded,
     sendMessage,
     navigateToMessage: async (messageId) => {
       // Implement navigation to specific message
@@ -175,6 +220,7 @@ const ConversationProvider = ({ children }) => {
       currentConversationId,
       loading,
       error,
+      conversationLoaded,
       createConversation,
       selectConversation,
       deleteConversation,

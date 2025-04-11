@@ -33,6 +33,8 @@ class Conversation(Base):
     modified_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     current_node_id = Column(String, ForeignKey('messages.id'))
     system_message = Column(Text, nullable=False, default="You are a helpful assistant.")
+    folder_id = Column(String, nullable=True)
+    message_count = Column(Integer, default=0)
 
     messages = relationship("Message", back_populates="conversation",
                             cascade="all, delete-orphan",
@@ -45,6 +47,7 @@ class Conversation(Base):
         self.system_message = system_message
         self.created_at = datetime.utcnow()
         self.modified_at = self.created_at
+        self.message_count = 0
         super().__init__(**kwargs)
 
     def to_dict(self):
@@ -55,7 +58,9 @@ class Conversation(Base):
             "system_message": self.system_message,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "modified_at": self.modified_at.isoformat() if self.modified_at else None,
-            "current_node_id": self.current_node_id
+            "current_node_id": self.current_node_id,
+            "folder_id": self.folder_id,
+            "message_count": self.message_count
         }
 
 

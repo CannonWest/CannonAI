@@ -369,6 +369,16 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
     try:
         await websocket.accept()
         
+        # Check if API key is configured
+        api_key = settings_manager.get_setting("api_key")
+        if not api_key:
+            await websocket.send_json({
+                "type": "error",
+                "message": "No API key configured. Please add your API key in Settings."
+            })
+            await websocket.close()
+            return
+        
         # Get the conversation
         try:
             with db_manager.get_session() as db:
@@ -516,41 +526,96 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
                                     "content": msg.content
                                 })
                     
+                    # Check API key validity before starting stream
+                    try:
+                        is_valid, message = await api_service.validate_api_key(api_key)
+                        if not is_valid:
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": f"API key validation failed: {message}. Please check your API key in Settings."
+                            })
+                            continue
+                    except Exception as api_error:
+                        logger.error(f"API key validation error: {api_error}", exc_info=True)
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Failed to validate API key. Please check your internet connection."
+                        })
+                        continue
+                    
                     # Start streaming API response
-                    async for chunk in api_service.get_stream_events_async(messages, settings):
-                        # Send each chunk to the WebSocket client
-                        await websocket.send_json(chunk)
+                    try:
+                        async for chunk in api_service.get_stream_events_async(messages, settings):
+                            # Send each chunk to the WebSocket client
+                            await websocket.send_json(chunk)
+                            
+                            # If this is the end of the stream, save the assistant message
+                            if chunk.get("type") == "end":
+                                try:
+                                    with db_manager.get_session() as db:
+                                        assistant_content = ""
+                                        # Handle both API types (Response API and Chat Completions)
+                                        if chunk.get("content"):
+                                            assistant_content = chunk.get("content")
+                                        else:
+                                            # Extract from messages if we don't have direct content
+                                            assistant_contents = [msg.get("content", "") for msg in messages 
+                                                                if msg.get("role") == "assistant"]
+                                            assistant_content = "".join(assistant_contents)
+                                        
+                                        # Create assistant message
+                                        assistant_message = conversation_service.add_assistant_message(
+                                            db,
+                                            conversation_id=conversation_id,
+                                            content=assistant_content,
+                                            parent_id=user_message_id,
+                                            model_info={"model": chunk.get("model")},
+                                            token_usage=chunk.get("token_usage"),
+                                            reasoning_steps=chunk.get("reasoning_steps"),
+                                            response_id=chunk.get("response_id")
+                                        )
+                                        
+                                        if assistant_message:
+                                            # Send final message saved confirmation
+                                            await websocket.send_json({
+                                                "type": "assistant_message_saved",
+                                                "message": assistant_message.to_dict()
+                                            })
+                                except Exception as save_error:
+                                    logger.error(f"Error saving assistant message: {save_error}", exc_info=True)
+                                    await websocket.send_json({
+                                        "type": "error",
+                                        "message": f"Failed to save response: {str(save_error)}"
+                                    })
+                    except httpx.RequestError as req_error:
+                        logger.error(f"API request error: {req_error}", exc_info=True)
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": f"API request error: {str(req_error)}. Please check your internet connection."
+                        })
+                    except httpx.HTTPStatusError as status_error:
+                        status_code = status_error.response.status_code
+                        error_message = f"API error ({status_code})"
                         
-                        # If this is the end of the stream, save the assistant message
-                        if chunk.get("type") == "end":
-                            try:
-                                with db_manager.get_session() as db:
-                                    assistant_content = "".join([msg.get("content", "") for msg in messages if msg.get("role") == "assistant"])
-                                    
-                                    # Create assistant message
-                                    assistant_message = conversation_service.add_assistant_message(
-                                        db,
-                                        conversation_id=conversation_id,
-                                        content=assistant_content,
-                                        parent_id=user_message_id,
-                                        model_info={"model": chunk.get("model")},
-                                        token_usage=chunk.get("token_usage"),
-                                        reasoning_steps=chunk.get("reasoning_steps"),
-                                        response_id=chunk.get("response_id")
-                                    )
-                                    
-                                    if assistant_message:
-                                        # Send final message saved confirmation
-                                        await websocket.send_json({
-                                            "type": "assistant_message_saved",
-                                            "message": assistant_message.to_dict()
-                                        })
-                            except Exception as save_error:
-                                logger.error(f"Error saving assistant message: {save_error}", exc_info=True)
-                                await websocket.send_json({
-                                    "type": "error",
-                                    "message": f"Failed to save response: {str(save_error)}"
-                                })
+                        # Provide more detailed messages for common errors
+                        if status_code == 401:
+                            error_message = "Invalid API key. Please check your API key in Settings."
+                        elif status_code == 429:
+                            error_message = "Rate limit exceeded. Please try again later or use a different API key."
+                        elif status_code >= 500:
+                            error_message = "OpenAI server error. The service may be experiencing issues."
+                        
+                        logger.error(f"API HTTP error: {status_error}", exc_info=True)
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": error_message
+                        })
+                    except Exception as api_error:
+                        logger.error(f"API error during streaming: {api_error}", exc_info=True)
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": f"API error: {str(api_error)}"
+                        })
                 except Exception as api_error:
                     logger.error(f"API error during streaming: {api_error}", exc_info=True)
                     await websocket.send_json({
@@ -578,7 +643,7 @@ async def websocket_chat(websocket: WebSocket, conversation_id: str):
             await websocket.close()
         except Exception:
             pass
-        
+                
 # --- Serve Frontend Static Files ---
 # Mount the frontend static files
 if FRONTEND_DIR.exists():

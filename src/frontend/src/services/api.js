@@ -145,112 +145,129 @@ export const validateApiKey = async (apiKey) => {
 };
 
 // Streaming chat
-export const streamChat = async (conversationId, content, parentId = null, onChunk, onComplete, onError) => {
-  if (!conversationId) throw new Error('Conversation ID is required');
-  if (!content) throw new Error('Message content is required');
-  
-  try {
-    // Send the content directly to the streaming endpoint without creating a user message first
-    const response = await apiClient.post(
-      `/conversations/${conversationId}/stream`,
-      {
-        content: content,  // Include the content directly
-        parent_id: parentId // Use parentId if provided
-      },
-      {
-        responseType: 'stream',
-        onDownloadProgress: (progressEvent) => {
-          const chunk = progressEvent.currentTarget.response;
-          if (chunk) {
-            try {
-              const data = JSON.parse(chunk);
-              onChunk(data);
-            } catch (e) {
-              // Ignore parsing errors for partial chunks
-            }
-          }
-        }
-      }
-    );
-    
-    // Handle completion
-    if (onComplete) {
-      onComplete(response.data);
-    }
-    
-    return response.data;
-  } catch (error) {
-    if (onError) {
-      onError(formatError(error));
-    } else {
-      throw error;
-    }
-  }
+export const streamChat = (conversationId, content, parentId = null, onChunk, onComplete, onError) => {
+  // Just call the WebSocket implementation which is already defined
+  return streamChatWebSocket(conversationId, content, parentId, onChunk, onComplete, onError);
 };
 
-// Streaming chat - WebSocket version for more efficient streaming
 export const streamChatWebSocket = (conversationId, content, parentId = null, onChunk, onComplete, onError) => {
   if (!conversationId) throw new Error('Conversation ID is required');
   if (!content) throw new Error('Message content is required');
   
+  // Fix the WebSocket URL construction for production vs development
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsBaseUrl = process.env.NODE_ENV === 'production' 
+    ? `${protocol}//${window.location.host}/ws` 
+    : 'ws://localhost:8000/ws';
+  
   // Create WebSocket connection
-  const ws = new WebSocket(`ws://localhost:8000/ws/chat/${conversationId}`);
+  const ws = new WebSocket(`${wsBaseUrl}/chat/${conversationId}`);
   
   // Track connection state
   let isConnected = false;
   let isClosedByClient = false;
+  let hasReceivedResponse = false;
+  let connectionTimeout = null;
+  
+  // Set connection timeout
+  connectionTimeout = setTimeout(() => {
+    if (!isConnected) {
+      if (onError) onError('WebSocket connection timeout. Please try again.');
+      ws.close();
+    }
+  }, 10000); // 10 second timeout
   
   // Create abort controller for client-side abort
   const controller = {
     abort: () => {
       isClosedByClient = true;
+      clearTimeout(connectionTimeout);
       ws.close();
     }
   };
   
   ws.onopen = () => {
     isConnected = true;
+    clearTimeout(connectionTimeout);
     
     // Send the initial message
     ws.send(JSON.stringify({
       content,
       parent_id: parentId
     }));
+    
+    // Set response timeout
+    setTimeout(() => {
+      if (!hasReceivedResponse && isConnected) {
+        if (onError) onError('No response received from AI service. Please check your API key and try again.');
+        controller.abort();
+      }
+    }, 15000); // 15 second timeout for initial response
   };
   
   ws.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
+      hasReceivedResponse = true;
       
       if (data.error) {
         if (onError) onError(data.error);
         return;
       }
       
+      // Handle warning messages (like duplicate messages)
+      if (data.type === 'warning') {
+        console.warn('WebSocket warning:', data.message);
+        // We might want to display this to the user depending on the warning
+        return;
+      }
+      
       // Handle different event types
-      if (data.type === 'assistant_message_delta') {
+      if (data.type === 'content' || data.type === 'assistant_message_delta') {
         if (onChunk) onChunk(data);
-      } else if (data.type === 'reasoning_step') {
+      } else if (data.type === 'reasoning_step' || data.type === 'response.thinking_step') {
         if (onChunk) onChunk(data);
-      } else if (data.type === 'assistant_message_complete' || data.type === 'assistant_message_saved') {
+      } else if (data.type === 'end' || data.type === 'assistant_message_complete' || 
+                data.type === 'assistant_message_saved' || data.type === 'response.completed') {
         if (onComplete) onComplete(data.message || data);
       }
     } catch (error) {
       console.error('Error parsing WebSocket message:', error);
-      if (onError) onError('Error parsing response');
+      if (onError) onError('Error parsing response from AI service');
     }
   };
   
   ws.onerror = (error) => {
     console.error('WebSocket error:', error);
-    if (onError) onError('WebSocket error: ' + (error.message || 'Unknown error'));
+    if (onError) {
+      // Provide more helpful error message based on common issues
+      if (!navigator.onLine) {
+        onError('Network connection lost. Please check your internet connection.');
+      } else if (!isConnected) {
+        onError('Could not connect to the AI service. Server may be unavailable.');
+      } else {
+        onError('Error communicating with AI service: ' + (error.message || 'Unknown error'));
+      }
+    }
   };
   
-  ws.onclose = () => {
+  ws.onclose = (event) => {
+    clearTimeout(connectionTimeout);
     isConnected = false;
-    if (!isClosedByClient) {
-      // Only trigger error if not closed by the client intentionally
-      if (onError) onError('WebSocket connection closed unexpectedly');
+    
+    if (!isClosedByClient && !hasReceivedResponse) {
+      // Only trigger error if not closed by the client and no response received
+      if (onError) {
+        if (event.code === 1000) {
+          // Normal closure, no response
+          onError('AI service did not respond. Please try again.');
+        } else if (event.code === 1008 || event.code === 1011) {
+          // Policy violation or internal error
+          onError('AI service error: ' + (event.reason || 'Server error'));
+        } else {
+          onError('Connection to AI service closed unexpectedly. Please try again.');
+        }
+      }
     }
   };
   
