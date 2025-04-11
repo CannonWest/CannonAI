@@ -513,13 +513,6 @@ class ConversationService:
     def get_message_branch(self, db: Session, message_id: str) -> List[Message]:
         """
         Get the branch of messages from root to the specified message.
-
-        Args:
-            db: SQLAlchemy session
-            message_id: Message ID
-
-        Returns:
-            List of messages in order from root to specified message
         """
         self.logger.debug(f"Getting message branch for message: {message_id}")
 
@@ -533,10 +526,24 @@ class ConversationService:
             # Check cache first
             cached_message = self._message_cache.get(current_id)
             if cached_message is not None:
-                branch.insert(0, cached_message)
-                current_id = cached_message.parent_id
-                continue
-
+                # FIX OPTION 1: Store additional attributes in the cache
+                # If the cache stores the parent_id separately, we can use it directly
+                # This would require modifying the caching mechanism
+                
+                # FIX OPTION 2: Verify the object is still bound to a session
+                # before using it, or refresh it with the current session
+                try:
+                    # Try to bind the cached object to the current session
+                    cached_message = db.merge(cached_message)
+                    branch.insert(0, cached_message)
+                    current_id = cached_message.parent_id
+                    continue
+                except Exception as e:
+                    # If merging fails, fall back to querying the database
+                    self.logger.warning(f"Error merging cached message: {e}")
+                    # Fall through to the database query below
+                    pass
+            
             # Query database
             message = db.get(Message, current_id, options=[selectinload(Message.file_attachments)])
 
