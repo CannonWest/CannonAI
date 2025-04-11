@@ -2,21 +2,19 @@
 """
 Logging utilities for the OpenAI Chat application.
 """
-
 import os
 import sys
 import logging
 from logging.handlers import RotatingFileHandler
 from typing import Dict, Optional, Any
 import inspect
+import tempfile  # Add this import
 
-from src.utils.constants import DATA_DIR
+from src.utils.constants import DATA_DIR, LOGS_DIR
 
-# Create a logs directory inside the data directory
-LOGS_DIR = os.path.join(DATA_DIR, "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 
-# Default log file path
+# Default log file path in temp directory during development
 DEFAULT_LOG_FILE = os.path.join(LOGS_DIR, "openai_chat.log")
 
 # Default log format

@@ -16,9 +16,14 @@ else:
     # If the application is run from script
     ROOT_DIR = Path(__file__).parent.parent.parent
 
+
 # Data directory is at the project root level
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
+
+# Define the logs directory
+LOGS_DIR = os.path.join(DATA_DIR, "logs")
+os.makedirs(LOGS_DIR, exist_ok=True)
 
 # Define other important directories
 DATABASE_DIR = os.path.join(DATA_DIR, "database")

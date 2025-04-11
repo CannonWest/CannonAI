@@ -27,6 +27,7 @@ from src.services.database.db_manager import DatabaseManager, default_db_manager
 from src.services.database.conversation_service import ConversationService
 from src.services.api.api_service import ApiService
 from src.services.storage.settings_manager import SettingsManager
+from src.utils import logging_utils
 
 # Ensure all application directories exist
 ensure_directories()
@@ -690,6 +691,9 @@ def main():
     """Main entry point for the application."""
     import uvicorn
     
+    # Set environment variable for development mode
+    os.environ["ENVIRONMENT"] = "development"
+    
     # Initialize services here, before starting the server
     global db_manager, conversation_service, settings_manager, api_service
     db_manager, conversation_service, settings_manager, api_service = initialize_services()
@@ -703,10 +707,23 @@ def main():
     logger.info(f"Starting FastAPI server with frontend from: {FRONTEND_DIR}")
     logger.info(f"Database file location: {db_manager.db_url}")
     
-    # Start the server
+    # Define explicitly which directories to watch (exclude data and logs)
+    watch_dirs = [
+        str(Path(__file__).parent),  # src directory
+        str(Path(__file__).parent / "frontend" / "src"),  # frontend source
+    ]
+    
+    # Start the server with explicit reload directories
     port = int(os.environ.get("PORT", 8000))
     logger.info(f"Starting FastAPI server on port {port}")
-    uvicorn.run("src.main:app", host="0.0.0.0", port=port, reload=True, log_level="info")
+    logger.info(f"Logs will be written to: {logging_utils.LOGS_DIR}")
+    uvicorn.run(
+        "src.main:app", 
+        host="0.0.0.0", 
+        port=port, 
+        reload=True, 
+        log_level="info"
+    )
     
     return 0
 

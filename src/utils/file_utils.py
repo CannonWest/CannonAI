@@ -27,8 +27,6 @@ mimetypes.add_type('text/markdown', '.md')
 mimetypes.add_type('text/x-python', '.py')
 mimetypes.add_type('application/json', '.json')
 
-# Removed AsyncFileProcessor class
-
 
 # --- Standalone Synchronous Utility Functions ---
 
