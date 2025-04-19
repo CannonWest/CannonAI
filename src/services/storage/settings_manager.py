@@ -168,14 +168,15 @@ class SettingsManager:
             self.logger.error(f"Error saving settings: {e}", exc_info=True)
             return False
 
-    def get_settings(self) -> Dict[str, Any]:
+    async def get_settings(self) -> Dict[str, Any]:
         """
         Get a copy of the current settings.
 
         Returns:
             Dictionary of current settings
         """
-        return self.settings.copy()
+        settings = self.settings
+        return settings
 
     def get_setting(self, key: str, default: Any = None) -> Any:
         """

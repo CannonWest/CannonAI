@@ -94,6 +94,16 @@ else:
     FRONTEND_DIR = PROJECT_ROOT / "static"
     FRONTEND_DIR.mkdir(parents=True, exist_ok=True)
 
+# Initialize service managers
+settings_manager = SettingsManager()  # Adjust constructor parameters if needed
+
+# Dependency functions
+def get_db_manager():
+    return default_db_manager
+
+def get_settings_manager():
+    return settings_manager
+
 # Create FastAPI app instance
 app = FastAPI(title="CannonAI API", description="API for CannonAI Chat Application")
 
@@ -109,11 +119,10 @@ app.add_middleware(
 # Initialize services in a function rather than at module level
 def initialize_services():
     """Initialize all application services. Only call this once when server starts."""
-    global db_manager, conversation_service, settings_manager, api_service
+    global db_manager, conversation_service, api_service
     # Initialize services
     db_manager = default_db_manager
     conversation_service = ConversationService(db_manager)
-    settings_manager = SettingsManager()
     api_service = ApiService()
     # Set API key from settings
     api_key = settings_manager.get_setting("api_key")
@@ -121,12 +130,11 @@ def initialize_services():
         api_service.set_api_key(api_key)
         logger.info("API key loaded from settings")
     # Return the initialized services
-    return db_manager, conversation_service, settings_manager, api_service
+    return db_manager, conversation_service, api_service
     
 # Declare services at module level but don't initialize them yet
 db_manager = None
 conversation_service = None  
-settings_manager = None
 api_service = None
 
 # --- Dependencies ---
@@ -213,129 +221,144 @@ ws_buffer = WebSocketMessageBuffer()
 
 # --- Conversation Endpoints ---
 @app.get("/api/conversations", response_model=List[Dict])
-def get_conversations(
+async def get_conversations(
     skip: int = 0,
     limit: int = 100,
-    db: Session = Depends(get_db)
+    db_manager = Depends(get_db_manager)
 ):
-    """Get all conversations with pagination."""
-    conversations = conversation_service.get_all_conversations(db, skip, limit)
-    return [conv.to_dict() for conv in conversations]
+    try:
+        async with db_manager.get_session() as session:
+            # Use the injected db_manager instance
+            conversations = await db_manager.get_conversations(session, skip=skip, limit=limit)
+            return conversations
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving conversations: {str(e)}")
     
 @app.post("/api/conversations", response_model=Dict)
-def create_conversation(
-    data: ConversationCreate,
-    db: Session = Depends(get_db)
+async def create_conversation(
+    data: ConversationCreate
 ):
     """Create a new conversation."""
-    conversation = conversation_service.create_conversation(
-        db,
-        name=data.name,
-        system_message=data.system_message
-    )
-    return conversation.to_dict()
+    async with db_manager.get_session() as session:
+        conversation = await conversation_service.create_conversation(
+            session,
+            name=data.name,
+            system_message=data.system_message
+        )
+        return conversation.to_dict()
 
 @app.get("/api/conversations/{conversation_id}", response_model=Dict)
-def get_conversation(
-    conversation_id: str,
-    db: Session = Depends(get_db)
+async def get_conversation(
+    conversation_id: str
 ):
     """Get a conversation by ID."""
-    conversation = conversation_service.get_conversation_with_messages(db, conversation_id)
-    if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return conversation.to_dict()
+    async with db_manager.get_session() as session:
+        conversation = await conversation_service.get_conversation_with_messages(session, conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return conversation.to_dict()
         
 @app.put("/api/conversations/{conversation_id}", response_model=Dict)
-def update_conversation(
+async def update_conversation(
     conversation_id: str,
-    data: ConversationUpdate,
-    db: Session = Depends(get_db)
+    data: ConversationUpdate
 ):
     """Update a conversation."""
     # Convert model to dict, excluding None values
     update_data = {k: v for k, v in data.dict().items() if v is not None}
-    conversation = conversation_service.update_conversation(db, conversation_id, update_data)
-    if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return conversation.to_dict()
+    async with db_manager.get_session() as session:
+        conversation = await conversation_service.update_conversation(session, conversation_id, update_data)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return conversation.to_dict()
 
 @app.delete("/api/conversations/{conversation_id}", response_model=Dict)
-def delete_conversation(
-    conversation_id: str,
-    db: Session = Depends(get_db)
+async def delete_conversation(
+    conversation_id: str
 ):
     """Delete a conversation."""
-    success = conversation_service.delete_conversation(db, conversation_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return {"success": True, "id": conversation_id}
+    async with db_manager.get_session() as session:
+        success = await conversation_service.delete_conversation(session, conversation_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return {"success": True, "id": conversation_id}
     
 @app.post("/api/conversations/{conversation_id}/duplicate", response_model=Dict)
-def duplicate_conversation(
+async def duplicate_conversation(
     conversation_id: str,
-    new_name: Optional[str] = None,
-    db: Session = Depends(get_db)
+    new_name: Optional[str] = None
 ):  
     """Duplicate a conversation."""
-    new_conversation = conversation_service.duplicate_conversation(db, conversation_id, new_name)
-    if not new_conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return new_conversation.to_dict()
+    async with db_manager.get_session() as session:
+        new_conversation = await conversation_service.duplicate_conversation(session, conversation_id, new_name)
+        if not new_conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return new_conversation.to_dict()
     
 # --- Message Endpoints ---
 @app.get("/api/conversations/{conversation_id}/messages", response_model=List[Dict])
-def get_messages(
-    conversation_id: str,
-    db: Session = Depends(get_db)
+async def get_messages(
+    conversation_id: str
 ):
     """Get all messages for a conversation."""
-    conversation = conversation_service.get_conversation_with_messages(db, conversation_id)
-    if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return [message.to_dict() for message in conversation.messages]
+    async with db_manager.get_session() as session:
+        conversation = await conversation_service.get_conversation_with_messages(session, conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return [message.to_dict() for message in conversation.messages]
 
 @app.post("/api/conversations/{conversation_id}/messages", response_model=Dict)
-def add_user_message(
+async def add_user_message(
     conversation_id: str,
-    data: MessageCreate,
-    db: Session = Depends(get_db)
+    data: MessageCreate
 ):
     """Add a user message to a conversation."""
-    message = conversation_service.add_user_message(
-        db,
-        conversation_id=conversation_id,
-        content=data.content,
-        parent_id=data.parent_id
-    )
-    if not message:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return message.to_dict()
+    async with db_manager.get_session() as session:
+        message = await conversation_service.add_user_message(
+            session,
+            conversation_id=conversation_id,
+            content=data.content,
+            parent_id=data.parent_id
+        )
+        if not message:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return message.to_dict()
          
 @app.post("/api/conversations/{conversation_id}/navigate", response_model=Dict)
-def navigate_to_message(
+async def navigate_to_message(
     conversation_id: str,
-    data: MessageNavigate,
-    db: Session = Depends(get_db)
+    data: MessageNavigate
 ):
     """Navigate to a specific message in the conversation."""
-    success = conversation_service.navigate_to_message(
-        db,
-        conversation_id=conversation_id,
-        message_id=data.message_id
-    )
-    if not success:
-        raise HTTPException(status_code=404, detail="Conversation or message not found")
-    return {"success": True, "conversation_id": conversation_id, "message_id": data.message_id}
+    async with db_manager.get_session() as session:
+        success = await conversation_service.navigate_to_message(
+            session,
+            conversation_id=conversation_id,
+            message_id=data.message_id
+        )
+        if not success:
+            raise HTTPException(status_code=404, detail="Conversation or message not found")
+        return {"success": True, "conversation_id": conversation_id, "message_id": data.message_id}
 
 # --- Settings Endpoints ---
 @app.get("/api/settings", response_model=Dict)
-def get_settings():
-    """Get application settings."""
-    return settings_manager.get_frontend_settings()
+async def get_settings(
+    settings_manager = Depends(get_settings_manager)
+):
+    try:
+        # Add a debug log to see what's happening
+        print(f"Settings manager: {settings_manager}")
+        settings = await settings_manager.get_settings()
+        return settings
+    except Exception as e:
+        # Log the specific error
+        import traceback
+        print(f"Error retrieving settings: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Error retrieving settings: {str(e)}")
 
 @app.post("/api/settings", response_model=Dict)
-def save_settings(
+async def save_settings(
     settings: Dict = Body(...)
 ):
     """Save application settings."""
@@ -348,7 +371,7 @@ def save_settings(
     return settings_manager.get_frontend_settings()
 
 @app.post("/api/settings/reset", response_model=Dict)
-def reset_settings():
+async def reset_settings():
     """Reset settings to defaults."""
     settings_manager.reset_to_defaults()
     return settings_manager.get_frontend_settings()
@@ -504,8 +527,8 @@ def main():
     os.environ["ENVIRONMENT"] = "development"
     
     # Initialize services here, before starting the server
-    global db_manager, conversation_service, settings_manager, api_service
-    db_manager, conversation_service, settings_manager, api_service = initialize_services()
+    global db_manager, conversation_service, api_service
+    db_manager, conversation_service, api_service = initialize_services()
     
     # Ensure database is initialized
     if not db_manager.ping():

@@ -6,13 +6,19 @@ Adapted for web-based architecture with FastAPI.
 
 import os
 import logging
-from contextlib import contextmanager
+from contextlib import contextmanager, asynccontextmanager  # Add asynccontextmanager
 from typing import Generator, Optional, Dict, Any
 from pathlib import Path
 
+# For async SQLAlchemy:
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+
+# OR for sync SQLAlchemy:
 from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import Session
 from sqlalchemy.pool import QueuePool
 
 # Import Base from models
@@ -107,13 +113,13 @@ class DatabaseManager:
             self.logger.error(f"Error creating database tables: {e}", exc_info=True)
             return False
 
-    @contextmanager
-    def get_session(self) -> Generator[Session, None, None]:
+    @asynccontextmanager  # Change decorator
+    async def get_session(self):  # Change to async def
         """
         Provide a transactional scope around a series of operations.
 
         Usage:
-            with db_manager.get_session() as session:
+            async with db_manager.get_session() as session:
                 # Use session here
 
         Yields:
@@ -129,26 +135,51 @@ class DatabaseManager:
 
         try:
             yield session
-            session.commit()
+            await session.commit()
             self.logger.debug(f"Session {session_id} committed")
         except Exception as e:
             self.logger.error(f"Error in database session: {e}", exc_info=True)
-            session.rollback()
+            await session.rollback()
             self.logger.debug(f"Session {session_id} rolled back")
             raise  # Re-raise the exception after rollback
         finally:
-            session.close()
+            await session.close()
             self.logger.debug(f"Session {session_id} closed")
 
-    def ping(self) -> bool:
-        """Test if the database connection is working."""
-        if not self._engine:
-            self.logger.error("Cannot ping: Engine not initialized")
-            return False
+    async def get_conversations(self, session, skip=0, limit=100):
+        """
+        Retrieves a list of conversations with pagination.
+        
+        Args:
+            session: The database session
+            skip: Number of records to skip (for pagination)
+            limit: Maximum number of records to return
+            
+        Returns:
+            List of conversation objects
+        """
+        try:
+            # Adjust this query based on your actual database schema
+            # This is an example assuming you have a Conversation model
+            from sqlalchemy import select
+            from src.models.orm_models import Conversation
+            
+            query = select(Conversation).offset(skip).limit(limit).order_by(Conversation.modified_at.desc())
+            
+            # Use synchronous execution instead of awaiting
+            result = session.execute(query)  # Remove the await
+            conversations = result.scalars().all()
+            return conversations
+            
+        except Exception as e:
+            self.logger.error(f"Error retrieving conversations: {str(e)}")
+            raise
 
+    def ping(self) -> bool:
         try:
             with self._engine.connect() as connection:
                 connection.execute(text("SELECT 1"))
+                self.logger.debug("Database ping successful")
             self.logger.debug("Database ping successful")
             return True
         except Exception as e:
@@ -167,23 +198,27 @@ class DatabaseManager:
                 self.logger.info("Database engine disposed successfully")
             except Exception as e:
                 self.logger.error(f"Error disposing database engine: {e}", exc_info=True)
-
     # --- Dependency injection helper for FastAPI ---
 
     def get_db(self):
-        """
+        """endpoints.
         Dependency to use in FastAPI endpoints.
 
-        Usage:
-            @app.get("/items/")
+        Usage:)
+            @app.get("/items/") def read_items(db: Session = Depends(db_manager.get_db)):
             def read_items(db: Session = Depends(db_manager.get_db)):
                 # Use db session here
-
         Yields:
+        Yields:            SQLAlchemy Session
             SQLAlchemy Session
         """
-        with self.get_session() as session:
-            yield session
+
+
+
+
+
+
+default_db_manager = DatabaseManager(f"sqlite:///{db_path}")# Initialize default database manager with the correct database            yield session        with self.get_session() as session:            yield session
 
 
 # Initialize default database manager with the correct database

@@ -81,6 +81,12 @@ def configure_logging(config: Optional[Dict[str, Any]] = None) -> None:
     # Apply the configuration
     dictConfig(logging_config)
 
+    # Set higher level for noisy libraries
+    logging.getLogger("watchfiles").setLevel(logging.WARNING)  # Changed from INFO to WARNING
+    # You might want to add other noisy libraries here too, e.g.:
+    # logging.getLogger("uvicorn").setLevel(logging.INFO)
+    # logging.getLogger("fastapi").setLevel(logging.INFO)
+
     # Log the startup information
     logger = logging.getLogger(__name__)
     logger.info("Logging configured successfully")
