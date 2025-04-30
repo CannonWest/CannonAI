@@ -4,6 +4,7 @@ Database initialization script.
 from sqlalchemy import inspect
 from core.database import engine, Base
 from models.conversation import Conversation, Message, ConversationSettings
+from models.settings.models import UserSettings, ProviderSettings, UISettings
 
 def init_db():
     """Initialize the database by creating all tables."""
