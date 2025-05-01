@@ -5,9 +5,10 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from datetime import datetime
 import logging
+from app.logging import get_logger
 
 # Get logger
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 from app.models.conversation import Conversation, Message as DBMessage, ConversationSettings
 from app.services.ai_provider import Message, ModelSettings, ChatResponse

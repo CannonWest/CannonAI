@@ -5,8 +5,9 @@ from typing import Dict, List, Any
 from fastapi import WebSocket, WebSocketDisconnect
 import json
 import logging
+from app.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 class ConnectionManager:
     """Manager for WebSocket connections."""

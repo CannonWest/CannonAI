@@ -1,8 +1,9 @@
 import re
 import logging
 from typing import Dict, Any
+from app.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 def validate_openai_api_key(api_key: str) -> bool:
     """

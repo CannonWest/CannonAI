@@ -7,6 +7,7 @@ import logging
 import httpx
 from app.services.ai_provider import AIProvider, Message, ModelSettings, ChatResponse
 from app.core.config import settings
+from app.logging import get_logger
 from app.models.openai.model_config import (
     ModelInfo, 
     OPENAI_MODELS,
@@ -19,7 +20,7 @@ from app.models.openai.model_config import (
 )
 
 # Configure logger
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 class OpenAIProvider(AIProvider):
     """OpenAI implementation of AIProvider."""
