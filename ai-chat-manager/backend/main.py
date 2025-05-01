@@ -2,15 +2,23 @@
 Main entry point for the AI Chat Manager backend.
 """
 import uvicorn
+import sys
+import os
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect
 
+# Add the parent directory to sys.path
+CURRENT_DIR = Path(__file__).resolve().parent
+sys.path.append(str(CURRENT_DIR))
+
+# Now app imports will work properly
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.middleware import LoggingMiddleware
 from app.core.database import engine, Base
-from utils.logger import setup_logger
+from app.utils.logger import setup_logger  # Changed from utils.logger to app.utils.logger
 from app.utils.api_key_validator import get_available_providers
 from app.models.settings.models import UserSettings, ProviderSettings, UISettings
 

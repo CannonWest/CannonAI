@@ -56,8 +56,19 @@ def run_backend():
     """Run the backend server."""
     logger.info("Starting backend server...")
     os.chdir('../backend')
+    
+    # Create a modified environment with PYTHONPATH set to include the backend directory
+    env = os.environ.copy()
+    backend_dir = os.path.abspath('.')
+    if 'PYTHONPATH' in env:
+        env['PYTHONPATH'] = f"{backend_dir}{os.pathsep}{env['PYTHONPATH']}"
+    else:
+        env['PYTHONPATH'] = backend_dir
+    
+    logger.info(f"Setting PYTHONPATH to include: {backend_dir}")
+    
     try:
-        subprocess.run([sys.executable, "main.py"], check=True)
+        subprocess.run([sys.executable, "main.py"], check=True, env=env)
     except KeyboardInterrupt:
         logger.info("Backend server stopped.")
     finally:
