@@ -46,3 +46,5 @@ data/database/conversations.db
 /src/frontend/node_modules
 /src/static/assets
 src/frontend/package-lock.json
+/ai-chat-manager/frontend/node_modules
+ai-chat-manager/frontend/package-lock.json
