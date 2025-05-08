@@ -63,6 +63,13 @@ async def websocket_endpoint(
                     
                     # Stream AI response
                     try:
+                        # Get conversation details for better error messages
+                        conversation_details = conversation_service.get_conversation(conversation_id)
+                        model_name = conversation_details.model_name if conversation_details else "unknown model"
+                        provider_name = conversation_details.model_provider if conversation_details else "unknown provider"
+                        
+                        logger.debug(f"Starting streaming with {provider_name}/{model_name} for conversation {conversation_id}")
+                        
                         full_response = ""
                         async for chunk in conversation_service.stream_message_to_ai(
                             conversation_id=conversation_id,
@@ -79,11 +86,18 @@ async def websocket_endpoint(
                             "type": "done",
                             "content": full_response
                         })
+                        
                     except ProviderError as e:
-                        logger.error(f"Provider error: {str(e)}")
+                        logger.error(f"Provider error with {provider_name}/{model_name}: {str(e)}")
                         await websocket.send_json({
                             "type": "error",
-                            "error": f"API Provider Error: {str(e)}"
+                            "error": f"API Provider Error with {provider_name}/{model_name}: {str(e)}"
+                        })
+                    except Exception as e:
+                        logger.error(f"Unexpected error in WebSocket streaming with {provider_name}/{model_name}: {str(e)}")
+                        await websocket.send_json({
+                            "type": "error",
+                            "error": f"Error processing request with {provider_name}/{model_name}: {str(e)}"
                         })
                     
                 elif message_type == "ping":

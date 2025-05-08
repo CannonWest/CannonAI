@@ -88,7 +88,7 @@ OPENAI_MODELS: List[ModelInfo] = [
     ModelInfo(
         display_name="GPT-4o",
         model_id="gpt-4o",
-        version="gpt-4o-2024-08-06",
+        version="gpt-4o",  # Use the actual model ID for API calls
         pricing=PricingInfo(
             input_price=2.50,
             cached_input_price=1.25,

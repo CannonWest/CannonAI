@@ -51,6 +51,11 @@ class OpenAIProvider(AIProvider):
         Returns:
             The versioned model name to use in API calls
         """
+        # Special case for GPT-4o which doesn't need versioning in the API
+        if model_name == "gpt-4o":
+            logger.debug(f"Using GPT-4o model directly without versioning")
+            return "gpt-4o"
+            
         # If the model name already includes a version, use it directly
         if "-202" in model_name:  # Quick check if it's already a versioned model
             return model_name
@@ -139,35 +144,58 @@ class OpenAIProvider(AIProvider):
             payload["max_tokens"] = settings.max_tokens
         
         logger.debug(f"Sending streaming chat completion request to OpenAI with model: {model_name}")
+        logger.debug(f"OpenAI payload: {payload}")
         
-        # Send streaming request to OpenAI
-        async with self.client.stream(
-            "POST",
-            f"{self.base_url}/chat/completions",
-            json=payload,
-            timeout=60.0
-        ) as response:
-            response.raise_for_status()
-            
-            # Process the streaming response
-            async for chunk in response.aiter_lines():
-                if not chunk.strip():
-                    continue
+        try:
+            # Send streaming request to OpenAI
+            async with self.client.stream(
+                "POST",
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                timeout=120.0  # Increased timeout for GPT-4o
+            ) as response:
+                # Check for HTTP errors
+                if response.status_code >= 400:
+                    error_text = await response.aread()
+                    error_message = f"OpenAI API error: {response.status_code}, {error_text.decode()}"
+                    logger.error(error_message)
+                    yield f"Error: {error_message}"
+                    return
                 
-                if chunk.startswith("data:"):
-                    chunk = chunk[5:].strip()
+                # Process the streaming response
+                async for chunk in response.aiter_lines():
+                    if not chunk.strip():
+                        continue
                     
-                if chunk == "[DONE]":
-                    break
-                
-                try:
-                    # Parse the chunk JSON
-                    chunk_data = json.loads(chunk)
-                    delta = chunk_data["choices"][0].get("delta", {})
-                    if "content" in delta:
-                        yield delta["content"]
-                except Exception as e:
-                    logger.error(f"Error processing chunk: {e}")
+                    if chunk.startswith("data:"):
+                        chunk = chunk[5:].strip()
+                        
+                    if chunk == "[DONE]":
+                        break
+                    
+                    try:
+                        # Parse the chunk JSON
+                        chunk_data = json.loads(chunk)
+                        delta = chunk_data["choices"][0].get("delta", {})
+                        if "content" in delta:
+                            yield delta["content"]
+                    except json.JSONDecodeError as e:
+                        logger.error(f"JSON error processing chunk: {e}, chunk: {chunk[:100]}")
+                    except Exception as e:
+                        logger.error(f"Error processing chunk: {str(e)}, chunk: {chunk[:100]}")
+                        
+        except httpx.RequestError as e:
+            error_message = f"OpenAI request error with model {model_name}: {str(e)}"
+            logger.error(error_message)
+            yield f"Error: {error_message}"
+        except httpx.HTTPStatusError as e:
+            error_message = f"OpenAI HTTP error with model {model_name}: {e.response.status_code}, {e.response.text}"
+            logger.error(error_message)
+            yield f"Error: {error_message}"
+        except Exception as e:
+            error_message = f"Unexpected error with OpenAI model {model_name}: {str(e)}"
+            logger.error(error_message)
+            yield f"Error: {error_message}"
     
     def get_available_models(self) -> List[str]:
         """

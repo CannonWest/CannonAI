@@ -26,6 +26,13 @@ api_router.include_router(
     tags=["websocket"]
 )
 
+# Add additional path for frontend compatibility
+api_router.include_router(
+    websocket.router,
+    prefix="/chat",
+    tags=["websocket"]
+)
+
 api_router.include_router(
     settings.router,
     prefix="/settings",

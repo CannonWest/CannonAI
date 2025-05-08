@@ -38,7 +38,16 @@ const ConversationPage = () => {
   // WebSocket for streaming chat
   // Construct proper WebSocket URL based on current protocol (ws or wss)
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = id ? `${protocol}//${window.location.host}/api/v1/conversations/${id}/stream` : null;
+  // Using the correct path for WebSocket connection to match the backend route
+  const wsUrl = id ? `${protocol}//${window.location.host}/api/v1/ws/${id}` : null;
+  console.log(`Connecting to WebSocket URL: ${wsUrl}`);
+  
+  // Fallback URLs to try in case the primary connection fails
+  const fallbackUrls = [
+    `${protocol}//${window.location.host}/api/v1/chat/${id}`,
+    `${protocol}//${window.location.host}/api/v1/ws/chat/${id}`
+  ];
+  console.log(`Fallback WebSocket URLs: ${fallbackUrls.join(', ')}`);
   const {
     isConnected,
     sendMessage: sendWSMessage,
@@ -314,6 +323,7 @@ const ConversationPage = () => {
                     <option value="gpt-4">GPT-4</option>
                     <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
                     <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                    <option value="gpt-4o">GPT-4o</option>
                   </>
                 )}
                 {settings.model_provider === 'google' && (

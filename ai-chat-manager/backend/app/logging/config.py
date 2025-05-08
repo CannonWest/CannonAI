@@ -118,6 +118,10 @@ def setup_application_logging(
     log_level_name = os.environ.get("LOG_LEVEL", default_level).upper()
     log_level = LOG_LEVELS.get(log_level_name, logging.INFO)
     
+    # Force DEBUG level for development troubleshooting
+    log_level = logging.DEBUG
+    log_level_name = "DEBUG"
+    
     # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)

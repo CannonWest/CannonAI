@@ -36,7 +36,7 @@ class Settings(BaseSettings):
         return self.BACKEND_CORS_ORIGINS
     
     # Database settings
-    DATABASE_URL: str = "sqlite:///../data/chat_manager.db"
+    DATABASE_URL: str = "sqlite:///./data/chat_manager.db"
     
     # Security settings
     # JWT authentication with configurable key
