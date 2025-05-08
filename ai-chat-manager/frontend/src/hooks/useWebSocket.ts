@@ -42,6 +42,7 @@ const useWebSocket = (
   // Store WebSocket instance in a ref
   const ws = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
+  const urlRef = useRef<string>(url); // Track the current URL
   
   // Create WebSocket connection
   const connect = useCallback(() => {
@@ -50,16 +51,20 @@ const useWebSocket = (
       ws.current.close();
     }
     
-    // Create new WebSocket
-    ws.current = new WebSocket(url);
+    console.log(`Attempting to connect to WebSocket: ${url}`);
     
-    // Setup event handlers
-    ws.current.onopen = () => {
-      setIsConnected(true);
-      setError(null);
-      setReconnectCount(0);
-      onOpen && onOpen();
-    };
+    // Create new WebSocket
+    try {
+      ws.current = new WebSocket(url);
+      
+      // Setup event handlers
+      ws.current.onopen = () => {
+        console.log(`WebSocket connection established to ${url}`);
+        setIsConnected(true);
+        setError(null);
+        setReconnectCount(0);
+        onOpen && onOpen();
+      };
     
     ws.current.onclose = (event) => {
       setIsConnected(false);
@@ -76,9 +81,15 @@ const useWebSocket = (
     };
     
     ws.current.onerror = (event) => {
-      setError(event);
-      onError && onError(event);
-    };
+        console.error(`WebSocket error on ${url}:`, event);
+        setError(event);
+        onError && onError(event);
+      };
+    } catch (error) {
+      console.error(`Failed to create WebSocket connection to ${url}:`, error);
+      setError(error as Event);
+      onError && onError(error as Event);
+    }
     
     ws.current.onmessage = (event) => {
       try {

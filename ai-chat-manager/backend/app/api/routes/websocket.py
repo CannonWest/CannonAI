@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-@router.websocket("/chat/{conversation_id}")
+@router.websocket("/{conversation_id}")
 async def websocket_endpoint(
     websocket: WebSocket,
     conversation_id: int,
@@ -37,6 +37,17 @@ async def websocket_endpoint(
     conversation_service = ConversationService(db)
     
     try:
+        # Log connection details
+        client_host = websocket.client.host if websocket.client else "unknown"
+        logger.info(f"WebSocket connection established for conversation {conversation_id} from {client_host}")
+        
+        # Send connection confirmation
+        await websocket.send_json({
+            "type": "status",
+            "status": "connected",
+            "message": f"WebSocket connection established for conversation {conversation_id}"
+        })
+        
         while True:
             # Wait for messages from the client
             data = await websocket.receive_text()
@@ -46,6 +57,8 @@ async def websocket_endpoint(
                 message_data = json.loads(data)
                 message_type = message_data.get("type", "message")
                 content = message_data.get("content", "")
+                
+                logger.debug(f"Received {message_type} message from client {client_host} for conversation {conversation_id}")
                 
                 if message_type == "message":
                     # Send acknowledgment
@@ -122,4 +135,19 @@ async def websocket_endpoint(
                 
     except WebSocketDisconnect:
         # Handle client disconnection
+        logger.info(f"WebSocket client disconnected from conversation {conversation_id}")
+        manager.disconnect(websocket, conversation_id)
+    except Exception as e:
+        # Catch and log any other unexpected errors
+        logger.error(f"Unexpected error in WebSocket connection: {str(e)}")
+        try:
+            # Try to notify the client
+            await websocket.send_json({
+                "type": "error",
+                "error": "An unexpected server error occurred"
+            })
+        except Exception:
+            # If we can't send a message, the connection is probably already closed
+            pass
+        # Ensure the connection is removed from the manager
         manager.disconnect(websocket, conversation_id)

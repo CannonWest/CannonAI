@@ -39,12 +39,12 @@ const ConversationPage = () => {
   // Construct proper WebSocket URL based on current protocol (ws or wss)
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   // Using the correct path for WebSocket connection to match the backend route
-  const wsUrl = id ? `${protocol}//${window.location.host}/api/v1/ws/${id}` : null;
+  const wsUrl = id ? `${protocol}//${window.location.host}/api/v1/chat/${id}` : null;
   console.log(`Connecting to WebSocket URL: ${wsUrl}`);
   
   // Fallback URLs to try in case the primary connection fails
   const fallbackUrls = [
-    `${protocol}//${window.location.host}/api/v1/chat/${id}`,
+    `${protocol}//${window.location.host}/api/v1/ws/${id}`,
     `${protocol}//${window.location.host}/api/v1/ws/chat/${id}`
   ];
   console.log(`Fallback WebSocket URLs: ${fallbackUrls.join(', ')}`);
@@ -56,6 +56,15 @@ const ConversationPage = () => {
     wsUrl,
     {
       autoConnect: !!wsUrl,
+      onOpen: () => {
+        console.log('WebSocket connection opened successfully');
+      },
+      onClose: () => {
+        console.log('WebSocket connection closed');
+      },
+      onError: (error) => {
+        console.error('WebSocket connection error:', error);
+      },
       onMessage: (data) => {
         if (data.type === 'chunk' && data.content) {
           // Handle streaming chunks

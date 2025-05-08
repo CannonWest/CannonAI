@@ -24,13 +24,37 @@ class ConnectionManager:
             websocket: The WebSocket connection
             conversation_id: The ID of the conversation to connect to
         """
-        await websocket.accept()
-        
-        if conversation_id not in self.active_connections:
-            self.active_connections[conversation_id] = []
-        
-        self.active_connections[conversation_id].append(websocket)
-        logger.info(f"Client connected to conversation {conversation_id}. Active connections: {len(self.active_connections[conversation_id])}")
+        try:
+            client_host = websocket.client.host if websocket.client else "unknown"
+            logger.info(f"WebSocket connection request from {client_host} for conversation {conversation_id}")
+            
+            await websocket.accept()
+            logger.debug(f"WebSocket connection accepted for client {client_host}, conversation {conversation_id}")
+            
+            if conversation_id not in self.active_connections:
+                self.active_connections[conversation_id] = []
+            
+            self.active_connections[conversation_id].append(websocket)
+            logger.info(f"Client {client_host} connected to conversation {conversation_id}. Active connections: {len(self.active_connections[conversation_id])}")
+            
+            # Send a welcome message to confirm connection
+            await websocket.send_json({
+                "type": "connection_status",
+                "status": "connected",
+                "message": f"Connected to conversation {conversation_id}"
+            })
+        except Exception as e:
+            logger.error(f"Error accepting WebSocket connection: {str(e)}")
+            # Try to send an error message if possible
+            try:
+                await websocket.send_json({
+                    "type": "error",
+                    "error": f"Connection error: {str(e)}"
+                })
+            except Exception:
+                # If we can't even send an error, just log it
+                logger.error("Failed to send error message to client")
+            raise  # Re-raise to propagate to caller
     
     def disconnect(self, websocket: WebSocket, conversation_id: int):
         """

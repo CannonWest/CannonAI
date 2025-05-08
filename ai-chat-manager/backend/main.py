@@ -46,9 +46,14 @@ app = FastAPI(title="AI Chat Manager API")
 # CORS settings configured for both development and production
 origins = settings.BACKEND_CORS_ORIGINS
 logger.info(f"Configured CORS origins: {origins}")
+# Add 'localhost' with ws/wss protocols for WebSocket support
+websocket_origins = [origin.replace('http', 'ws') for origin in origins]
+all_origins = origins + websocket_origins
+logger.info(f"All configured origins including WebSocket: {all_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,  # Properly converted list from settings
+    allow_origins=all_origins,  # Include both HTTP and WebSocket origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
