@@ -16,138 +16,107 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
 @router.websocket("/{conversation_id}")
 async def websocket_endpoint(
-    websocket: WebSocket,
-    conversation_id: int,
-    db: Session = Depends(get_db)
+        websocket: WebSocket,
+        conversation_id: int,
+        db: Session = Depends(get_db)
 ):
-    """
-    WebSocket endpoint for real-time chat with AI models.
-    
-    Args:
-        websocket: WebSocket connection
-        conversation_id: ID of the conversation
-        db: Database session
-    """
-    # Accept connection and register it
     await manager.connect(websocket, conversation_id)
-    
-    # Create conversation service
     conversation_service = ConversationService(db)
-    
     try:
-        # Log connection details
         client_host = websocket.client.host if websocket.client else "unknown"
         logger.info(f"WebSocket connection established for conversation {conversation_id} from {client_host}")
-        
-        # Send connection confirmation
+
+        # Send connection confirmation (optional, but good for debugging)
         await websocket.send_json({
             "type": "status",
             "status": "connected",
             "message": f"WebSocket connection established for conversation {conversation_id}"
         })
-        
+
         while True:
-            # Wait for messages from the client
             data = await websocket.receive_text()
-            
             try:
-                # Parse the message
                 message_data = json.loads(data)
                 message_type = message_data.get("type", "message")
                 content = message_data.get("content", "")
-                
-                logger.debug(f"Received {message_type} message from client {client_host} for conversation {conversation_id}")
-                
+
+                logger.debug(f"Received {message_type} message from client {client_host} for conversation {conversation_id}: {content[:100]}")  # Log content
+
                 if message_type == "message":
-                    # Send acknowledgment
                     await websocket.send_json({
                         "type": "status",
                         "status": "processing"
                     })
-                    
+
                     # Add user message to database
+                    logger.info(f"Adding user message to DB for conversation {conversation_id}")
                     conversation_service.add_message(
                         conversation_id=conversation_id,
                         role="user",
                         content=content
                     )
-                    
-                    # Stream AI response
+
                     try:
-                        # Get conversation details for better error messages
                         conversation_details = conversation_service.get_conversation(conversation_id)
                         model_name = conversation_details.model_name if conversation_details else "unknown model"
                         provider_name = conversation_details.model_provider if conversation_details else "unknown provider"
-                        
+
                         logger.debug(f"Starting streaming with {provider_name}/{model_name} for conversation {conversation_id}")
-                        
+
                         full_response = ""
                         async for chunk in conversation_service.stream_message_to_ai(
-                            conversation_id=conversation_id,
-                            user_message=content
+                                conversation_id=conversation_id,
+                                user_message=content
                         ):
                             full_response += chunk
                             await websocket.send_json({
                                 "type": "chunk",
                                 "content": chunk
                             })
-                        
-                        # Signal completion
+
                         await websocket.send_json({
                             "type": "done",
                             "content": full_response
                         })
-                        
+
+                        # --- ADD THIS SECTION TO SAVE AI RESPONSE ---
+                        if full_response:  # Ensure there's something to save
+                            logger.info(f"Adding AI assistant message to DB for conversation {conversation_id}")
+                            conversation_service.add_message(
+                                conversation_id=conversation_id,
+                                role="assistant",
+                                content=full_response
+                            )
+                        # --- END OF SECTION TO SAVE AI RESPONSE ---
+
                     except ProviderError as e:
-                        logger.error(f"Provider error with {provider_name}/{model_name}: {str(e)}")
-                        await websocket.send_json({
-                            "type": "error",
-                            "error": f"API Provider Error with {provider_name}/{model_name}: {str(e)}"
-                        })
+                        logger.error(f"Provider error with {provider_name}/{model_name} for conversation {conversation_id}: {str(e)}")
+                        await websocket.send_json({"type": "error", "error": f"API Provider Error: {str(e)}"})
                     except Exception as e:
-                        logger.error(f"Unexpected error in WebSocket streaming with {provider_name}/{model_name}: {str(e)}")
-                        await websocket.send_json({
-                            "type": "error",
-                            "error": f"Error processing request with {provider_name}/{model_name}: {str(e)}"
-                        })
-                    
+                        logger.error(f"Unexpected error in WebSocket streaming for conversation {conversation_id}: {str(e)}", exc_info=True)
+                        await websocket.send_json({"type": "error", "error": f"Server error: {str(e)}"})
+
                 elif message_type == "ping":
-                    # Respond to ping
-                    await websocket.send_json({
-                        "type": "pong"
-                    })
-                    
+                    await websocket.send_json({"type": "pong"})
+
             except json.JSONDecodeError:
-                # Handle invalid JSON
-                await websocket.send_json({
-                    "type": "error",
-                    "error": "Invalid message format"
-                })
-                
+                logger.warning(f"Invalid JSON received on WebSocket for conversation {conversation_id}: {data}")
+                await websocket.send_json({"type": "error", "error": "Invalid message format"})
             except Exception as e:
-                # Handle other errors
-                await websocket.send_json({
-                    "type": "error",
-                    "error": str(e)
-                })
-                
+                logger.error(f"Error processing client message on WebSocket for conversation {conversation_id}: {str(e)}", exc_info=True)
+                await websocket.send_json({"type": "error", "error": str(e)})
+
     except WebSocketDisconnect:
-        # Handle client disconnection
         logger.info(f"WebSocket client disconnected from conversation {conversation_id}")
-        manager.disconnect(websocket, conversation_id)
     except Exception as e:
-        # Catch and log any other unexpected errors
-        logger.error(f"Unexpected error in WebSocket connection: {str(e)}")
+        logger.error(f"Unexpected error in WebSocket connection for conversation {conversation_id}: {str(e)}", exc_info=True)
         try:
-            # Try to notify the client
-            await websocket.send_json({
-                "type": "error",
-                "error": "An unexpected server error occurred"
-            })
+            await websocket.send_json({"type": "error", "error": "An unexpected server error occurred"})
         except Exception:
-            # If we can't send a message, the connection is probably already closed
-            pass
-        # Ensure the connection is removed from the manager
+            pass  # Connection likely already closed
+    finally:
+        # Ensure disconnect is always called
         manager.disconnect(websocket, conversation_id)
