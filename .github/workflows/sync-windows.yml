@@ -25,8 +25,7 @@ jobs:
         Remove-Item .\.github* -Recurse -Force -ErrorAction SilentlyContinue
 
         # Remove any files or directories starting with data
-        Remove-Item .\data* -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item .\gemini_chat_conversations* -Recurse -Force -ErrorAction SilentlyContinue
 
-        # Remove specific files LICENSE and README.md
+        # Remove specific files LICENSE
         Remove-Item .\LICENSE -Force -ErrorAction SilentlyContinue
-        Remove-Item .\README.md -Force -ErrorAction SilentlyContinue

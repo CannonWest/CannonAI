@@ -1,0 +1,417 @@
+"""
+Gemini Chat CLI - Command Handler Module
+
+This module provides command handling functionality for the Gemini Chat CLI
+application, supporting both synchronous and asynchronous clients.
+"""
+
+import os
+import sys
+from typing import Union, Callable, Any, Dict, Optional, List, Tuple
+
+from base_client import Colors
+
+
+class CommandHandler:
+    """Unified command handler for both sync and async clients."""
+    
+    def __init__(self, client):
+        """Initialize the command handler.
+        
+        Args:
+            client: The client instance (sync or async)
+        """
+        self.client = client
+        self.is_async = hasattr(client, 'initialize_client') and callable(getattr(client, 'initialize_client')) and 'async' in getattr(client.initialize_client, '__code__').co_varnames
+        self.commands = self._build_command_map()
+    
+    def _build_command_map(self) -> Dict[str, Dict[str, Any]]:
+        """Build a map of commands and their handlers.
+        
+        Returns:
+            Dictionary mapping command names to their handlers and descriptions
+        """
+        # Common commands for both sync and async
+        commands = {
+            "/help": {
+                "handler": self.cmd_help,
+                "description": "Show help message"
+            },
+            "/quit": {
+                "handler": self.cmd_quit,
+                "description": "Save and exit the application",
+                "aliases": ["/exit"]
+            },
+            "/save": {
+                "handler": self.cmd_save,
+                "description": "Save the current conversation"
+            },
+            "/new": {
+                "handler": self.cmd_new,
+                "description": "Start a new conversation"
+            },
+            "/list": {
+                "handler": self.cmd_list,
+                "description": "List saved conversations"
+            },
+            "/load": {
+                "handler": self.cmd_load,
+                "description": "Load a saved conversation"
+            },
+            "/history": {
+                "handler": self.cmd_history,
+                "description": "Display conversation history"
+            },
+            "/model": {
+                "handler": self.cmd_model,
+                "description": "Select a different model"
+            },
+            "/params": {
+                "handler": self.cmd_params,
+                "description": "Customize generation parameters"
+            },
+            "/stream": {
+                "handler": self.cmd_stream,
+                "description": f"Toggle streaming mode (current: {'ON' if self.client.use_streaming else 'OFF'})"
+            },
+            "/clear": {
+                "handler": self.cmd_clear,
+                "description": "Clear the screen"
+            },
+            "/version": {
+                "handler": self.cmd_version,
+                "description": "Show version information"
+            },
+            "/config": {
+                "handler": self.cmd_config,
+                "description": "Open configuration settings"
+            }
+        }
+        
+        return commands
+    
+    async def async_handle_command(self, command: str) -> bool:
+        """Handle a command asynchronously.
+        
+        Args:
+            command: The command to handle
+            
+        Returns:
+            True if the application should exit, False otherwise
+        """
+        command = command.lower()
+        
+        # Check for command aliases
+        for cmd, info in self.commands.items():
+            aliases = info.get("aliases", [])
+            if command == cmd or command in aliases:
+                # Call the method with await since we're in an async context
+                result = await info["handler"]()
+                return result
+        
+        print(f"{Colors.WARNING}Unknown command. Type /help for available commands.{Colors.ENDC}")
+        return False
+    
+    def sync_handle_command(self, command: str) -> bool:
+        """Handle a command synchronously.
+        
+        Args:
+            command: The command to handle
+            
+        Returns:
+            True if the application should exit, False otherwise
+        """
+        command = command.lower()
+        
+        # Check for command aliases
+        for cmd, info in self.commands.items():
+            aliases = info.get("aliases", [])
+            if command == cmd or command in aliases:
+                # Call the sync version of the method
+                result = getattr(self, f"sync_{info['handler'].__name__}")()
+                return result
+        
+        print(f"{Colors.WARNING}Unknown command. Type /help for available commands.{Colors.ENDC}")
+        return False
+    
+    def handle_command(self, command: str) -> bool:
+        """Handle a command (sync or async as appropriate).
+        
+        Args:
+            command: The command to handle
+            
+        Returns:
+            True if the application should exit, False otherwise
+        """
+        if self.is_async:
+            # This isn't really proper, but it's just a wrapper to avoid
+            # having to deal with async/sync distinction at call site
+            import asyncio
+            return asyncio.run(self.async_handle_command(command))
+        else:
+            return self.sync_handle_command(command)
+    
+    # =============================================
+    # Async command implementations
+    # =============================================
+    
+    async def cmd_help(self) -> bool:
+        """Display available commands (async version)."""
+        print(f"\n{Colors.HEADER}Available Commands:{Colors.ENDC}")
+        
+        for cmd, info in sorted(self.commands.items()):
+            print(f"  {Colors.BOLD}{cmd}{Colors.ENDC} - {info['description']}")
+            if "aliases" in info and info["aliases"]:
+                aliases = ", ".join(info["aliases"])
+                print(f"      {Colors.CYAN}(aliases: {aliases}){Colors.ENDC}")
+        
+        return False
+    
+    async def cmd_quit(self) -> bool:
+        """Save and exit the application (async version)."""
+        print("Saving conversation before exit...")
+        await self.client.save_conversation()
+        print(f"{Colors.GREEN}Goodbye!{Colors.ENDC}")
+        return True
+    
+    async def cmd_save(self) -> bool:
+        """Save the current conversation (async version)."""
+        await self.client.save_conversation()
+        return False
+    
+    async def cmd_new(self) -> bool:
+        """Start a new conversation (async version)."""
+        await self.client.save_conversation()
+        await self.client.start_new_conversation()
+        return False
+    
+    async def cmd_list(self) -> bool:
+        """List saved conversations (async version)."""
+        await self.client.display_conversations()
+        return False
+    
+    async def cmd_load(self) -> bool:
+        """Load a saved conversation (async version)."""
+        await self.client.save_conversation()
+        await self.client.load_conversation()
+        return False
+    
+    async def cmd_history(self) -> bool:
+        """Display conversation history (async version)."""
+        await self.client.display_conversation_history()
+        return False
+    
+    async def cmd_model(self) -> bool:
+        """Select a different model (async version)."""
+        await self.client.select_model()
+        return False
+    
+    async def cmd_params(self) -> bool:
+        """Customize generation parameters (async version)."""
+        await self.client.customize_params()
+        return False
+    
+    async def cmd_clear(self) -> bool:
+        """Clear the screen (async version)."""
+        os.system('cls' if os.name == 'nt' else 'clear')
+        return False
+    
+    async def cmd_stream(self) -> bool:
+        """Toggle streaming mode (async version)."""
+        await self.client.toggle_streaming()
+        # Update the description
+        self.commands["/stream"]["description"] = f"Toggle streaming mode (current: {'ON' if self.client.use_streaming else 'OFF'})"
+        return False
+    
+    async def cmd_version(self) -> bool:
+        """Show version information (async version)."""
+        print(f"{Colors.CYAN}Gemini Chat CLI v{self.client.get_version()}{Colors.ENDC}")
+        return False
+    
+    async def cmd_config(self) -> bool:
+        """Open configuration settings (async version)."""
+        # Import here to avoid circular imports
+        from config import Config
+        config = Config()
+        config.setup_wizard()
+        return False
+    
+    # =============================================
+    # Sync command implementations
+    # =============================================
+    
+    def sync_cmd_help(self) -> bool:
+        """Display available commands (sync version)."""
+        print(f"\n{Colors.HEADER}Available Commands:{Colors.ENDC}")
+        
+        for cmd, info in sorted(self.commands.items()):
+            print(f"  {Colors.BOLD}{cmd}{Colors.ENDC} - {info['description']}")
+            if "aliases" in info and info["aliases"]:
+                aliases = ", ".join(info["aliases"])
+                print(f"      {Colors.CYAN}(aliases: {aliases}){Colors.ENDC}")
+        
+        return False
+    
+    def sync_cmd_quit(self) -> bool:
+        """Save and exit the application (sync version)."""
+        print("Saving conversation before exit...")
+        self.client.save_conversation()
+        print(f"{Colors.GREEN}Goodbye!{Colors.ENDC}")
+        return True
+    
+    def sync_cmd_save(self) -> bool:
+        """Save the current conversation (sync version)."""
+        self.client.save_conversation()
+        return False
+    
+    def sync_cmd_new(self) -> bool:
+        """Start a new conversation (sync version)."""
+        self.client.save_conversation()
+        self.client.start_new_conversation()
+        return False
+    
+    def sync_cmd_list(self) -> bool:
+        """List saved conversations (sync version)."""
+        self.client.display_conversations()
+        return False
+    
+    def sync_cmd_load(self) -> bool:
+        """Load a saved conversation (sync version)."""
+        self.client.save_conversation()
+        self.client.load_conversation()
+        return False
+    
+    def sync_cmd_history(self) -> bool:
+        """Display conversation history (sync version)."""
+        self.client.display_conversation_history()
+        return False
+    
+    def sync_cmd_model(self) -> bool:
+        """Select a different model (sync version)."""
+        self.client.select_model()
+        return False
+    
+    def sync_cmd_params(self) -> bool:
+        """Customize generation parameters (sync version)."""
+        self.client.customize_params()
+        return False
+    
+    def sync_cmd_clear(self) -> bool:
+        """Clear the screen (sync version)."""
+        os.system('cls' if os.name == 'nt' else 'clear')
+        return False
+    
+    def sync_cmd_stream(self) -> bool:
+        """Toggle streaming mode (sync version)."""
+        self.client.toggle_streaming()
+        # Update the description
+        self.commands["/stream"]["description"] = f"Toggle streaming mode (current: {'ON' if self.client.use_streaming else 'OFF'})"
+        return False
+    
+    def sync_cmd_version(self) -> bool:
+        """Show version information (sync version)."""
+        print(f"{Colors.CYAN}Gemini Chat CLI v{self.client.get_version()}{Colors.ENDC}")
+        return False
+    
+    def sync_cmd_config(self) -> bool:
+        """Open configuration settings (sync version)."""
+        # Import here to avoid circular imports
+        from config import Config
+        config = Config()
+        config.setup_wizard()
+        return False
+
+
+# Command-line interface
+async def async_command_loop(client):
+    """Run the command loop asynchronously.
+    
+    Args:
+        client: The AsyncGeminiClient instance
+    """
+    # Initialize the command handler
+    handler = CommandHandler(client)
+    
+    # Only initialize the conversation if needed
+    if not client.conversation_id:
+        await client.start_new_conversation()
+    
+    print(f"\n{Colors.HEADER}Chat Session Started (Async Mode){Colors.ENDC}")
+    print(f"Type {Colors.BOLD}/help{Colors.ENDC} to see available commands")
+    
+    while True:
+        try:
+            user_input = input(f"\n{Colors.BLUE}You: {Colors.ENDC}")
+            
+            # Handle commands
+            if user_input.startswith('/'):
+                command = user_input.split()[0].lower()
+                should_exit = await handler.async_handle_command(command)
+                if should_exit:
+                    break
+                continue
+            
+            # Process normal message
+            if client.conversation_id is None:
+                await client.start_new_conversation()
+            
+            # Send message and get response
+            response = await client.send_message(user_input)
+            
+            if not response:
+                print(f"{Colors.WARNING}No response received.{Colors.ENDC}")
+        
+        except KeyboardInterrupt:
+            print("\nDetected Ctrl+C. Saving conversation...")
+            await client.save_conversation()
+            print(f"{Colors.GREEN}Goodbye!{Colors.ENDC}")
+            break
+        except Exception as e:
+            print(f"{Colors.FAIL}Error: {e}{Colors.ENDC}")
+
+
+def sync_command_loop(client):
+    """Run the command loop synchronously.
+    
+    Args:
+        client: The SyncGeminiClient instance
+    """
+    # Initialize the command handler
+    handler = CommandHandler(client)
+    
+    # Only initialize the conversation if needed
+    if not client.conversation_id:
+        client.start_new_conversation()
+    
+    print(f"\n{Colors.HEADER}Chat Session Started (Sync Mode){Colors.ENDC}")
+    print(f"Type {Colors.BOLD}/help{Colors.ENDC} to see available commands")
+    
+    while True:
+        try:
+            user_input = input(f"\n{Colors.BLUE}You: {Colors.ENDC}")
+            
+            # Handle commands
+            if user_input.startswith('/'):
+                command = user_input.split()[0].lower()
+                should_exit = handler.sync_handle_command(command)
+                if should_exit:
+                    break
+                continue
+            
+            # Process normal message
+            if client.conversation_id is None:
+                client.start_new_conversation()
+            
+            # Send message and get response
+            response = client.send_message(user_input)
+            
+            if not response:
+                print(f"{Colors.WARNING}No response received.{Colors.ENDC}")
+        
+        except KeyboardInterrupt:
+            print("\nDetected Ctrl+C. Saving conversation...")
+            client.save_conversation()
+            print(f"{Colors.GREEN}Goodbye!{Colors.ENDC}")
+            break
+        except Exception as e:
+            print(f"{Colors.FAIL}Error: {e}{Colors.ENDC}")

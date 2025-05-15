@@ -1,6 +1,9 @@
 # Gemini Chat CLI
 
-A powerful command-line interface for having conversations with Google's Gemini AI models.
+A powerful, modular command-line interface for interacting with Google's Gemini AI models, supporting both synchronous and asynchronous operations.
+
+[![Python Version](https://img.shields.io/badge/python-3.6%2B-blue)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## Features
 
@@ -10,50 +13,92 @@ A powerful command-line interface for having conversations with Google's Gemini 
 - Save and load conversations as JSON files
 - Navigate between different saved conversations
 - Full conversation history management
+- Support for both streaming and non-streaming responses
+- Support for both synchronous and asynchronous implementations
+- Cross-platform terminal colors
+- Persistent configuration system
+
+## Project Structure
+
+The application is organized with a modular architecture to minimize redundancy:
+
+```
+CannonAI/
+├── gemini_chat/                  # Main application code
+│   ├── gemini_chat.py            # Single unified entry point
+│   ├── base_client.py            # Core shared functionality
+│   ├── sync_client.py            # Synchronous implementation
+│   ├── async_client.py           # Asynchronous implementation
+│   ├── command_handler.py        # Command processing for both modes
+│   ├── client_manager.py         # Client creation and management
+│   ├── config.py                 # Configuration management
+│   ├── __init__.py               # Package initialization
+│   ├── requirements.txt          # Dependencies
+│   └── tests/                    # Test suite
+└── gemini_chat_conversations/    # Saved conversations (auto-created)
+```
 
 ## Installation
 
-1. Clone this repository or download the files.
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/yourusername/CannonAI.git
+   cd CannonAI
+   ```
 
 2. Install the required dependencies:
-   ```
-   pip install -r requirements.txt
+   ```bash
+   pip install -r gemini_chat/requirements.txt
    ```
 
 3. Set up your API key (choose one method):
    - Set as an environment variable:
-     ```
+     ```bash
      # Linux/macOS
      export GEMINI_API_KEY='your_api_key_here'
      
      # Windows
      set GEMINI_API_KEY=your_api_key_here
      ```
-   - Enter when prompted when running the application
-   - Pass as a command-line argument:
+   - Run the configuration wizard:
+     ```bash
+     python gemini_chat/gemini_chat.py --setup
      ```
-     python gemini_chat.py --api-key 'your_api_key_here'
+   - Pass as a command-line argument:
+     ```bash
+     python gemini_chat/gemini_chat.py --api-key 'your_api_key_here'
      ```
 
 ## Usage
 
-Run the application:
-```
-python gemini_chat.py
+### Running the Application
+
+```bash
+python gemini_chat/gemini_chat.py [options]
 ```
 
-### Command-line arguments
+### Command-line Arguments
 
-```
-python gemini_chat.py --help
+```bash
+python gemini_chat/gemini_chat.py --help
 ```
 
 Available arguments:
-- `--api-key`: Specify your Gemini API key (overrides environment variable)
-- `--model`: Specify the model to use (default: gemini-2.0-flash)
-- `--conversations-dir`: Specify a custom directory to store conversations
+- `--api-key`: Specify your Gemini API key (overrides config and environment variable)
+- `--model`: Specify the model to use (default: from config or gemini-2.0-flash)
+- `--async`: Use asynchronous client implementation
+- `--dir`, `--conversations-dir`: Directory to store conversations
+- `--setup`: Run the configuration setup wizard
+- `--config`: Specify a custom configuration file path
 
-### Commands during chat
+Advanced options:
+- `--temp`, `--temperature`: Generation temperature (0.0-2.0)
+- `--max-tokens`: Maximum output tokens
+- `--top-p`: Top-p sampling parameter (0.0-1.0)
+- `--top-k`: Top-k sampling parameter
+- `--stream`: Enable streaming mode by default
+
+### Commands During Chat
 
 During the chat session, you can use the following commands:
 
@@ -68,16 +113,56 @@ During the chat session, you can use the following commands:
 | /history  | Display conversation history  |
 | /model    | Select a different model      |
 | /params   | Customize generation parameters |
+| /stream   | Toggle streaming mode         |
 | /clear    | Clear the screen              |
+| /config   | Open configuration settings   |
+| /version  | Show version information      |
 
-## Conversation Management
+## Conversation Storage
 
-Conversations are saved as JSON files in the conversations directory (by default, `~/gemini_chat_conversations`). Each conversation includes:
+Conversations are saved as JSON files in the `gemini_chat_conversations` directory, which is automatically created adjacent to the `gemini_chat` directory. Each conversation includes:
 
 - Metadata (model, parameters, timestamps)
 - Complete message history
+- Token usage statistics (when available)
 
-You can navigate between different conversations using the `/list` and `/load` commands.
+You can navigate between saved conversations using the `/list` and `/load` commands during a chat session.
+
+## Configuration System
+
+The application uses a persistent configuration system that saves your settings between sessions. Configuration is stored in:
+
+- Windows: `%APPDATA%\gemini_chat_config.json`
+- Linux/macOS: `~/.config/gemini_chat_config.json`
+
+Configuration options include:
+- API key
+- Default model
+- Conversations directory
+- Generation parameters
+- Default streaming mode
+
+Run the configuration wizard to set up or modify your configuration:
+```bash
+python gemini_chat/gemini_chat.py --setup
+```
+
+## Sync vs Async Mode
+
+The application supports both synchronous and asynchronous operations:
+
+- **Synchronous Mode (Default)**: Traditional mode where operations block until completed
+- **Asynchronous Mode**: Non-blocking mode for better responsiveness with I/O operations
+
+Use asynchronous mode when working with:
+- High-volume API requests
+- Applications that need to remain responsive during network operations
+- Integration with other asynchronous systems
+
+To enable asynchronous mode:
+```bash
+python gemini_chat/gemini_chat.py --async
+```
 
 ## Getting an API Key
 
@@ -88,11 +173,47 @@ To use this application, you need a Google Gemini API key:
 3. Create a new API key from the settings page
 4. Copy and use this key with the application
 
+## Development
+
+### Running Tests
+
+```bash
+pytest gemini_chat/tests/
+```
+
+### Using the Makefile
+
+A Makefile is provided for common development tasks:
+
+```bash
+# Install dependencies
+make install
+
+# Run tests
+make test
+
+# Run linters
+make lint
+
+# Run in sync mode
+make run
+
+# Run in async mode
+make run-async
+
+# Clean up generated files
+make clean
+
+# Show help message
+make help
+```
+
 ## Requirements
 
 - Python 3.6 or higher
-- `google-genai` package
-- `tabulate` package
+- `google-genai` package (≥ 0.5.0)
+- `tabulate` package (≥ 0.9.0)
+- `colorama` package (≥ 0.4.4)
 
 ## License
 
