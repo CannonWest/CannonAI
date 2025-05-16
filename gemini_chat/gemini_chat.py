@@ -55,6 +55,8 @@ def parse_arguments():
                         help='Use asynchronous client implementation')
     parser.add_argument('--dir', '--conversations-dir', dest='conversations_dir',
                        help='Directory to store conversations')
+    parser.add_argument('--ui', '-ui', dest='ui_mode', action='store_true',
+                       help='Launch with graphical user interface (uses async mode)')
     
     # Configuration options
     config_group = parser.add_argument_group('Configuration')
@@ -91,8 +93,13 @@ def main():
         config.setup_wizard()
         sys.exit(0)
     
-    # Display welcome message
-    display_welcome_message()
+    # If UI mode is requested, always use async mode
+    if args.ui_mode:
+        args.async_mode = True
+    
+    # Display welcome message (only in CLI mode)
+    if not args.ui_mode:
+        display_welcome_message()
     
     # Merge configuration with command-line arguments
     api_key = args.api_key or config.get_api_key()
@@ -129,18 +136,32 @@ def main():
         use_streaming=use_streaming
     )
     
-    # Initialize the client
-    if args.async_mode:
-        # Initialize async client and run command loop
-        asyncio.run(async_initialize_and_run(client))
-    else:
-        # Initialize sync client
-        if not client.initialize_client():
-            print(f"{Colors.FAIL}Failed to initialize client. Exiting.{Colors.ENDC}")
-            sys.exit(1)
+    # Check if we're in UI mode
+    if args.ui_mode:
+        # Import here to avoid circular imports
+        from ui_client import launch_ui
         
-        # Run sync command loop
-        sync_command_loop(client)
+        # Initialize UI with async client (don't block if no API key)
+        try:
+            asyncio.run(launch_ui(client, config))
+        except Exception as e:
+            print(f"{Colors.FAIL}Error launching UI: {e}{Colors.ENDC}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+    else:
+        # Initialize the client for CLI mode
+        if args.async_mode:
+            # Initialize async client and run command loop
+            asyncio.run(async_initialize_and_run(client))
+        else:
+            # Initialize sync client
+            if not client.initialize_client():
+                print(f"{Colors.FAIL}Failed to initialize client. Exiting.{Colors.ENDC}")
+                sys.exit(1)
+            
+            # Run sync command loop
+            sync_command_loop(client)
 
 
 async def async_initialize_and_run(client):

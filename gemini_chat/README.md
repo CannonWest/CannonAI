@@ -1,6 +1,6 @@
-# Gemini Chat CLI
+# Gemini Chat
 
-A powerful, modular command-line interface for interacting with Google's Gemini AI models, supporting both synchronous and asynchronous operations.
+A powerful, modular interface for interacting with Google's Gemini AI models, supporting both command-line and graphical user interfaces.
 
 [![Python Version](https://img.shields.io/badge/python-3.6%2B-blue)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -8,6 +8,7 @@ A powerful, modular command-line interface for interacting with Google's Gemini 
 ## Features
 
 - Multi-turn conversations with Google's Gemini models
+- Both CLI and GUI interfaces
 - Select from available Gemini models
 - Customize generation parameters (temperature, max tokens, etc.)
 - Save and load conversations as JSON files
@@ -17,6 +18,7 @@ A powerful, modular command-line interface for interacting with Google's Gemini 
 - Support for both synchronous and asynchronous implementations
 - Cross-platform terminal colors
 - Persistent configuration system
+- Modern GUI using ttkbootstrap with dark mode support
 
 ## Project Structure
 
@@ -29,6 +31,7 @@ CannonAI/
 │   ├── base_client.py            # Core shared functionality
 │   ├── sync_client.py            # Synchronous implementation
 │   ├── async_client.py           # Asynchronous implementation
+│   ├── ui_client.py              # GUI implementation
 │   ├── command_handler.py        # Command processing for both modes
 │   ├── client_manager.py         # Client creation and management
 │   ├── config.py                 # Configuration management
@@ -74,7 +77,11 @@ CannonAI/
 ### Running the Application
 
 ```bash
+# Command-line interface (default)
 python gemini_chat/gemini_chat.py [options]
+
+# Graphical user interface
+python gemini_chat/gemini_chat.py -ui
 ```
 
 ### Command-line Arguments
@@ -87,6 +94,7 @@ Available arguments:
 - `--api-key`: Specify your Gemini API key (overrides config and environment variable)
 - `--model`: Specify the model to use (default: from config or gemini-2.0-flash)
 - `--async`: Use asynchronous client implementation
+- `--ui`, `-ui`: Launch with graphical user interface (uses async mode)
 - `--dir`, `--conversations-dir`: Directory to store conversations
 - `--setup`: Run the configuration setup wizard
 - `--config`: Specify a custom configuration file path
@@ -97,6 +105,33 @@ Advanced options:
 - `--top-p`: Top-p sampling parameter (0.0-1.0)
 - `--top-k`: Top-k sampling parameter
 - `--stream`: Enable streaming mode by default
+
+## GUI Interface
+
+The graphical user interface provides a modern, user-friendly way to interact with Gemini AI models. It includes:
+
+- Dark mode support with customizable themes
+- Split-pane layout with conversation list and chat area
+- Tabbed interface for chat and log views
+- Support for all CLI functionality in a graphical environment
+- Streaming support with real-time response display
+- Full conversation management
+- Model selection and parameter customization
+- Settings dialog for configuration
+
+To use the GUI:
+
+1. Install the required dependencies (including ttkbootstrap):
+   ```bash
+   pip install -r gemini_chat/requirements.txt
+   ```
+
+2. Launch the application with the UI flag:
+   ```bash
+   python gemini_chat/gemini_chat.py -ui
+   ```
+
+3. If you encounter any issues, check the Log tab for detailed error messages.
 
 ### Commands During Chat
 
@@ -214,6 +249,7 @@ make help
 - `google-genai` package (≥ 0.5.0)
 - `tabulate` package (≥ 0.9.0)
 - `colorama` package (≥ 0.4.4)
+- `ttkbootstrap` package (≥ 1.11.0) for GUI
 
 ## License
 

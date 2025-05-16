@@ -39,7 +39,7 @@ class Config:
         self.config = {
             "api_key": "",
             "default_model": self.DEFAULT_MODEL,
-            "conversations_dir": str(Path(__file__).resolve().parent.parent / "gemini_chat_conversations"),
+            "conversations_dir": str(Path.home() / "gemini_chat_conversations"),
             "generation_params": {
                 "temperature": 0.7,
                 "max_output_tokens": 800,
