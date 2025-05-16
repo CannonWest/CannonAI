@@ -232,7 +232,10 @@ class CommandHandler:
         """Open configuration settings (async version)."""
         # Import here to avoid circular imports
         from config import Config
-        config = Config()
+        
+        # Pass the current client's API key to the config
+        api_key = self.client.api_key if hasattr(self.client, 'api_key') else None
+        config = Config(override_api_key=api_key)
         config.setup_wizard()
         return False
     
@@ -317,7 +320,10 @@ class CommandHandler:
         """Open configuration settings (sync version)."""
         # Import here to avoid circular imports
         from config import Config
-        config = Config()
+        
+        # Pass the current client's API key to the config
+        api_key = self.client.api_key if hasattr(self.client, 'api_key') else None
+        config = Config(override_api_key=api_key)
         config.setup_wizard()
         return False
 
@@ -332,12 +338,11 @@ async def async_command_loop(client):
     # Initialize the command handler
     handler = CommandHandler(client)
     
-    # Only initialize the conversation if needed
-    if not client.conversation_id:
-        await client.start_new_conversation()
-    
-    print(f"\n{Colors.HEADER}Chat Session Started (Async Mode){Colors.ENDC}")
-    print(f"Type {Colors.BOLD}/help{Colors.ENDC} to see available commands")
+    # Display welcome message and command options
+    print(f"\n{Colors.HEADER}Welcome to Gemini Chat CLI!{Colors.ENDC}")
+    print(f"\nType {Colors.BOLD}/new{Colors.ENDC} to start a new conversation")
+    print(f"Type {Colors.BOLD}/list{Colors.ENDC} to see your saved conversations")
+    print(f"Type {Colors.BOLD}/help{Colors.ENDC} for all available commands")
     
     while True:
         try:
@@ -353,7 +358,8 @@ async def async_command_loop(client):
             
             # Process normal message
             if client.conversation_id is None:
-                await client.start_new_conversation()
+                print(f"\n{Colors.WARNING}No active conversation. Please start a new one with /new first.{Colors.ENDC}")
+                continue
             
             # Send message and get response
             response = await client.send_message(user_input)
@@ -379,12 +385,11 @@ def sync_command_loop(client):
     # Initialize the command handler
     handler = CommandHandler(client)
     
-    # Only initialize the conversation if needed
-    if not client.conversation_id:
-        client.start_new_conversation()
-    
-    print(f"\n{Colors.HEADER}Chat Session Started (Sync Mode){Colors.ENDC}")
-    print(f"Type {Colors.BOLD}/help{Colors.ENDC} to see available commands")
+    # Display welcome message and command options
+    print(f"\n{Colors.HEADER}Welcome to Gemini Chat CLI!{Colors.ENDC}")
+    print(f"\nType {Colors.BOLD}/new{Colors.ENDC} to start a new conversation")
+    print(f"Type {Colors.BOLD}/list{Colors.ENDC} to see your saved conversations")
+    print(f"Type {Colors.BOLD}/help{Colors.ENDC} for all available commands")
     
     while True:
         try:
@@ -400,7 +405,8 @@ def sync_command_loop(client):
             
             # Process normal message
             if client.conversation_id is None:
-                client.start_new_conversation()
+                print(f"\n{Colors.WARNING}No active conversation. Please start a new one with /new first.{Colors.ENDC}")
+                continue
             
             # Send message and get response
             response = client.send_message(user_input)

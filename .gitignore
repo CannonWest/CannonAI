@@ -1,3 +1,5 @@
 /.idea
 *.pyc
 /gemini_chat_conversations
+/.codebuddy
+gemini_chat_config/gemini_chat_config.json

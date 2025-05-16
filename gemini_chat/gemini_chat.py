@@ -83,8 +83,8 @@ def main():
     # Parse arguments
     args = parse_arguments()
     
-    # Load configuration
-    config = Config(args.config)
+    # Load configuration with API key from command line and suppress first load message
+    config = Config(args.config, override_api_key=args.api_key, quiet=True)
     
     # Run setup wizard if requested
     if args.setup:

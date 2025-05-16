@@ -195,10 +195,13 @@ class AsyncGeminiClient(BaseGeminiClient):
             # Use streaming or non-streaming based on user preference
             if self.use_streaming:
                 # Call the API with streaming
-                print(f"{Colors.CYAN}AI is thinking... (streaming mode){Colors.ENDC}")
+                print(f"\r{Colors.CYAN}AI is thinking... (streaming mode){Colors.ENDC}", end="", flush=True)
                 
                 # Initialize an empty response
                 response_text = ""
+                
+                # Clear the thinking message when starting to show response
+                print("\r" + " " * 50 + "\r", end="", flush=True)  # Clear line with spaces
                 
                 # Print the AI prefix only once before streaming begins
                 print(f"{Colors.GREEN}AI: {Colors.ENDC}", end="", flush=True)
@@ -225,7 +228,7 @@ class AsyncGeminiClient(BaseGeminiClient):
             
             else:
                 # Call the API without streaming
-                print(f"{Colors.CYAN}AI is thinking...{Colors.ENDC}")
+                print(f"\r{Colors.CYAN}AI is thinking...{Colors.ENDC}", end="", flush=True)
                 
                 # Call the API asynchronously
                 response = await self.client.aio.models.generate_content(
@@ -233,6 +236,9 @@ class AsyncGeminiClient(BaseGeminiClient):
                     contents=chat_history,
                     config=config
                 )
+                
+                # Clear the thinking message when we get the response
+                print("\r" + " " * 50 + "\r", end="", flush=True)  # Clear line with spaces
                 
                 # Extract response text
                 response_text = response.text
@@ -429,7 +435,7 @@ class AsyncGeminiClient(BaseGeminiClient):
             print(f"{Colors.WARNING}No saved conversations found.{Colors.ENDC}")
             return conversations
         
-        headers = ["#", "Title", "Model", "Messages", "Created"]
+        headers = ["#", "Title", "Model", "Messages", "Created", "Filepath"]
         table_data = []
         
         for i, conv in enumerate(conversations, 1):
@@ -447,7 +453,8 @@ class AsyncGeminiClient(BaseGeminiClient):
                 conv["title"],
                 conv["model"],
                 conv["message_count"],
-                created_at
+                created_at,
+                str(conv["path"])
             ]
             table_data.append(row)
         
