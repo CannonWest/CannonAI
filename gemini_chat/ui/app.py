@@ -43,9 +43,9 @@ class GeminiChatApp:
         self.root = ttk.Window(
             title="CannonAI - Gemini Chat",
             themename="superhero",  # Dark theme by default
-            size=(1200, 700),
+            size=(1200, 800),  # Increased height to show all elements
             position=(100, 100),
-            minsize=(800, 500)
+            minsize=(800, 650)  # Increased minimum height as well
         )
         
         # Create Tkinter variables
@@ -99,14 +99,25 @@ class GeminiChatApp:
             self.status_var.set("API key required")
             self.model_var.set("No API key set")
         
-        # If no active conversation, create one
+        # First, update the conversation list to load existing conversations
+        print("Checking for existing conversations...")
+        await self.update_conversation_list()
+        
+        # If no active conversation, create one - but only if we have conversations in the list
         if client_initialized and not self.client.conversation_id:
-            print("No active conversation, creating one...")
-            await self.on_new_conversation()
+            # Check if we have any existing conversations
+            if self.convo_listbox.get_children():
+                # We have existing conversations, load the first one
+                first_convo = self.convo_listbox.get_children()[0]
+                print(f"Loading first conversation: {first_convo}")
+                await self.load_conversation(first_convo)
+            else:
+                # No existing conversations, create a new one
+                print("No existing conversations found, creating one...")
+                await self.on_new_conversation()
         elif self.client.conversation_id:
             # Update the display with existing conversation
             self.convo_var.set(f"Current Conversation")
-            await self.update_conversation_list()
             await self.display_conversation_history()
         
         print("Initialization complete")
@@ -240,6 +251,9 @@ class GeminiChatApp:
         
         # Bind selection event
         self.convo_listbox.bind("<<TreeviewSelect>>", self.on_conversation_select)
+        
+        # Bind right-click for context menu
+        self.convo_listbox.bind("<Button-3>", self.show_conversation_context_menu)
         
         # Options frame at the bottom
         options_frame = ttk.Labelframe(parent, text="Options", padding=5)
@@ -524,9 +538,10 @@ class GeminiChatApp:
     def on_clear_chat_click(self):
         """Handle click on Clear Chat menu item"""
         print("Clear chat menu item clicked")
-        self.chat_display.config(state="normal")
+        text_widget = self.chat_display.text
+        text_widget.configure(state="normal")
         self.chat_display.delete("1.0", END)
-        self.chat_display.config(state="disabled")
+        text_widget.configure(state="disabled")
     
     def on_copy_text_click(self):
         """Handle click on Copy Selected Text menu item"""
@@ -592,6 +607,231 @@ class GeminiChatApp:
             convo_id = selected[0]
             print(f"Selected conversation ID: {convo_id}")
             self.async_helper.run_coroutine(self.load_conversation(convo_id))
+            
+    def show_conversation_context_menu(self, event):
+        """Show context menu for right-clicked conversation"""
+        # Identify the item that was right-clicked
+        item = self.convo_listbox.identify_row(event.y)
+        if not item:
+            print("No item right-clicked")
+            return
+            
+        print(f"Right-clicked on conversation: {item}")
+        
+        # Select the item first
+        self.convo_listbox.selection_set(item)
+        
+        # Create context menu
+        context_menu = ttk.Menu(self.root, tearoff=0)
+        context_menu.add_command(label="Rename", command=lambda: self.rename_conversation(item))
+        context_menu.add_command(label="Delete", command=lambda: self.delete_conversation(item))
+        
+        # Display context menu at the event location
+        try:
+            context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            # Make sure to release the grab or the app will hang
+            context_menu.grab_release()
+    
+    def rename_conversation(self, conversation_id):
+        """Rename a conversation
+        
+        Args:
+            conversation_id: The conversation ID to rename
+        """
+        print(f"Renaming conversation: {conversation_id}")
+        
+        # Create an asyncio Future to wait for the result
+        import asyncio
+        future = asyncio.Future()
+        
+        # Function to show dialog on main thread
+        def show_rename_dialog():
+            # Get the current title
+            current_title = ""
+            for convo in self.convo_listbox.item(conversation_id, "text").split(" ("):
+                current_title = convo
+                break
+                
+            # Show dialog to get new title
+            new_title = Querybox.get_string(
+                "Enter new title for the conversation:",
+                "Rename Conversation",
+                initialvalue=current_title,
+                parent=self.root
+            )
+            
+            # Set future result
+            future.set_result(new_title)
+        
+        # Show dialog on main thread
+        self.root.after(0, show_rename_dialog)
+        
+        # Handle the result asynchronously
+        def handle_rename_result(fut):
+            try:
+                new_title = fut.result()
+                if new_title:
+                    # Run the actual rename coroutine
+                    rename_future = self.async_helper.run_coroutine(
+                        self.do_rename_conversation(conversation_id, new_title)
+                    )
+                    rename_future.add_done_callback(lambda _: print(f"Rename completed for {conversation_id}"))
+            except Exception as e:
+                print(f"Error in rename dialog: {e}")
+                self.add_system_message(f"Error renaming conversation: {str(e)}")
+        
+        # Add callback
+        future.add_done_callback(handle_rename_result)
+    
+    async def do_rename_conversation(self, conversation_id, new_title):
+        """Perform the actual conversation rename
+        
+        Args:
+            conversation_id: The conversation ID to rename
+            new_title: The new title for the conversation
+        """
+        print(f"Performing rename of {conversation_id} to '{new_title}'")
+        
+        try:
+            # Get current conversation data
+            conversations = await self.client.list_conversations()
+            target_conv = None
+            target_path = None
+            
+            for conv in conversations:
+                if conv.get("conversation_id") == conversation_id:
+                    target_conv = conv
+                    target_path = conv.get("path")
+                    break
+            
+            if not target_conv or not target_path:
+                print(f"Error: Could not find conversation {conversation_id}")
+                self.add_system_message("Error: Conversation not found")
+                return False
+            
+            # Read the conversation file
+            with open(target_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Update the title in metadata
+            history = data.get("history", [])
+            for i, item in enumerate(history):
+                if item.get("type") == "metadata":
+                    if "content" in item and isinstance(item["content"], dict):
+                        item["content"]["title"] = new_title
+                        break
+            
+            # Save updated data
+            with open(target_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+            
+            # Update UI
+            message_count = target_conv.get("message_count", 0)
+            self.convo_listbox.item(
+                conversation_id, 
+                text=f"{new_title} ({message_count} msgs)"
+            )
+            
+            # If this is the current conversation, update title
+            if self.client.conversation_id == conversation_id:
+                self.convo_var.set(f"Current Conversation: {new_title}")
+            
+            print(f"Successfully renamed conversation to '{new_title}'")
+            self.add_system_message(f"Conversation renamed to '{new_title}'")
+            return True
+            
+        except Exception as e:
+            print(f"Error renaming conversation: {e}")
+            import traceback
+            traceback.print_exc()
+            self.add_system_message(f"Error renaming conversation: {str(e)}")
+            return False
+    
+    def delete_conversation(self, conversation_id):
+        """Delete a conversation
+        
+        Args:
+            conversation_id: The conversation ID to delete
+        """
+        print(f"Deleting conversation: {conversation_id}")
+        
+        # Get the conversation title
+        convo_text = self.convo_listbox.item(conversation_id, "text")
+        title = convo_text.split(" (")[0] if " (" in convo_text else convo_text
+        
+        # Confirm deletion
+        if not Messagebox.show_question(
+            f"Are you sure you want to delete the conversation '{title}'?",
+            "Confirm Deletion",
+            buttons=['Yes:success', 'No:secondary'],
+            parent=self.root
+        ):
+            print("Deletion cancelled")
+            return
+        
+        # Run the delete coroutine
+        delete_future = self.async_helper.run_coroutine(
+            self.do_delete_conversation(conversation_id)
+        )
+        delete_future.add_done_callback(lambda _: print(f"Delete completed for {conversation_id}"))
+    
+    async def do_delete_conversation(self, conversation_id):
+        """Perform the actual conversation deletion
+        
+        Args:
+            conversation_id: The conversation ID to delete
+        """
+        print(f"Performing deletion of {conversation_id}")
+        
+        try:
+            # Get conversation path
+            conversations = await self.client.list_conversations()
+            target_path = None
+            
+            for conv in conversations:
+                if conv.get("conversation_id") == conversation_id:
+                    target_path = conv.get("path")
+                    break
+            
+            if not target_path:
+                print(f"Error: Could not find conversation {conversation_id}")
+                self.add_system_message("Error: Conversation not found")
+                return False
+            
+            # Check if this is the current conversation
+            is_current = self.client.conversation_id == conversation_id
+            
+            # Delete the file
+            import os
+            os.remove(target_path)
+            print(f"Deleted file: {target_path}")
+            
+            # Remove from UI
+            self.convo_listbox.delete(conversation_id)
+            
+            # If current conversation was deleted, create a new one or load another
+            if is_current:
+                print("Current conversation was deleted")
+                # Check if there are other conversations
+                if self.convo_listbox.get_children():
+                    # Load the first available conversation
+                    first_convo = self.convo_listbox.get_children()[0]
+                    await self.load_conversation(first_convo)
+                else:
+                    # Create a new conversation
+                    await self.on_new_conversation()
+            
+            # Show message
+            self.add_system_message("Conversation deleted successfully")
+            return True
+            
+        except Exception as e:
+            print(f"Error deleting conversation: {e}")
+            import traceback
+            traceback.print_exc()
+            self.add_system_message(f"Error deleting conversation: {str(e)}")
+            return False
     
     def on_send_message_click(self):
         """Handle click on Send button"""
@@ -629,58 +869,97 @@ class GeminiChatApp:
         if self.client.conversation_id:
             print(f"Saving current conversation: {self.client.conversation_id}")
             await self.client.save_conversation()
+            
+        # We need to get a title from the user via a dialog
+        # But we can't call Tkinter dialogs from async functions, so we need to use a callback pattern
+        # Create an asyncio Future to wait for the result
+        import asyncio
+        title_future = asyncio.Future()
         
-        # Get title from user
-        title = Querybox.get_string(
-            "Enter a title for this conversation:",
-            "New Conversation",
-            initialvalue=f"Conversation_{self.client.get_timestamp()}",
-            parent=self.root
-        )
+        # Function to be called on the main thread
+        def show_title_dialog():
+            try:
+                print("Showing conversation title dialog on main thread")
+                default_title = f"Conversation_{self.client.get_timestamp()}"
+                
+                # Create the dialog on the main thread
+                title = Querybox.get_string(
+                    "Enter a title for this conversation:",
+                    "New Conversation",
+                    initialvalue=default_title,
+                    parent=self.root
+                )
+                
+                # Set result in the future
+                title_future.set_result(title if title else default_title)
+                print(f"Dialog result: {title if title else 'Using default title'}")
+            except Exception as e:
+                print(f"Error in title dialog: {e}")
+                title_future.set_exception(e)
         
-        # Check if user cancelled
-        if title is None:
-            print("User cancelled new conversation")
-            return
+        # Schedule the dialog on the main thread
+        self.root.after(0, show_title_dialog)
         
-        # Use default title if empty
-        if not title:
-            title = f"Conversation_{self.client.get_timestamp()}"
-        
-        # Update status
-        self.status_var.set("Creating new conversation...")
-        print(f"Creating new conversation with title: {title}")
-        
-        # Create new conversation
-        self.client.conversation_id = self.client.generate_conversation_id()
-        self.client.conversation_history = []
-        
-        # Create initial metadata
-        metadata = self.client.create_metadata_structure(title, self.client.model, self.client.params)
-        
-        # Add to conversation history
-        self.client.conversation_history.append(metadata)
-        
-        # Clear chat display
-        self.chat_display.config(state="normal")
-        self.chat_display.delete("1.0", END)
-        self.chat_display.config(state="disabled")
-        
-        # Update conversation title
-        self.convo_var.set(f"Current Conversation: {title}")
-        
-        # Save the new conversation
-        await self.client.save_conversation()
-        
-        # Update conversation list
-        await self.update_conversation_list()
-        
-        # Update status
-        self.status_var.set("Ready")
-        
-        # Add system message to chat
-        self.add_system_message(f"Started new conversation: {title}")
-        print("New conversation created successfully")
+        # Wait for the dialog result
+        try:
+            print("Waiting for dialog result...")
+            title = await title_future
+            print(f"Received title: {title}")
+            
+            # Check if user cancelled
+            if title is None:
+                print("User cancelled new conversation")
+                return
+                
+            # Update status
+            self.status_var.set("Creating new conversation...")
+            print(f"Creating new conversation with title: {title}")
+            
+            # Create new conversation
+            self.client.conversation_id = self.client.generate_conversation_id()
+            self.client.conversation_history = []
+            
+            # Create initial metadata
+            metadata = self.client.create_metadata_structure(title, self.client.model, self.client.params)
+            
+            # Add to conversation history
+            self.client.conversation_history.append(metadata)
+            
+            # Clear chat display
+            text_widget = self.chat_display.text
+            text_widget.configure(state="normal")
+            self.chat_display.delete("1.0", END)
+            text_widget.configure(state="disabled")
+            
+            # Update conversation title
+            self.convo_var.set(f"Current Conversation: {title}")
+            
+            # Save the new conversation
+            await self.client.save_conversation()
+            print("New conversation saved successfully")
+            
+            # Force directory creation before updating list
+            self.client.ensure_directories(self.client.conversations_dir)
+            print(f"Ensured conversation directory exists at: {self.client.conversations_dir}")
+            
+            # Update conversation list
+            await self.update_conversation_list()
+            
+            # Update status
+            self.status_var.set("Ready")
+            
+            # Add system message to chat
+            self.add_system_message(f"Started new conversation: {title}")
+            print("New conversation created successfully")
+        except Exception as e:
+            print(f"Error creating new conversation: {e}")
+            import traceback
+            traceback.print_exc()
+            self.add_system_message(f"Error creating new conversation: {str(e)}")
+            self.status_var.set("Error creating conversation")
+            return False
+            
+        return True
     
     async def on_save_conversation(self):
         """Save the current conversation"""
@@ -701,6 +980,8 @@ class GeminiChatApp:
     async def update_conversation_list(self):
         """Update the conversation list"""
         print("Updating conversation list...")
+        print(f"Looking for conversations in: {self.client.conversations_dir}")
+        
         # Get list of conversations
         conversations = await self.client.list_conversations()
         
@@ -815,7 +1096,8 @@ class GeminiChatApp:
             return
         
         # Clear chat display
-        self.chat_display.config(state="normal")
+        text_widget = self.chat_display.text
+        text_widget.configure(state="normal")
         self.chat_display.delete("1.0", END)
         
         # Find title from metadata
@@ -841,7 +1123,7 @@ class GeminiChatApp:
                 elif role == "ai":
                     self.add_ai_message_to_display(text)
         
-        self.chat_display.config(state="disabled")
+        text_widget.configure(state="disabled")
         self.chat_display.see(END)
         print("Conversation history displayed")
     
@@ -912,10 +1194,10 @@ class GeminiChatApp:
         print("Sending streaming message...")
         # Create a chat session
         try:
-            # Add the AI label first
-            self.chat_display.config(state="normal")
+            # Add the AI label first to the text widget (not the ScrolledText container)
+            self.chat_display.text.configure(state="normal")
             self.chat_display.insert(END, "AI: ", "ai_label")
-            self.chat_display.config(state="disabled")
+            self.chat_display.text.configure(state="disabled")
             
             # Start stream handler
             self.stream_handler.start_streaming()
@@ -956,9 +1238,9 @@ class GeminiChatApp:
             self.stream_handler.stop_streaming()
             
             # Add new line after response
-            self.chat_display.config(state="normal")
+            self.chat_display.text.configure(state="normal")
             self.chat_display.insert(END, "\n", "ai_text")
-            self.chat_display.config(state="disabled")
+            self.chat_display.text.configure(state="disabled")
             
             # Add AI response to history with enhanced metadata
             ai_message = self.client.create_message_structure("ai", response_text, self.client.model, self.client.params)
@@ -993,7 +1275,8 @@ class GeminiChatApp:
         print(f"Found {len(models)} available models")
         
         # Create model selection dialog
-        dialog = ttk.Toplevel(self.root, title="Select Model")
+        dialog = ttk.Toplevel(self.root)
+        dialog.title("Select Model")
         dialog.minsize(400, 300)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -1103,7 +1386,8 @@ class GeminiChatApp:
         print("Opening parameters dialog...")
         
         # Create dialog
-        dialog = ttk.Toplevel(self.root, title="Model Parameters")
+        dialog = ttk.Toplevel(self.root)
+        dialog.title("Model Parameters")
         dialog.minsize(300, 200)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -1198,7 +1482,8 @@ class GeminiChatApp:
     def create_settings_dialog(self):
         """Create and show the settings dialog"""
         print("Creating settings dialog...")
-        dialog = ttk.Toplevel(self.root, title="Settings")
+        dialog = ttk.Toplevel(self.root)
+        dialog.title("Settings")
         dialog.minsize(400, 200)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -1319,7 +1604,7 @@ class GeminiChatApp:
             self.config.set("theme", selected_theme)
             
             # Save config
-            self.config.save()
+            self.config.save_config()
             
             self.status_var.set("Settings saved")
             dialog.destroy()
@@ -1348,10 +1633,11 @@ class GeminiChatApp:
         Args:
             message: The message to add
         """
-        self.chat_display.config(state="normal")
+        text_widget = self.chat_display.text
+        text_widget.configure(state="normal")
         self.chat_display.insert(END, "You: ", "user_label")
         self.chat_display.insert(END, f"{message}\n", "user_text")
-        self.chat_display.config(state="disabled")
+        text_widget.configure(state="disabled")
         self.chat_display.see(END)
     
     def add_ai_message_to_display(self, message):
@@ -1360,10 +1646,11 @@ class GeminiChatApp:
         Args:
             message: The message to add
         """
-        self.chat_display.config(state="normal")
+        text_widget = self.chat_display.text
+        text_widget.configure(state="normal")
         self.chat_display.insert(END, "AI: ", "ai_label")
         self.chat_display.insert(END, f"{message}\n", "ai_text")
-        self.chat_display.config(state="disabled")
+        text_widget.configure(state="disabled")
         self.chat_display.see(END)
     
     def add_system_message(self, message):
@@ -1372,9 +1659,11 @@ class GeminiChatApp:
         Args:
             message: The message to add
         """
-        self.chat_display.config(state="normal")
+        # Access the internal Text widget of ScrolledText
+        text_widget = self.chat_display.text
+        text_widget.configure(state="normal")
         self.chat_display.insert(END, f"--- {message} ---\n", "system_text")
-        self.chat_display.config(state="disabled")
+        text_widget.configure(state="disabled")
         self.chat_display.see(END)
     
     def start(self):

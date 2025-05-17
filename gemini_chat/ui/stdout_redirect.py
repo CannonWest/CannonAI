@@ -23,8 +23,12 @@ class StdoutRedirector:
             lines = self.buffer.split('\n')
             for line in lines[:-1]:  # Process all complete lines
                 try:
-                    # Use different methods for configuration based on widget type
-                    if hasattr(self.text_widget, 'configure'):
+                    # Check if it's a ScrolledText (has a .text attribute)
+                    if hasattr(self.text_widget, 'text'):
+                        text = self.text_widget.text
+                        text.configure(state="normal")
+                    # Fall back to direct configuration if it's a regular Text widget
+                    elif hasattr(self.text_widget, 'configure'):
                         self.text_widget.configure(state="normal")
                     elif hasattr(self.text_widget, 'config'):
                         self.text_widget.config(state="normal")
@@ -39,8 +43,12 @@ class StdoutRedirector:
                     else:
                         self.text_widget.insert(END, line + '\n', "default")
                         
-                    # Use different methods for configuration based on widget type
-                    if hasattr(self.text_widget, 'configure'):
+                    # Check if it's a ScrolledText (has a .text attribute)
+                    if hasattr(self.text_widget, 'text'):
+                        text = self.text_widget.text
+                        text.configure(state="disabled")
+                    # Fall back to direct configuration if it's a regular Text widget
+                    elif hasattr(self.text_widget, 'configure'):
                         self.text_widget.configure(state="disabled")
                     elif hasattr(self.text_widget, 'config'):
                         self.text_widget.config(state="disabled")
@@ -58,16 +66,24 @@ class StdoutRedirector:
         # If there's any remaining content in buffer, write it
         if self.buffer:
             try:
-                # Use different methods for configuration based on widget type
-                if hasattr(self.text_widget, 'configure'):
+                # Check if it's a ScrolledText (has a .text attribute)
+                if hasattr(self.text_widget, 'text'):
+                    text = self.text_widget.text
+                    text.configure(state="normal")
+                # Fall back to direct configuration if it's a regular Text widget
+                elif hasattr(self.text_widget, 'configure'):
                     self.text_widget.configure(state="normal")
                 elif hasattr(self.text_widget, 'config'):
                     self.text_widget.config(state="normal")
                 
                 self.text_widget.insert(END, self.buffer, "default")
                 
-                # Use different methods for configuration based on widget type
-                if hasattr(self.text_widget, 'configure'):
+                # Check if it's a ScrolledText (has a .text attribute)
+                if hasattr(self.text_widget, 'text'):
+                    text = self.text_widget.text
+                    text.configure(state="disabled")
+                # Fall back to direct configuration if it's a regular Text widget
+                elif hasattr(self.text_widget, 'configure'):
                     self.text_widget.configure(state="disabled")
                 elif hasattr(self.text_widget, 'config'):
                     self.text_widget.config(state="disabled")

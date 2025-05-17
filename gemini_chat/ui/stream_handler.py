@@ -68,9 +68,10 @@ class StreamHandler:
         if not text:
             return
             
-        self.chat_display.config(state="normal")
+        # Access the internal Text widget of ScrolledText
+        self.chat_display.text.configure(state="normal")
         self.chat_display.insert(END, text, "ai_text")
-        self.chat_display.config(state="disabled")
+        self.chat_display.text.configure(state="disabled")
         self.chat_display.see(END)
         self.current_response += text
 
