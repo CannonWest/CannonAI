@@ -21,6 +21,7 @@ from base_client import Colors
 from .stdout_redirect import StdoutRedirector
 from .stream_handler import StreamHandler
 from .async_helper import AsyncHelper
+from .components.message_bubbles import BubbleChatDisplay
 
 class GeminiChatApp:
     """Main UI application for the Gemini Chat"""
@@ -103,7 +104,8 @@ class GeminiChatApp:
         print("Checking for existing conversations...")
         await self.update_conversation_list()
         
-        # If no active conversation, create one - but only if we have conversations in the list
+        # Previously, we would automatically create a new conversation if none existed
+        # This behavior is now disabled - users can create a new conversation manually
         if client_initialized and not self.client.conversation_id:
             # Check if we have any existing conversations
             if self.convo_listbox.get_children():
@@ -112,9 +114,9 @@ class GeminiChatApp:
                 print(f"Loading first conversation: {first_convo}")
                 await self.load_conversation(first_convo)
             else:
-                # No existing conversations, create a new one
-                print("No existing conversations found, creating one...")
-                await self.on_new_conversation()
+                # No existing conversations, but we won't create one automatically
+                print("No existing conversations found. User can create one manually.")
+                self.add_system_message("Welcome to Gemini Chat! Click 'New Conversation' to get started.")
         elif self.client.conversation_id:
             # Update the display with existing conversation
             self.convo_var.set(f"Current Conversation")
@@ -130,7 +132,7 @@ class GeminiChatApp:
         # Setup menu
         self.setup_menu()
         
-        # Main layout with paned window
+        # Main layout with paned window (using nested panes for 3-panel layout)
         main_pane = ttk.PanedWindow(self.root, orient=HORIZONTAL)
         main_pane.pack(fill=BOTH, expand=YES, padx=5, pady=5)
         
@@ -138,13 +140,22 @@ class GeminiChatApp:
         left_frame = ttk.Frame(main_pane, width=250)
         main_pane.add(left_frame, weight=1)
         
-        # Right pane (chat)
-        right_frame = ttk.Frame(main_pane)
-        main_pane.add(right_frame, weight=3)
+        # Center and Right panel container
+        center_right_pane = ttk.PanedWindow(main_pane, orient=HORIZONTAL)
+        main_pane.add(center_right_pane, weight=4)
+        
+        # Center pane (chat)
+        center_frame = ttk.Frame(center_right_pane)
+        center_right_pane.add(center_frame, weight=3)
+        
+        # Right pane (settings)
+        settings_frame = ttk.Frame(center_right_pane, width=250)
+        center_right_pane.add(settings_frame, weight=1)
         
         # Setup components
         self.setup_left_pane(left_frame)
-        self.setup_right_pane(right_frame)
+        self.setup_center_pane(center_frame)
+        self.setup_settings_pane(settings_frame)
         self.setup_status_bar()
         
         # Create stream handler now that chat_display exists
@@ -178,7 +189,7 @@ class GeminiChatApp:
         file_menu.add_command(label="New Conversation", command=self.on_new_conversation_click)
         file_menu.add_command(label="Save Conversation", command=self.on_save_conversation_click)
         file_menu.add_separator()
-        file_menu.add_command(label="Settings", command=self.on_settings_click)
+        file_menu.add_command(label="Toggle Settings Panel", command=self.on_settings_click)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.on_exit_click)
         
@@ -287,7 +298,7 @@ class GeminiChatApp:
         )
         params_btn.pack(fill=X, pady=2)
     
-    def setup_right_pane(self, parent):
+    def setup_center_pane(self, parent):
         """Setup the right pane with chat and log
         
         Args:
@@ -316,18 +327,9 @@ class GeminiChatApp:
             font="-size 12 -weight bold"
         ).pack(fill=X, pady=(0, 5))
         
-        # Chat display
-        self.chat_display = ScrolledText(
-            chat_frame,
-            wrap="word",
-            height=20,
-            autohide=True,
-            state="disabled"
-        )
+        # *** CHANGED: Use the new BubbleChatDisplay instead of ScrolledText ***
+        self.chat_display = BubbleChatDisplay(chat_frame)
         self.chat_display.pack(fill=BOTH, expand=YES, pady=(0, 5))
-        
-        # Configure message tags
-        self.setup_chat_tags()
         
         # Message input area
         input_frame = ttk.Frame(chat_frame)
@@ -372,55 +374,6 @@ class GeminiChatApp:
         
         # Configure log tags
         self.setup_log_tags()
-    
-    def setup_chat_tags(self):
-        """Setup tags for the chat display"""
-        # For user messages
-        self.chat_display.tag_configure(
-            "user_text",
-            foreground="white",
-            font=("-size 10 -weight bold"),
-            spacing1=10,
-            spacing3=5,
-            lmargin1=10,
-            lmargin2=25
-        )
-        
-        # For AI responses
-        self.chat_display.tag_configure(
-            "ai_text",
-            foreground="#90EE90",  # Light green
-            font=("-size 10"),
-            spacing1=10,
-            spacing3=5,
-            lmargin1=10,
-            lmargin2=25
-        )
-        
-        # For message labels
-        self.chat_display.tag_configure(
-            "user_label",
-            foreground="#ADD8E6",  # Light blue
-            font=("-size 10 -weight bold"),
-            spacing1=10
-        )
-        
-        self.chat_display.tag_configure(
-            "ai_label",
-            foreground="#90EE90",  # Light green
-            font=("-size 10 -weight bold"),
-            spacing1=10
-        )
-        
-        # For system messages
-        self.chat_display.tag_configure(
-            "system_text",
-            foreground="#FFD700",  # Gold
-            font=("-size 9 -slant italic"),
-            justify="center",
-            spacing1=5,
-            spacing3=5
-        )
     
     def setup_log_tags(self):
         """Setup tags for the log display"""
@@ -518,7 +471,33 @@ class GeminiChatApp:
     def on_new_conversation_click(self):
         """Handle click on New Conversation button"""
         print("New conversation button clicked")
-        self.async_helper.run_coroutine(self.on_new_conversation())
+        
+        # Check if API key is set first (synchronously)
+        if not self.client.api_key:
+            self.add_system_message("Please set your API key in Settings before creating a new conversation")
+            self.root.after(0, self.on_settings_click)
+            return
+            
+        # This is a synchronous implementation of getting a title to avoid the async issues
+        print("Opening conversation title dialog synchronously")
+        default_title = f"Conversation_{self.client.get_timestamp()}"
+        title = Querybox.get_string(
+            "Enter a title for this conversation:",
+            "New Conversation",
+            initialvalue=default_title,
+            parent=self.root
+        )
+        
+        if not title:
+            print("User cancelled new conversation")
+            return
+            
+        print(f"Received title: {title}")
+        
+        # Now run the creation process using the title
+        self.async_helper.run_coroutine(
+            self.create_new_conversation(title)
+        )
     
     def on_save_conversation_click(self):
         """Handle click on Save Conversation menu item"""
@@ -528,7 +507,19 @@ class GeminiChatApp:
     def on_settings_click(self):
         """Handle click on Settings menu item"""
         print("Settings menu item clicked")
-        self.create_settings_dialog()
+        # No need to open a dialog, just focus on the settings panel
+        # Find the notebook and switch to the first tab (chat)
+        for widget in self.root.winfo_children():
+            if isinstance(widget, ttk.PanedWindow):
+                # Found the main pane
+                for child in widget.panes():
+                    if isinstance(child, ttk.PanedWindow):
+                        # Found the center-right pane
+                        # Adjust the sash position to make settings visible
+                        position = int(child.winfo_width() * 0.7)  # 70% to chat, 30% to settings
+                        child.sashpos(0, position)
+                        break
+                break
     
     def on_exit_click(self):
         """Handle click on Exit menu item"""
@@ -538,19 +529,19 @@ class GeminiChatApp:
     def on_clear_chat_click(self):
         """Handle click on Clear Chat menu item"""
         print("Clear chat menu item clicked")
-        text_widget = self.chat_display.text
-        text_widget.configure(state="normal")
-        self.chat_display.delete("1.0", END)
-        text_widget.configure(state="disabled")
+        # *** CHANGED: Use the clear method in BubbleChatDisplay ***
+        self.chat_display.clear()
     
     def on_copy_text_click(self):
         """Handle click on Copy Selected Text menu item"""
         print("Copy text menu item clicked")
         try:
-            selected_text = self.chat_display.get("sel.first", "sel.last")
-            self.root.clipboard_clear()
-            self.root.clipboard_append(selected_text)
-            print("Text copied to clipboard")
+            # *** TO-DO: Implement copy for bubble chat display ***
+            # For now, do nothing as the bubble chat uses Text widgets internally
+            # that could have their own selections
+            print("Copy text not yet implemented for bubble chat")
+            # Show message to user
+            self.add_system_message("Text selection not yet implemented for bubble chat")
         except tk.TclError:
             print("No text selected")
     
@@ -799,13 +790,34 @@ class GeminiChatApp:
                 self.add_system_message("Error: Conversation not found")
                 return False
             
+            # Convert Path to string if needed
+            if hasattr(target_path, 'resolve'):
+                # It's a Path object, convert to string for better compatibility
+                target_path_str = str(target_path.resolve())
+            else:
+                target_path_str = str(target_path)
+                
+            print(f"Attempting to delete file at: {target_path_str}")
+            
             # Check if this is the current conversation
             is_current = self.client.conversation_id == conversation_id
             
-            # Delete the file
+            # Delete the file with better error handling
             import os
-            os.remove(target_path)
-            print(f"Deleted file: {target_path}")
+            try:
+                os.remove(target_path_str)
+                print(f"Successfully deleted file: {target_path_str}")
+            except FileNotFoundError:
+                print(f"File not found: {target_path_str}")
+                self.add_system_message(f"Warning: File {target_path_str} not found for deletion")
+            except PermissionError:
+                print(f"Permission denied when deleting: {target_path_str}")
+                self.add_system_message(f"Error: Permission denied when deleting file")
+                return False
+            except Exception as file_error:
+                print(f"Error during file deletion: {file_error}")
+                self.add_system_message(f"Error deleting file: {str(file_error)}")
+                return False
             
             # Remove from UI
             self.convo_listbox.delete(conversation_id)
@@ -855,110 +867,73 @@ class GeminiChatApp:
     
     # ============= Async Methods =============
     
-    async def on_new_conversation(self):
-        """Start a new conversation"""
-        print("Creating new conversation...")
+    async def create_new_conversation(self, title):
+        """Create a new conversation with the given title
         
-        # Check if API key is set
-        if not self.client.api_key:
-            self.add_system_message("Please set your API key in Settings before creating a new conversation")
-            self.root.after(0, self.on_settings_click)
-            return
+        Args:
+            title: The title for the new conversation
+        """
+        print(f"Creating new conversation with title: {title}")
+        
+        # Update status
+        self.status_var.set("Creating new conversation...")
         
         # Save current conversation first if it exists
         if self.client.conversation_id:
             print(f"Saving current conversation: {self.client.conversation_id}")
             await self.client.save_conversation()
-            
-        # We need to get a title from the user via a dialog
-        # But we can't call Tkinter dialogs from async functions, so we need to use a callback pattern
-        # Create an asyncio Future to wait for the result
-        import asyncio
-        title_future = asyncio.Future()
         
-        # Function to be called on the main thread
-        def show_title_dialog():
-            try:
-                print("Showing conversation title dialog on main thread")
-                default_title = f"Conversation_{self.client.get_timestamp()}"
-                
-                # Create the dialog on the main thread
-                title = Querybox.get_string(
-                    "Enter a title for this conversation:",
-                    "New Conversation",
-                    initialvalue=default_title,
-                    parent=self.root
-                )
-                
-                # Set result in the future
-                title_future.set_result(title if title else default_title)
-                print(f"Dialog result: {title if title else 'Using default title'}")
-            except Exception as e:
-                print(f"Error in title dialog: {e}")
-                title_future.set_exception(e)
+        # Create new conversation
+        self.client.conversation_id = self.client.generate_conversation_id()
+        self.client.conversation_history = []
         
-        # Schedule the dialog on the main thread
-        self.root.after(0, show_title_dialog)
+        # Create initial metadata
+        metadata = self.client.create_metadata_structure(title, self.client.model, self.client.params)
         
-        # Wait for the dialog result
-        try:
-            print("Waiting for dialog result...")
-            title = await title_future
-            print(f"Received title: {title}")
-            
-            # Check if user cancelled
-            if title is None:
-                print("User cancelled new conversation")
-                return
-                
-            # Update status
-            self.status_var.set("Creating new conversation...")
-            print(f"Creating new conversation with title: {title}")
-            
-            # Create new conversation
-            self.client.conversation_id = self.client.generate_conversation_id()
-            self.client.conversation_history = []
-            
-            # Create initial metadata
-            metadata = self.client.create_metadata_structure(title, self.client.model, self.client.params)
-            
-            # Add to conversation history
-            self.client.conversation_history.append(metadata)
-            
-            # Clear chat display
-            text_widget = self.chat_display.text
-            text_widget.configure(state="normal")
-            self.chat_display.delete("1.0", END)
-            text_widget.configure(state="disabled")
-            
-            # Update conversation title
-            self.convo_var.set(f"Current Conversation: {title}")
-            
-            # Save the new conversation
-            await self.client.save_conversation()
-            print("New conversation saved successfully")
-            
-            # Force directory creation before updating list
-            self.client.ensure_directories(self.client.conversations_dir)
-            print(f"Ensured conversation directory exists at: {self.client.conversations_dir}")
-            
-            # Update conversation list
-            await self.update_conversation_list()
-            
-            # Update status
-            self.status_var.set("Ready")
-            
-            # Add system message to chat
-            self.add_system_message(f"Started new conversation: {title}")
-            print("New conversation created successfully")
-        except Exception as e:
-            print(f"Error creating new conversation: {e}")
-            import traceback
-            traceback.print_exc()
-            self.add_system_message(f"Error creating new conversation: {str(e)}")
-            self.status_var.set("Error creating conversation")
-            return False
-            
+        # Add to conversation history
+        self.client.conversation_history.append(metadata)
+        
+        # Clear chat display
+        # *** CHANGED: Use the clear method in BubbleChatDisplay ***
+        self.chat_display.clear()
+        
+        # Update conversation title
+        self.convo_var.set(f"Current Conversation: {title}")
+        
+        # Save the new conversation
+        await self.client.save_conversation()
+        print("New conversation saved successfully")
+        
+        # Force directory creation before updating list
+        self.client.ensure_directories(self.client.conversations_dir)
+        print(f"Ensured conversation directory exists at: {self.client.conversations_dir}")
+        
+        # Update conversation list
+        await self.update_conversation_list()
+        
+        # Select the newly created conversation in the list without triggering load
+        # Temporarily unbind the selection event
+        self.convo_listbox.unbind("<<TreeviewSelect>>")
+        
+        # Now select the conversation
+        if self.convo_listbox.get_children():
+            for item in self.convo_listbox.get_children():
+                convo_id = item
+                if convo_id == self.client.conversation_id:
+                    print(f"Selecting newly created conversation: {convo_id}")
+                    self.convo_listbox.selection_set(convo_id)
+                    self.convo_listbox.see(convo_id)
+                    break
+        
+        # Rebind the selection event
+        self.convo_listbox.bind("<<TreeviewSelect>>", self.on_conversation_select)
+        
+        # Update status
+        self.status_var.set("Ready")
+        
+        # Add system message to chat
+        self.add_system_message(f"Started new conversation: {title}")
+        print("New conversation created successfully")
         return True
     
     async def on_save_conversation(self):
@@ -1096,9 +1071,8 @@ class GeminiChatApp:
             return
         
         # Clear chat display
-        text_widget = self.chat_display.text
-        text_widget.configure(state="normal")
-        self.chat_display.delete("1.0", END)
+        # *** CHANGED: Use the clear method in BubbleChatDisplay ***
+        self.chat_display.clear()
         
         # Find title from metadata
         title = "Untitled"
@@ -1119,12 +1093,14 @@ class GeminiChatApp:
                 text = content.get("text", "")
                 
                 if role == "user":
-                    self.add_user_message_to_display(text)
+                    # *** CHANGED: Use add_message in BubbleChatDisplay ***
+                    self.chat_display.add_message(text, is_user=True)
                 elif role == "ai":
-                    self.add_ai_message_to_display(text)
+                    # *** CHANGED: Use add_message in BubbleChatDisplay ***
+                    self.chat_display.add_message(text, is_user=False)
         
-        text_widget.configure(state="disabled")
-        self.chat_display.see(END)
+        # *** CHANGED: Scroll to the end ***
+        self.chat_display.see_end()
         print("Conversation history displayed")
     
     async def send_message(self, message):
@@ -1138,6 +1114,9 @@ class GeminiChatApp:
             return
             
         print(f"Processing message: {message[:50]}{'...' if len(message) > 50 else ''}")
+        
+        # Auto-save settings before sending message
+        self.save_settings(quiet=True)
         
         # Check if API key is set
         if not self.client.api_key:
@@ -1154,12 +1133,13 @@ class GeminiChatApp:
                 return
         
         # Display user message
-        self.add_user_message_to_display(message)
+        # *** CHANGED: Use add_message in BubbleChatDisplay ***
+        self.chat_display.add_message(message, is_user=True)
         
         # Update status
         self.status_var.set("Waiting for AI response...")
         
-        # Add user message to history
+        # Add user message to conversation history
         user_message = self.client.create_message_structure("user", message, self.client.model, self.client.params)
         self.client.conversation_history.append(user_message)
         
@@ -1174,7 +1154,8 @@ class GeminiChatApp:
                 response = await self.client.send_message(message)
                 if response:
                     print(f"Response received: {response[:50]}{'...' if len(response) > 50 else ''}")
-                    self.add_ai_message_to_display(response)
+                    # *** CHANGED: Use add_message in BubbleChatDisplay ***
+                    self.chat_display.add_message(response, is_user=False)
                 else:
                     print("No response received")
                     self.add_system_message("Error: No response received from AI")
@@ -1194,12 +1175,7 @@ class GeminiChatApp:
         print("Sending streaming message...")
         # Create a chat session
         try:
-            # Add the AI label first to the text widget (not the ScrolledText container)
-            self.chat_display.text.configure(state="normal")
-            self.chat_display.insert(END, "AI: ", "ai_label")
-            self.chat_display.text.configure(state="disabled")
-            
-            # Start stream handler
+            # Start stream handler (it will create a new bubble for the response)
             self.stream_handler.start_streaming()
             
             # Build chat history for the API
@@ -1237,13 +1213,9 @@ class GeminiChatApp:
             # Stop streaming and get final response
             self.stream_handler.stop_streaming()
             
-            # Add new line after response
-            self.chat_display.text.configure(state="normal")
-            self.chat_display.insert(END, "\n", "ai_text")
-            self.chat_display.text.configure(state="disabled")
-            
             # Add AI response to history with enhanced metadata
-            ai_message = self.client.create_message_structure("ai", response_text, self.client.model, self.client.params)
+            token_usage = {}  # We don't have token usage for streaming responses
+            ai_message = self.client.create_message_structure("ai", response_text, self.client.model, self.client.params, token_usage)
             self.client.conversation_history.append(ai_message)
             
             # Auto-save after every message exchange
@@ -1276,10 +1248,10 @@ class GeminiChatApp:
         
         # Create model selection dialog
         dialog = ttk.Toplevel(self.root)
+        dialog.withdraw()  # Hide the dialog until it's fully configured
         dialog.title("Select Model")
         dialog.minsize(400, 300)
         dialog.transient(self.root)
-        dialog.grab_set()
         
         # Label
         ttk.Label(
@@ -1376,6 +1348,9 @@ class GeminiChatApp:
         y = (self.root.winfo_height() - height) // 2 + self.root.winfo_y()
         dialog.geometry(f"{width}x{height}+{x}+{y}")
         
+        dialog.deiconify()  # Now show the dialog
+        dialog.grab_set()  # Make it modal
+        
         # Wait for dialog
         dialog.wait_window()
         
@@ -1387,10 +1362,10 @@ class GeminiChatApp:
         
         # Create dialog
         dialog = ttk.Toplevel(self.root)
+        dialog.withdraw()  # Hide until fully configured
         dialog.title("Model Parameters")
         dialog.minsize(300, 200)
         dialog.transient(self.root)
-        dialog.grab_set()
         
         # Label
         ttk.Label(
@@ -1474,184 +1449,375 @@ class GeminiChatApp:
         y = (self.root.winfo_height() - height) // 2 + self.root.winfo_y()
         dialog.geometry(f"{width}x{height}+{x}+{y}")
         
+        # Now show the dialog
+        dialog.deiconify()
+        dialog.grab_set()
+        
         # Wait for dialog
         dialog.wait_window()
     
     # ============= Helper Methods =============
     
-    def create_settings_dialog(self):
-        """Create and show the settings dialog"""
-        print("Creating settings dialog...")
-        dialog = ttk.Toplevel(self.root)
-        dialog.title("Settings")
-        dialog.minsize(400, 200)
-        dialog.transient(self.root)
-        dialog.grab_set()
+    def setup_settings_pane(self, parent):
+        """Setup the settings pane on the right side
         
-        # Label
+        Args:
+            parent: The parent frame
+        """
+        print("Setting up settings pane...")
+        
+        # Settings variables
+        self.settings_vars = {
+            "api_key": ttk.StringVar(value=self.client.api_key),
+            "conversations_dir": ttk.StringVar(value=str(self.client.conversations_dir)),
+            "theme": ttk.StringVar(value=self.root.style.theme.name)
+        }
+        
+        # Header
         ttk.Label(
-            dialog,
-            text="Gemini Chat Settings",
+            parent,
+            text="Settings",
             font="-size 12 -weight bold",
             padding=10
         ).pack(fill=X)
         
-        # Settings frame
-        settings_frame = ttk.Frame(dialog, padding=10)
-        settings_frame.pack(fill=BOTH, expand=YES)
+        # Main settings container with scrollbar
+        settings_container = ttk.Frame(parent, padding=5)
+        settings_container.pack(fill=BOTH, expand=YES)
         
-        # API Key
-        api_frame = ttk.Frame(settings_frame)
+        # Create a canvas with scrollbar for settings
+        canvas = tk.Canvas(settings_container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(settings_container, orient=VERTICAL, command=canvas.yview)
+        
+        # Settings frame that will contain all settings widgets
+        settings_frame = ttk.Frame(canvas)
+        
+        # Configure canvas
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=LEFT, fill=BOTH, expand=YES)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        
+        # Add settings frame to canvas
+        canvas_frame = canvas.create_window((0, 0), window=settings_frame, anchor=NW)
+        
+        # Make settings frame expand to fill canvas width
+        def configure_canvas_frame(event):
+            canvas.itemconfig(canvas_frame, width=canvas.winfo_width())
+        canvas.bind('<Configure>', configure_canvas_frame)
+        
+        # Configure settings frame to update canvas scroll region
+        def configure_scroll_region(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        settings_frame.bind('<Configure>', configure_scroll_region)
+        
+        # API Key settings section
+        api_section = ttk.LabelFrame(settings_frame, text="API Key", padding=5)
+        api_section.pack(fill=X, pady=5, padx=2)
+        
+        # API Key entry
+        api_frame = ttk.Frame(api_section)
         api_frame.pack(fill=X, pady=5)
         
-        ttk.Label(api_frame, text="API Key:").pack(side=LEFT)
-        api_var = ttk.StringVar(value=self.client.api_key)
-        api_entry = ttk.Entry(api_frame, textvariable=api_var, show="*", width=40)
-        api_entry.pack(side=LEFT, padx=5, fill=X, expand=YES)
+        api_entry = ttk.Entry(api_frame, textvariable=self.settings_vars["api_key"], show="*")
+        api_entry.pack(fill=X, expand=YES, pady=2)
         
         # API key status indicator
-        api_status = ttk.Label(
-            api_frame, 
+        api_status_frame = ttk.Frame(api_section)
+        api_status_frame.pack(fill=X)
+        
+        self.api_status_label = ttk.Label(
+            api_status_frame, 
             text="Not Set" if not self.client.api_key else "Set",
-            foreground="red" if not self.client.api_key else "green",
-            padding=(5, 0)
+            foreground="red" if not self.client.api_key else "green"
         )
-        api_status.pack(side=RIGHT)
+        self.api_status_label.pack(side=LEFT)
         
-        # Conversations directory
-        dir_frame = ttk.Frame(settings_frame)
-        dir_frame.pack(fill=X, pady=5)
+        # API key toggle visibility button
+        self.api_visible = False
         
-        ttk.Label(dir_frame, text="Conversations Directory:").pack(side=LEFT)
-        dir_var = ttk.StringVar(value=str(self.client.conversations_dir))
-        dir_entry = ttk.Entry(dir_frame, textvariable=dir_var, width=40)
-        dir_entry.pack(side=LEFT, padx=5, fill=X, expand=YES)
+        def toggle_api_visibility():
+            self.api_visible = not self.api_visible
+            api_entry.configure(show="" if self.api_visible else "*")
+            api_toggle_btn.configure(text="Hide" if self.api_visible else "Show")
+        
+        api_toggle_btn = ttk.Button(
+            api_status_frame, 
+            text="Show", 
+            command=toggle_api_visibility,
+            width=5,
+            bootstyle="secondary-outline"
+        )
+        api_toggle_btn.pack(side=RIGHT)
+        
+        # API Key info
+        if not self.client.api_key:
+            ttk.Label(
+                api_section,
+                text="To use CannonAI's AI features, you need a Gemini API key.\n" \
+                     "Sign up at https://ai.google.dev/ to get one.",
+                justify="left",
+                wraplength=200,
+                bootstyle="secondary"
+            ).pack(fill=X, pady=5)
+        
+        # Directory settings section
+        dir_section = ttk.LabelFrame(settings_frame, text="Conversations Directory", padding=5)
+        dir_section.pack(fill=X, pady=5, padx=2)
+        
+        # Directory entry
+        dir_entry = ttk.Entry(dir_section, textvariable=self.settings_vars["conversations_dir"])
+        dir_entry.pack(fill=X, pady=2)
+        
+        # Browse button
+        def browse_directory():
+            from tkinter import filedialog
+            current_dir = self.settings_vars["conversations_dir"].get()
+            new_dir = filedialog.askdirectory(initialdir=current_dir)
+            if new_dir:  # User didn't cancel
+                self.settings_vars["conversations_dir"].set(new_dir)
+        
+        browse_btn = ttk.Button(
+            dir_section, 
+            text="Browse...", 
+            command=browse_directory,
+            bootstyle="secondary"
+        )
+        browse_btn.pack(fill=X, pady=2)
+        
+        # Appearance settings section
+        appearance_section = ttk.LabelFrame(settings_frame, text="Appearance", padding=5)
+        appearance_section.pack(fill=X, pady=5, padx=2)
         
         # Theme selection
-        theme_frame = ttk.Frame(settings_frame)
-        theme_frame.pack(fill=X, pady=5)
+        theme_frame = ttk.Frame(appearance_section)
+        theme_frame.pack(fill=X, pady=2)
         
         ttk.Label(theme_frame, text="Theme:").pack(side=LEFT)
-        theme_var = ttk.StringVar(value=self.root.style.theme.name)
         theme_combo = ttk.Combobox(
             theme_frame,
-            textvariable=theme_var,
+            textvariable=self.settings_vars["theme"],
             values=self.root.style.theme_names(),
-            state="readonly",
-            width=20
+            state="readonly"
         )
-        theme_combo.pack(side=LEFT, padx=5)
+        theme_combo.pack(side=RIGHT, fill=X, expand=YES, padx=5)
         
         # Live theme change
         def on_theme_change(event):
             """Change theme immediately"""
-            selected_theme = theme_var.get()
+            selected_theme = self.settings_vars["theme"].get()
             print(f"Changing theme to: {selected_theme}")
             self.root.style.theme_use(selected_theme)
+            
+            # Update chat bubble styles to match new theme
+            self.chat_display.update_theme()
+            
+            # Auto-save theme change
+            self.save_settings(quiet=True)
         
         theme_combo.bind("<<ComboboxSelected>>", on_theme_change)
         
-        # API Key info
-        if not self.client.api_key:
-            info_frame = ttk.Frame(settings_frame)
-            info_frame.pack(fill=X, pady=10)
-            
-            ttk.Label(
-                info_frame,
-                text="To use CannonAI's AI features, you need a Gemini API key.\n" \
-                     "Sign up at https://ai.google.dev/ to get one.",
-                justify="left",
-                wraplength=350
-            ).pack(fill=X)
+        # Model parameters section
+        params_section = ttk.LabelFrame(settings_frame, text="Generation Parameters", padding=5)
+        params_section.pack(fill=X, pady=5, padx=2)
         
-        # Buttons
-        btn_frame = ttk.Frame(dialog, padding=10)
-        btn_frame.pack(fill=X)
+        # Create variables for model parameters
+        self.param_vars = {
+            "temperature": ttk.DoubleVar(value=self.client.params.get("temperature", 0.7)),
+            "max_output_tokens": ttk.IntVar(value=self.client.params.get("max_output_tokens", 800)),
+            "top_p": ttk.DoubleVar(value=self.client.params.get("top_p", 0.95)),
+            "top_k": ttk.IntVar(value=self.client.params.get("top_k", 40))
+        }
         
-        def on_save():
-            """Save settings"""
-            print("Saving settings...")
-            # Update API key
-            new_api_key = api_var.get()
-            api_key_changed = new_api_key != self.client.api_key
+        # Create formatted display variables for sliders
+        self.formatted_display = {
+            "temperature": ttk.StringVar(value=f"{self.param_vars['temperature'].get():.2f}"),
+            "top_p": ttk.StringVar(value=f"{self.param_vars['top_p'].get():.2f}")
+        }
+        
+        # Temperature
+        temp_frame = ttk.Frame(params_section)
+        temp_frame.pack(fill=X, pady=2)
+        
+        ttk.Label(temp_frame, text="Temperature:").pack(side=LEFT)
+        ttk.Label(temp_frame, textvariable=self.formatted_display["temperature"]).pack(side=RIGHT)
+        temperature_scale = ttk.Scale(
+            temp_frame,
+            from_=0.0,
+            to=2.0,
+            variable=self.param_vars["temperature"],
+            bootstyle="secondary",
+            command=lambda value: self.update_formatted_display("temperature", value)
+        )
+        temperature_scale.pack(fill=X, pady=2)
+        
+        # Max output tokens
+        tokens_frame = ttk.Frame(params_section)
+        tokens_frame.pack(fill=X, pady=2)
+        
+        ttk.Label(tokens_frame, text="Max tokens:").pack(side=LEFT)
+        ttk.Spinbox(
+            tokens_frame,
+            from_=100,
+            to=4096,
+            increment=100,
+            textvariable=self.param_vars["max_output_tokens"],
+            width=6
+        ).pack(side=RIGHT)
+        
+        # Top-p
+        top_p_frame = ttk.Frame(params_section)
+        top_p_frame.pack(fill=X, pady=2)
+        
+        ttk.Label(top_p_frame, text="Top-p:").pack(side=LEFT)
+        ttk.Label(top_p_frame, textvariable=self.formatted_display["top_p"]).pack(side=RIGHT)
+        top_p_scale = ttk.Scale(
+            top_p_frame,
+            from_=0.0,
+            to=1.0,
+            variable=self.param_vars["top_p"],
+            bootstyle="secondary",
+            command=lambda value: self.update_formatted_display("top_p", value)
+        )
+        top_p_scale.pack(fill=X, pady=2)
+        
+        # Top-k
+        top_k_frame = ttk.Frame(params_section)
+        top_k_frame.pack(fill=X, pady=2)
+        
+        ttk.Label(top_k_frame, text="Top-k:").pack(side=LEFT)
+        ttk.Spinbox(
+            top_k_frame,
+            from_=1,
+            to=100,
+            increment=1,
+            textvariable=self.param_vars["top_k"],
+            width=6
+        ).pack(side=RIGHT)
+        
+        # Save settings button
+        save_btn_frame = ttk.Frame(parent, padding=5)
+        save_btn_frame.pack(fill=X, side=BOTTOM)
+        
+        save_btn = ttk.Button(
+            save_btn_frame, 
+            text="Save Settings", 
+            command=self.save_settings,
+            bootstyle="success"
+        )
+        save_btn.pack(fill=X)
+        
+        # Set up trace callbacks for values that should auto-save
+        self.settings_vars["theme"].trace_add("write", lambda *args: self.auto_save_theme())
+        
+        # Set up callbacks for parameter changes
+        for param_name, param_var in self.param_vars.items():
+            param_var.trace_add("write", lambda *args: self.update_params_display())
+        
+        print("Settings pane setup complete")
+    
+    def auto_save_theme(self):
+        """Auto-save theme changes"""
+        selected_theme = self.settings_vars["theme"].get()
+        self.config.set("theme", selected_theme)
+        self.config.save_config()
+    
+    def update_formatted_display(self, param_name, value):
+        """Update the formatted display for a slider parameter
+        
+        Args:
+            param_name: The name of the parameter to update
+            value: The new value (as a string from the scale widget)
+        """
+        try:
+            # Convert the string value to float and format it
+            float_value = float(value)
+            self.formatted_display[param_name].set(f"{float_value:.2f}")
+            # Also update the parameter variable to ensure consistency
+            self.param_vars[param_name].set(float_value)
+        except (ValueError, KeyError) as e:
+            print(f"Error updating formatted display for {param_name}: {e}")
+    
+    def update_params_display(self):
+        """Update the parameters in the client when they change in the UI"""
+        # This just updates the client object but doesn't save to config
+        # The actual save happens when the Save button is clicked or when a message is sent
+        self.client.params["temperature"] = self.param_vars["temperature"].get()
+        self.client.params["max_output_tokens"] = self.param_vars["max_output_tokens"].get()
+        self.client.params["top_p"] = self.param_vars["top_p"].get()
+        self.client.params["top_k"] = self.param_vars["top_k"].get()
+        
+        # Update the formatted displays
+        if hasattr(self, 'formatted_display'):
+            for param_name in ["temperature", "top_p"]:
+                if param_name in self.formatted_display and param_name in self.param_vars:
+                    self.formatted_display[param_name].set(f"{self.param_vars[param_name].get():.2f}")
+    
+    def save_settings(self, quiet=False):
+        """Save all settings to configuration
+        
+        Args:
+            quiet: If True, don't show success message
+        """
+        print("Saving settings...")
+        
+        # Update API key
+        new_api_key = self.settings_vars["api_key"].get()
+        api_key_changed = new_api_key != self.client.api_key
+        
+        if api_key_changed:
+            print(f"Updating API key: {new_api_key[:4] if new_api_key else 'None'}...{new_api_key[-4:] if new_api_key and len(new_api_key) > 4 else ''}")
+            self.client.api_key = new_api_key
+            self.config.set_api_key(new_api_key)
             
-            if api_key_changed:
-                print(f"Updating API key: {new_api_key[:4] if new_api_key else 'None'}...{new_api_key[-4:] if new_api_key and len(new_api_key) > 4 else ''}")
-                self.client.api_key = new_api_key
-                self.config.set_api_key(new_api_key)
+            # Update the API status indicator
+            self.api_status_label.configure(
+                text="Set" if new_api_key else "Not Set",
+                foreground="green" if new_api_key else "red"
+            )
                 
-                # Need to reinitialize client if API key changed
-                if new_api_key:  # Only reinitialize if a key was provided
-                    self.async_helper.run_coroutine(self.client.initialize_client())
+            # Need to reinitialize client if API key changed
+            if new_api_key:  # Only reinitialize if a key was provided
+                self.async_helper.run_coroutine(self.client.initialize_client())
+                if not quiet:
                     self.add_system_message("API key updated. You can now use AI features.")
-                    self.status_var.set("Ready")
-                else:
+                self.status_var.set("Ready")
+            else:
+                if not quiet:
                     self.add_system_message("API key removed. AI features are now disabled.")
-                    self.status_var.set("API key required")
-            
-            # Update conversations directory
-            new_dir = dir_var.get()
-            if new_dir != str(self.client.conversations_dir):
-                print(f"Updating conversations directory: {new_dir}")
-                path = Path(new_dir)
-                self.client.conversations_dir = path
-                self.client.ensure_directories(path)
-                self.config.set("conversations_dir", new_dir)
-            
-            # Save theme
-            selected_theme = theme_var.get()
-            print(f"Saving theme preference: {selected_theme}")
-            self.config.set("theme", selected_theme)
-            
-            # Save config
-            self.config.save_config()
-            
+                self.status_var.set("API key required")
+        
+        # Update conversations directory
+        new_dir = self.settings_vars["conversations_dir"].get()
+        if new_dir != str(self.client.conversations_dir):
+            print(f"Updating conversations directory: {new_dir}")
+            path = Path(new_dir)
+            self.client.conversations_dir = path
+            self.client.ensure_directories(path)
+            self.config.set("conversations_dir", new_dir)
+        
+        # Save theme
+        selected_theme = self.settings_vars["theme"].get()
+        print(f"Saving theme preference: {selected_theme}")
+        self.config.set("theme", selected_theme)
+        
+        # Save parameters
+        self.update_params_display()
+        generation_params = {
+            "temperature": self.param_vars["temperature"].get(),
+            "max_output_tokens": self.param_vars["max_output_tokens"].get(),
+            "top_p": self.param_vars["top_p"].get(),
+            "top_k": self.param_vars["top_k"].get()
+        }
+        self.config.set("generation_params", generation_params)
+        
+        # Save config
+        self.config.save_config()
+        
+        if not quiet:
             self.status_var.set("Settings saved")
-            dialog.destroy()
+            self.add_system_message("Settings saved successfully")
         
-        save_btn = ttk.Button(btn_frame, text="Save", command=on_save, bootstyle="success")
-        save_btn.pack(side=LEFT, padx=5)
-        
-        cancel_btn = ttk.Button(btn_frame, text="Cancel", command=dialog.destroy, bootstyle="secondary")
-        cancel_btn.pack(side=LEFT, padx=5)
-        
-        # Center dialog
-        dialog.update_idletasks()  # Ensure dimensions are calculated
-        width = dialog.winfo_width()
-        height = dialog.winfo_height()
-        x = (self.root.winfo_width() - width) // 2 + self.root.winfo_x()
-        y = (self.root.winfo_height() - height) // 2 + self.root.winfo_y()
-        dialog.geometry(f"{width}x{height}+{x}+{y}")
-        
-        print("Settings dialog created and displayed")
-        # Wait for dialog
-        dialog.wait_window()
-    
-    def add_user_message_to_display(self, message):
-        """Add a user message to the chat display
-        
-        Args:
-            message: The message to add
-        """
-        text_widget = self.chat_display.text
-        text_widget.configure(state="normal")
-        self.chat_display.insert(END, "You: ", "user_label")
-        self.chat_display.insert(END, f"{message}\n", "user_text")
-        text_widget.configure(state="disabled")
-        self.chat_display.see(END)
-    
-    def add_ai_message_to_display(self, message):
-        """Add an AI message to the chat display
-        
-        Args:
-            message: The message to add
-        """
-        text_widget = self.chat_display.text
-        text_widget.configure(state="normal")
-        self.chat_display.insert(END, "AI: ", "ai_label")
-        self.chat_display.insert(END, f"{message}\n", "ai_text")
-        text_widget.configure(state="disabled")
-        self.chat_display.see(END)
+        return True
     
     def add_system_message(self, message):
         """Add a system message to the chat display
@@ -1659,12 +1825,8 @@ class GeminiChatApp:
         Args:
             message: The message to add
         """
-        # Access the internal Text widget of ScrolledText
-        text_widget = self.chat_display.text
-        text_widget.configure(state="normal")
-        self.chat_display.insert(END, f"--- {message} ---\n", "system_text")
-        text_widget.configure(state="disabled")
-        self.chat_display.see(END)
+        # *** CHANGED: Use add_system_message in BubbleChatDisplay ***
+        self.chat_display.add_system_message(message)
     
     def start(self):
         """Start the application"""
