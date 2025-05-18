@@ -1,8 +1,11 @@
 """
 UI package initialization for CannonAI Gemini Chat
 
-This module handles the graphical user interface implementation.
+This module handles the web-based user interface implementation.
 """
 
-from .app import GeminiChatApp
-from .launcher import launch_ui
+from .server import create_app, start_server
+from .routes import setup_routes
+from .websocket import setup_websocket
+
+__all__ = ['create_app', 'start_server', 'setup_routes', 'setup_websocket']

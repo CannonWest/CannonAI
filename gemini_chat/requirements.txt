@@ -1,5 +1,24 @@
+# Core dependencies
 google-genai>=0.5.0
 tabulate>=0.9.0
 colorama>=0.4.4  # For cross-platform colored terminal output
-pytest>=7.0.0    # For testing
-ttkbootstrap>=1.11.0  # For the GUI interface
+
+# Testing dependencies
+pytest>=7.0.0
+
+# GUI Interface (ttkbootstrap-based)
+# Note: This is optional and only required for the legacy GUI interface (--ui flag)
+ttkbootstrap>=1.11.0  
+
+# Web Interface (FastAPI-based)
+# Required for the web-based UI (--web flag)
+fastapi>=0.103.1
+uvicorn>=0.23.2
+websockets>=11.0.3
+pydantic>=2.3.0
+httpx>=0.24.1
+
+# Development dependencies (optional)
+# black>=23.7.0     # For code formatting
+# pylint>=2.17.5    # For linting
+# isort>=5.12.0     # For import sorting

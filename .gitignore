@@ -3,3 +3,6 @@
 /gemini_chat_conversations
 /.codebuddy
 gemini_chat_config/gemini_chat_config.json
+/gemini_chat/ui/frontend/node_modules
+gemini_chat/ui/frontend/package-lock.json
+/gemini_chat/ui/frontend/build
