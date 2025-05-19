@@ -271,6 +271,7 @@ async def handle_delete_conversation(websocket: WebSocket, name: str, command_ha
     
     try:
         # Get the conversations list
+        logger.debug(f"Getting conversation list to find '{name}' for deletion")
         conversations = await chat_client.list_conversations()
         
         # Find the conversation to delete
@@ -287,21 +288,52 @@ async def handle_delete_conversation(websocket: WebSocket, name: str, command_ha
             })
             return
             
-        # Get the file path and delete the file
+        # Get the file path
         file_path = target_conv["path"]
-        os.remove(file_path)
+        logger.debug(f"Deleting conversation file: {file_path}")
         
-        # If the current conversation was deleted, start a new one
-        if chat_client.conversation_id == target_conv.get("conversation_id"):
-            # Create a new conversation
-            await command_handler.cmd_new("")
+        # Check if this is the current conversation before deleting
+        is_current = False
+        current_conversation_id = getattr(chat_client, 'conversation_id', None)
+        target_conversation_id = target_conv.get("conversation_id")
         
+        if current_conversation_id and target_conversation_id and current_conversation_id == target_conversation_id:
+            is_current = True
+            logger.debug(f"The conversation being deleted is the current conversation (ID: {current_conversation_id})")
+        
+        # Delete the file
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logger.debug("File deleted successfully")
+            else:
+                logger.warning(f"File not found for deletion: {file_path}")
+        except OSError as e:
+            logger.error(f"OS error when deleting file: {e}")
+            await websocket.send_json({
+                'type': 'system',
+                'content': f"Error deleting file: {str(e)}"
+            })
+            return
+        
+        # Start a new conversation if we deleted the current one
+        if is_current:
+            try:
+                logger.debug("Creating new conversation since current was deleted")
+                await command_handler.cmd_new()
+                logger.debug("New conversation created successfully")
+            except Exception as e:
+                logger.error(f"Error creating new conversation: {e}")
+                # Continue even if this fails - we've already deleted the file
+        
+        # Send success message
         await websocket.send_json({
             'type': 'system',
             'content': f"Deleted conversation '{name}'"
         })
         
         # Refresh conversation list
+        logger.debug("Refreshing conversation list after deletion")
         await handle_command(websocket, "/list", command_handler)
         
     except Exception as e:
@@ -379,6 +411,9 @@ async def handle_command(websocket: WebSocket, command_text: str, command_handle
     if cmd == '/load' and args:
         # Direct loading with a conversation name
         should_exit = await command_handler.cmd_load(args)
+    elif cmd == '/model' and args:
+        # Direct model setting with a model name
+        should_exit = await command_handler.cmd_model(args)
     else:
         # Execute the command using the normal handler
         should_exit = await command_handler.async_handle_command(cmd)
@@ -430,8 +465,8 @@ async def handle_chat_message(websocket: WebSocket, message: str):
     """Handle a regular chat message."""
     chat_client = get_client()
     
-    # Add the message to history (using existing client method)
-    chat_client.add_user_message(message)
+    # Store the message for processing (without adding to history yet)
+    chat_client.current_user_message = message
     
     # Notify the client that the message was received
     await websocket.send_json({
@@ -474,6 +509,72 @@ async def handle_chat_message(websocket: WebSocket, message: str):
         })
 
 
+async def fetch_available_models(websocket: WebSocket):
+    """Fetch and send the list of available models to the client."""
+    chat_client = get_client()
+    
+    if not chat_client:
+        logger.warning("Cannot fetch models - client not initialized")
+        await websocket.send_json({
+            'type': 'system',
+            'content': "Error: Chat client not initialized"
+        })
+        return
+    
+    # Check if client has get_available_models method
+    if not hasattr(chat_client, 'get_available_models'):
+        logger.warning("Client does not have get_available_models method")
+        await websocket.send_json({
+            'type': 'system',
+            'content': "Error: This client doesn't support retrieving available models"
+        })
+        return
+    
+    try:
+        # Get the list of models
+        logger.debug("Retrieving available models list")
+        models = await chat_client.get_available_models()
+        
+        if not models:
+            logger.debug("No models found")
+            await websocket.send_json({
+                'type': 'available_models',
+                'content': "No models available.",
+                'models': []
+            })
+            return
+        
+        # Format the models for the UI
+        formatted_models = []
+        for model in models:
+            # Extract the short name from the full resource path if needed
+            name = model["name"]
+            if '/' in name:
+                name = name.split('/')[-1]
+            
+            formatted_models.append({
+                "name": name,
+                "display_name": model["display_name"],
+                "input_token_limit": model["input_token_limit"],
+                "output_token_limit": model["output_token_limit"]
+            })
+        
+        logger.debug(f"Found {len(formatted_models)} models")
+        
+        # Send the models to the client
+        await websocket.send_json({
+            'type': 'available_models',
+            'content': "Available models:",
+            'models': formatted_models
+        })
+        
+    except Exception as e:
+        logger.error(f"Error retrieving models: {str(e)}")
+        await websocket.send_json({
+            'type': 'system',
+            'content': f"Error retrieving models: {str(e)}"
+        })
+
 async def handle_client_message(websocket: WebSocket, message: str, command_handler):
     """Process a message from the client."""
     chat_client = get_client()
@@ -486,6 +587,11 @@ async def handle_client_message(websocket: WebSocket, message: str, command_hand
             'type': 'system',
             'content': "Error: Chat client not initialized"
         })
+        return
+    
+    # Check for special UI commands
+    if message == "/fetch_models":
+        await fetch_available_models(websocket)
         return
     
     # Check if it's a command or regular message

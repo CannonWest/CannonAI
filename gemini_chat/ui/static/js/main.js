@@ -10,6 +10,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const thinkingIndicator = document.getElementById('thinkingIndicator');
     const conversationsList = document.getElementById('conversationsList');
     
+    // Model selection related elements
+    let modelDropdown = null; // Will be populated when settings dialog opens
+    
     // Streaming state
     let isStreaming = false;
     let currentStreamingMessage = null;
@@ -152,6 +155,10 @@ document.addEventListener('DOMContentLoaded', function() {
             case 'conversation_list':
                 updateConversationsList(data);
                 break;
+                
+            case 'available_models':
+                updateModelDropdown(data.models);
+                break;
         }
     }
     
@@ -160,11 +167,38 @@ document.addEventListener('DOMContentLoaded', function() {
         // Update model display
         modelDisplay.textContent = `Model: ${data.model}`;
         
+        // Store current model for dropdown selection
+        window.currentModel = data.model;
+        
         // Update streaming display
         streamingDisplay.textContent = `Streaming: ${data.streaming ? 'Yes' : 'No'}`;
         
         // Update conversation name in title
         document.title = `Gemini Chat - ${data.conversation_name || 'New Conversation'}`;
+        
+        // If model dropdown exists and currentModel has changed, update selection
+        if (modelDropdown && window.currentModel) {
+            // Find and select the current model in the dropdown
+            const options = modelDropdown.querySelectorAll('option');
+            let modelFound = false;
+            
+            options.forEach(option => {
+                // Check for exact match or if the current model ends with the option value
+                // (handles both short names and full paths)
+                const currentModelShort = window.currentModel.split('/').pop();
+                if (option.value === window.currentModel || 
+                    option.value === currentModelShort ||
+                    window.currentModel.endsWith(option.value)) {
+                    option.selected = true;
+                    modelFound = true;
+                }
+            });
+            
+            // If we couldn't find a match and have models, may need to refresh
+            if (!modelFound && options.length > 0) {
+                console.log("Current model not found in dropdown. May need to refresh model list.");
+            }
+        }
     }
     
     // Send a message to the server
@@ -389,7 +423,144 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     
     // Settings button
+    // Function to update model dropdown with fetched models
+    function updateModelDropdown(models) {
+        // If no models were provided, do nothing
+        if (!models || !Array.isArray(models) || models.length === 0) {
+            addSystemMessage("No models available");
+            return;
+        }
+        
+        // If there's no active model dropdown, create the memory but don't update DOM
+        if (!modelDropdown) {
+            console.log("Model dropdown element not found in DOM yet. Saving models for later use.");
+            // Store the models to use when the dialog is created
+            window.availableModels = models;
+            return;
+        }
+        
+        // Clear existing options
+        modelDropdown.innerHTML = '';
+        
+        // Add each model as an option
+        models.forEach(model => {
+            const option = document.createElement('option');
+            option.value = model.name;
+            option.textContent = model.display_name || model.name;
+            // If this is the currently selected model, select it
+            if (model.name === window.currentModel) {
+                option.selected = true;
+            }
+            modelDropdown.appendChild(option);
+        });
+        
+        console.log(`Updated model dropdown with ${models.length} models`);
+    }
+    
+    // Function to fetch available models from the server
+    function fetchAvailableModels() {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            addSystemMessage("Fetching available models...");
+            sendMessage('/fetch_models');
+        } else {
+            addSystemMessage("Not connected to server. Cannot fetch models.");
+        }
+    }
+    
+    // Enhance the params handler to create a dynamic model selection UI
+    function createModelSelection(parentElement) {
+        const modelSection = document.createElement('div');
+        modelSection.className = 'settings-section';
+        
+        const modelLabel = document.createElement('h3');
+        modelLabel.textContent = 'MODEL';
+        modelSection.appendChild(modelLabel);
+        
+        // Create dropdown for models
+        const dropdown = document.createElement('select');
+        dropdown.id = 'model-dropdown';
+        dropdown.className = 'model-select';
+        modelSection.appendChild(dropdown);
+        
+        // Store reference to the dropdown
+        modelDropdown = dropdown;
+        
+        // Add a button to refresh models
+        const refreshButton = document.createElement('button');
+        refreshButton.textContent = 'Refresh Models';
+        refreshButton.className = 'refresh-models-btn';
+        refreshButton.addEventListener('click', fetchAvailableModels);
+        modelSection.appendChild(refreshButton);
+        
+        // Add the section to the parent
+        parentElement.appendChild(modelSection);
+        
+        // If we have cached models, use them
+        if (window.availableModels) {
+            updateModelDropdown(window.availableModels);
+        } else {
+            // Otherwise fetch models
+            fetchAvailableModels();
+        }
+        
+        // Handle model selection change
+        dropdown.addEventListener('change', function() {
+            const selectedModel = this.value;
+            sendMessage(`/model ${selectedModel}`);
+        });
+    }
+    
+    // Handle the params command by creating a custom settings dialog
+    function createSettingsDialog() {
+        // Check if dialog already exists
+        let dialog = document.getElementById('settings-dialog');
+        if (dialog) {
+            // Just show it if it exists
+            dialog.style.display = 'block';
+            return;
+        }
+        
+        // Create the dialog
+        dialog = document.createElement('div');
+        dialog.id = 'settings-dialog';
+        dialog.className = 'settings-dialog';
+        
+        // Add header with close button
+        const header = document.createElement('div');
+        header.className = 'dialog-header';
+        
+        const title = document.createElement('h2');
+        title.textContent = 'Settings';
+        header.appendChild(title);
+        
+        const closeBtn = document.createElement('button');
+        closeBtn.innerHTML = '&times;';
+        closeBtn.className = 'close-btn';
+        closeBtn.addEventListener('click', function() {
+            dialog.style.display = 'none';
+        });
+        header.appendChild(closeBtn);
+        
+        dialog.appendChild(header);
+        
+        // Create content area
+        const content = document.createElement('div');
+        content.className = 'dialog-content';
+        
+        // Add model selection section
+        createModelSelection(content);
+        
+        // Add temperature slider (optional)
+        // Add other parameter controls here
+        
+        dialog.appendChild(content);
+        
+        // Add the dialog to the body
+        document.body.appendChild(dialog);
+    }
+    
+    // Replace the old settings button handler
     document.getElementById('settingsButton').addEventListener('click', function() {
-        sendMessage('/params');
+        createSettingsDialog();
     });
 });

@@ -621,20 +621,10 @@ class AsyncGeminiClient(BaseGeminiClient):
         """
         if not self.current_user_message:
             return "No message to respond to."
-            
-        response = await self.send_message(self.current_user_message)
-        self.current_user_message = None  # Clear after processing
-        return response
-    
-    async def get_streaming_response(self) -> AsyncIterator[str]:
-        """Get a streaming response for the current user message.
         
-        Yields:
-            Text chunks from the model's response
-        """
-        if not self.current_user_message or not self.client:
-            yield "No message to respond to or client not initialized."
-            return
+        # First add the user message to history
+        user_message = self.create_message_structure("user", self.current_user_message, self.model, self.params)
+        self.conversation_history.append(user_message)
             
         # Configure generation parameters
         config = types.GenerateContentConfig(
@@ -647,8 +637,71 @@ class AsyncGeminiClient(BaseGeminiClient):
         # Build chat history for the API
         chat_history = self.build_chat_history(self.conversation_history)
         
-        # Add the user message
-        chat_history.append(types.Content(role="user", parts=[types.Part.from_text(text=self.current_user_message)]))
+        try:
+            # Call the API without streaming
+            print(f"\r{Colors.CYAN}AI is thinking...{Colors.ENDC}", end="", flush=True)
+            
+            # Call the API asynchronously
+            response = await self.client.aio.models.generate_content(
+                model=self.model,
+                contents=chat_history,
+                config=config
+            )
+            
+            # Clear the thinking message when we get the response
+            print("\r" + " " * 50 + "\r", end="", flush=True)  # Clear line with spaces
+            
+            # Extract response text
+            response_text = response.text
+            
+            # Print the response for non-streaming mode
+            print(f"\n{Colors.GREEN}AI: {Colors.ENDC}{response_text}")
+            
+            # Extract token usage metadata if available
+            token_usage = self.extract_token_usage(response)
+            
+            # Add AI response to history with enhanced metadata
+            ai_message = self.create_message_structure("ai", response_text, self.model, self.params, token_usage)
+            self.conversation_history.append(ai_message)
+            
+            # Auto-save after response
+            await self.save_conversation(quiet=True)
+            
+            # Clear current message now that we're done with it
+            self.current_user_message = None
+            
+            return response_text
+            
+        except Exception as e:
+            error_message = f"Error generating response: {e}"
+            print(f"{Colors.FAIL}{error_message}{Colors.ENDC}")
+            self.current_user_message = None  # Clear it even on error
+            return error_message
+    
+    async def get_streaming_response(self) -> AsyncIterator[str]:
+        """Get a streaming response for the current user message.
+        
+        Yields:
+            Text chunks from the model's response
+        """
+        if not self.current_user_message or not self.client:
+            yield "No message to respond to or client not initialized."
+            return
+            
+        # First add the user message to history
+        user_message = self.create_message_structure("user", self.current_user_message, self.model, self.params)
+        self.conversation_history.append(user_message)
+            
+        # Configure generation parameters
+        config = types.GenerateContentConfig(
+            temperature=self.params["temperature"],
+            max_output_tokens=self.params["max_output_tokens"],
+            top_p=self.params["top_p"],
+            top_k=self.params["top_k"]
+        )
+        
+        # Build chat history for the API
+        chat_history = self.build_chat_history(self.conversation_history)
         
         try:
             # Get the streaming response
@@ -681,6 +734,7 @@ class AsyncGeminiClient(BaseGeminiClient):
         except Exception as e:
             error_message = f"Error generating streaming response: {e}"
             print(f"{Colors.FAIL}{error_message}{Colors.ENDC}")
+            self.current_user_message = None  # Clear even on error
             yield error_message
     
     def get_conversation_history(self) -> List[Dict[str, Any]]:
