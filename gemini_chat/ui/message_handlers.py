@@ -8,6 +8,7 @@ separating concerns for better maintainability.
 import logging
 import json
 import os
+import asyncio
 from typing import Dict, Any, List, Optional
 from starlette.websockets import WebSocket
 from pathlib import Path
@@ -26,14 +27,14 @@ async def send_help_message(websocket: WebSocket):
 - **/new [name]** - Start a new conversation
 - **/save** - Save the current conversation
 - **/list** - List saved conversations
-- **/load <name>** - Load a saved conversation
+- **/load <n>** - Load a saved conversation
 - **/history** - Display conversation history
 - **/model [name]** - Show or change the model
 - **/params [param=value ...]** - Show or set generation parameters
 - **/stream** - Toggle streaming mode
 - **/ui_refresh** - Refresh the UI state
 - **/rename <old> <new>** - Rename a conversation
-- **/delete <name>** - Delete a conversation
+- **/delete <n>** - Delete a conversation
 """
     await websocket.send_json({
         'type': 'help',
@@ -67,6 +68,9 @@ async def refresh_ui_state(websocket: WebSocket):
     
     # Also send conversation history
     await send_conversation_history(websocket)
+    
+    # Also send list of available conversations
+    await send_available_conversations(websocket)
 
 
 async def send_conversation_history(websocket: WebSocket):
@@ -80,9 +84,11 @@ async def send_conversation_history(websocket: WebSocket):
     # Get history from the client
     # First check if the client has the specific function
     if hasattr(chat_client, 'get_conversation_history'):
+        logger.debug("Using get_conversation_history() method")
         history = chat_client.get_conversation_history()
     else:
         # Try to access the history directly from the message_history attribute
+        logger.debug("Falling back to message_history attribute")
         history = []
         if hasattr(chat_client, 'message_history'):
             for msg in chat_client.message_history:
@@ -101,11 +107,77 @@ async def send_conversation_history(websocket: WebSocket):
                 'content': msg['content']
             })
     
+    logger.debug(f"Sending {len(formatted_history)} messages in history to client")
+    
     # Send history
     await websocket.send_json({
         'type': 'history',
         'content': formatted_history
     })
+
+
+async def send_available_conversations(websocket: WebSocket):
+    """Send the list of available conversations to the client."""
+    chat_client = get_client()
+    
+    if not chat_client:
+        logger.warning("Cannot send conversations list - client not initialized")
+        return
+    
+    # Check if client has list_conversations method
+    if not hasattr(chat_client, 'list_conversations'):
+        logger.warning("Client does not have list_conversations method")
+        return
+        
+    try:
+        # Get the list of conversations
+        logger.debug("Retrieving conversation list")
+        conversations = await chat_client.list_conversations()
+        
+        if not conversations:
+            logger.debug("No conversations found")
+            await websocket.send_json({
+                'type': 'conversation_list',
+                'content': "No saved conversations found.",
+                'conversations': []
+            })
+            return
+            
+        # Log what we found
+        logger.debug(f"Found {len(conversations)} conversations")
+        for i, conv in enumerate(conversations):
+            logger.debug(f"  {i+1}. {conv.get('title', 'Untitled')}")
+        
+        # Format for display
+        formatted = "Available conversations:\n" + "\n".join(
+            f"- {conv['title']}" for conv in conversations
+        ) + "\n\nClick on a conversation name to load it or use /load <n>"
+        
+        # Convert Path objects to strings for JSON serialization
+        serializable_conversations = []
+        for conv in conversations:
+            serialized_conv = {}
+            for key, value in conv.items():
+                # Convert Path objects to strings
+                if key == 'path':
+                    serialized_conv[key] = str(value)
+                else:
+                    serialized_conv[key] = value
+            serializable_conversations.append(serialized_conv)
+        
+        # Send to client
+        await websocket.send_json({
+            'type': 'conversation_list',
+            'content': formatted,
+            'conversations': [conv['title'] for conv in serializable_conversations]  # Send only titles for simplicity
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting conversation list: {str(e)}")
+        await websocket.send_json({
+            'type': 'system',
+            'content': f"Error loading conversations: {str(e)}"
+        })
 
 
 async def handle_rename_conversation(websocket: WebSocket, old_name: str, new_name: str, command_handler):
@@ -250,6 +322,9 @@ async def handle_command(websocket: WebSocket, command_text: str, command_handle
             'content': "Error: Chat client not initialized"
         })
         return
+        
+    # Log the command being executed
+    logger.debug(f"Executing command: {command_text}")
     
     # Extract command and arguments
     parts = command_text.split(maxsplit=1)
@@ -322,8 +397,12 @@ async def handle_command(websocket: WebSocket, command_text: str, command_handle
         # After loading/creating conversation, show history
         await send_conversation_history(websocket)
     elif cmd == '/list':
-        # Format conversation list for better display
+        # Get the list of conversations
+        logger.debug("Getting list of conversations for /list command")
         conversations = await chat_client.list_conversations() if hasattr(chat_client, 'list_conversations') else []
+        logger.debug(f"Found {len(conversations)} conversations in /list")
+        
+        # Format conversation list for better display
         if conversations:
             # Convert WindowsPath objects to strings before JSON serialization
             serializable_conversations = []
@@ -339,7 +418,7 @@ async def handle_command(websocket: WebSocket, command_text: str, command_handle
                 
             formatted = "Available conversations:\n" + "\n".join(
                 f"- {conv['title']}" for conv in serializable_conversations
-            ) + "\n\nClick on a conversation name to load it or use /load <name>"
+            ) + "\n\nClick on a conversation name to load it or use /load <n>"
             await websocket.send_json({
                 'type': 'conversation_list',
                 'content': formatted,

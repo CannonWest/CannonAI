@@ -169,6 +169,9 @@ async def handle_websocket_messages(websocket: WebSocket, manager: WebSocketMana
             
             # Also send conversation history
             await send_conversation_history(websocket)
+            
+            # Also send list of available conversations on startup
+            await handle_client_message(websocket, "/list", command_handler)
         else:
             logger.warning("Chat client not initialized when WebSocket connected")
             await websocket.send_json({
