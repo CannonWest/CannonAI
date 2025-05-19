@@ -99,8 +99,13 @@ def main():
         print(f"{Colors.BLUE}Starting Web UI mode...{Colors.ENDC}")
         try:
             # Import the UI module
-            from ui.server import start_web_ui
-            start_web_ui(config)
+            try:
+                from ui.server import start_web_ui
+                start_web_ui(config)
+            except ModuleNotFoundError:
+                print(f"{Colors.FAIL}Error: Required UI packages not installed{Colors.ENDC}")
+                print(f"{Colors.WARNING}Please install UI dependencies: pip install -r gemini_chat/ui_requirements.txt{Colors.ENDC}")
+                sys.exit(1)
         except ImportError as e:
             print(f"{Colors.FAIL}Error: {e}{Colors.ENDC}")
             print(f"{Colors.WARNING}Please install required packages: pip install fastapi uvicorn websockets{Colors.ENDC}")

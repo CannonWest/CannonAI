@@ -190,10 +190,20 @@ class CommandHandler:
         await self.client.display_conversations()
         return False
     
-    async def cmd_load(self) -> bool:
-        """Load a saved conversation (async version)."""
+    async def cmd_load(self, command_args: str = "") -> bool:
+        """Load a saved conversation (async version).
+        
+        Args:
+            command_args: Optional name or number of conversation to load directly
+        """
         await self.client.save_conversation()
-        await self.client.load_conversation()
+        
+        # If we have a conversation name passed as an argument, use it
+        if command_args.strip():
+            await self.client.load_conversation(command_args.strip())
+        else:
+            # Otherwise use interactive mode
+            await self.client.load_conversation()
         return False
     
     async def cmd_history(self) -> bool:

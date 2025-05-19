@@ -57,7 +57,7 @@ A powerful, modular application for interacting with Google's Gemini AI models, 
 The application is organized with a modular architecture to minimize redundancy:
 
 ```
-CannonAI/
+CannonAI_GIT/
 ├── gemini_chat/                  # Main application code
 │   ├── gemini_chat.py            # Single unified entry point
 │   ├── base_client.py            # Core shared functionality
@@ -66,8 +66,14 @@ CannonAI/
 │   ├── command_handler.py        # Command processing for both modes
 │   ├── client_manager.py         # Client creation and management
 │   ├── config.py                 # Configuration management
-│   ├── web_ui.py                 # Web interface implementation
-│   ├── web_ui_template.html      # Web UI HTML template
+│   ├── ui/                       # Web interface implementation
+│   │   ├── server.py             # FastAPI server for web UI
+│   │   ├── websocket_fix.py      # WebSocket handling improvements
+│   │   ├── static/               # Static UI assets
+│   │   │   ├── css/style.css     # UI styling
+│   │   │   ├── js/main.js        # UI JavaScript functionality
+│   │   │   └── index.html        # Main UI template
+│   │   └── deprecated/           # Legacy code kept for reference
 │   ├── __init__.py               # Package initialization
 │   ├── requirements.txt          # Core dependencies
 │   ├── ui_requirements.txt       # Web UI dependencies

@@ -47,6 +47,8 @@ class AsyncGeminiClient(BaseGeminiClient):
         self.conversation_history: List[Dict[str, Any]] = []
         self.params: Dict[str, Any] = self.default_params.copy()
         self.use_streaming: bool = False  # Default to non-streaming
+        self.conversation_name: str = "New Conversation"  # Default conversation name
+        self.current_user_message: Optional[str] = None  # Store the current user message for streaming
         
         # The base directory is already set by the parent constructor
         self.conversations_dir = self.base_directory
@@ -461,46 +463,85 @@ class AsyncGeminiClient(BaseGeminiClient):
         print(tabulate(table_data, headers=headers, tablefmt="pretty"))
         return conversations
         
-    async def load_conversation(self) -> None:
-        """Load a saved conversation asynchronously."""
-        conversations = await self.display_conversations()
+    async def load_conversation(self, conversation_name: Optional[str] = None) -> None:
+        """Load a saved conversation asynchronously.
+        
+        Args:
+            conversation_name: Optional name of conversation to load directly.
+                              If provided, will attempt to load by name instead of prompting.
+        """
+        conversations = await self.list_conversations()  # Just list without displaying for programmatic access
         
         if not conversations:
+            print(f"{Colors.WARNING}No saved conversations found.{Colors.ENDC}")
             return
         
+        # If conversation_name is provided, try to load by name
+        if conversation_name:
+            print(f"Attempting to load conversation: {conversation_name}")
+            # Find the conversation by title
+            selected = None
+            for conv in conversations:
+                if conv["title"].lower() == conversation_name.lower():
+                    selected = conv
+                    break
+            
+            if not selected:
+                # Try by index if it's a number
+                try:
+                    idx = int(conversation_name) - 1
+                    if 0 <= idx < len(conversations):
+                        selected = conversations[idx]
+                except ValueError:
+                    pass
+                    
+            if not selected:
+                print(f"{Colors.FAIL}Conversation '{conversation_name}' not found.{Colors.ENDC}")
+                return
+        else:
+            # Interactive mode - display the conversations first
+            await self.display_conversations()
+            
+            try:
+                selection = int(input("\nEnter conversation number to load: "))
+                if 1 <= selection <= len(conversations):
+                    selected = conversations[selection-1]
+                else:
+                    print(f"{Colors.FAIL}Invalid selection.{Colors.ENDC}")
+                    return
+            except ValueError:
+                print(f"{Colors.FAIL}Please enter a valid number.{Colors.ENDC}")
+                return
+            except Exception as e:
+                print(f"{Colors.FAIL}Error loading conversation: {e}{Colors.ENDC}")
+                return
+        
+        # Common loading code
         try:
-            selection = int(input("\nEnter conversation number to load: "))
-            if 1 <= selection <= len(conversations):
-                selected = conversations[selection-1]
-                
-                # Define function for synchronous file operations
-                def read_json_file():
-                    with open(selected["path"], 'r', encoding='utf-8') as f:
-                        return json.load(f)
-                
-                # Use to_thread to make file I/O non-blocking
-                data = await asyncio.to_thread(read_json_file)
-                
-                self.conversation_id = data.get("conversation_id")
-                self.conversation_history = data.get("history", [])
-                
-                # Update model and params from metadata
-                for item in self.conversation_history:
-                    if item.get("type") == "metadata":
-                        metadata = item.get("content", {})
-                        self.model = metadata.get("model", self.model)
-                        if "params" in metadata:
-                            self.params = metadata["params"]
-                        break
-                
-                print(f"{Colors.GREEN}Loaded conversation: {selected['title']}{Colors.ENDC}")
-                
-                # Display conversation history
-                await self.display_conversation_history()
-            else:
-                print(f"{Colors.FAIL}Invalid selection.{Colors.ENDC}")
-        except ValueError:
-            print(f"{Colors.FAIL}Please enter a valid number.{Colors.ENDC}")
+            # Define function for synchronous file operations
+            def read_json_file():
+                with open(selected["path"], 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            
+            # Use to_thread to make file I/O non-blocking
+            data = await asyncio.to_thread(read_json_file)
+            
+            self.conversation_id = data.get("conversation_id")
+            self.conversation_history = data.get("history", [])
+            
+            # Update model and params from metadata
+            for item in self.conversation_history:
+                if item.get("type") == "metadata":
+                    metadata = item.get("content", {})
+                    self.model = metadata.get("model", self.model)
+                    if "params" in metadata:
+                        self.params = metadata["params"]
+                    break
+            
+            print(f"{Colors.GREEN}Loaded conversation: {selected['title']}{Colors.ENDC}")
+            
+            # Display conversation history
+            await self.display_conversation_history()
         except Exception as e:
             print(f"{Colors.FAIL}Error loading conversation: {e}{Colors.ENDC}")
             
@@ -520,6 +561,7 @@ class AsyncGeminiClient(BaseGeminiClient):
                 metadata = item["content"]
                 title = metadata.get("title", title)
                 model = metadata.get("model", model)
+                self.conversation_name = title  # Update conversation name
                 break
         
         print(f"{Colors.BOLD}Title: {title}{Colors.ENDC}")
@@ -547,3 +589,111 @@ class AsyncGeminiClient(BaseGeminiClient):
         status = "enabled" if self.use_streaming else "disabled"
         print(f"{Colors.GREEN}Streaming mode {status}.{Colors.ENDC}")
         return self.use_streaming
+        
+    # New methods required by the UI message handlers
+    
+    def add_user_message(self, message: str) -> None:
+        """Add a user message to the conversation history.
+        
+        Args:
+            message: The message text to add
+        """
+        self.current_user_message = message  # Store for streaming response
+        user_message = self.create_message_structure("user", message, self.model, self.params)
+        self.conversation_history.append(user_message)
+        print(f"{Colors.BLUE}User: {Colors.ENDC}{message}")
+    
+    def add_assistant_message(self, message: str) -> None:
+        """Add an assistant message to the conversation history.
+        
+        Args:
+            message: The message text to add
+        """
+        ai_message = self.create_message_structure("ai", message, self.model, self.params)
+        self.conversation_history.append(ai_message)
+        print(f"{Colors.GREEN}AI: {Colors.ENDC}{message}")
+    
+    async def get_response(self) -> str:
+        """Get a non-streaming response for the current user message.
+        
+        Returns:
+            The model's response text
+        """
+        if not self.current_user_message:
+            return "No message to respond to."
+            
+        response = await self.send_message(self.current_user_message)
+        self.current_user_message = None  # Clear after processing
+        return response
+    
+    async def get_streaming_response(self) -> AsyncIterator[str]:
+        """Get a streaming response for the current user message.
+        
+        Yields:
+            Text chunks from the model's response
+        """
+        if not self.current_user_message or not self.client:
+            yield "No message to respond to or client not initialized."
+            return
+            
+        # Configure generation parameters
+        config = types.GenerateContentConfig(
+            temperature=self.params["temperature"],
+            max_output_tokens=self.params["max_output_tokens"],
+            top_p=self.params["top_p"],
+            top_k=self.params["top_k"]
+        )
+        
+        # Build chat history for the API
+        chat_history = self.build_chat_history(self.conversation_history)
+        
+        # Add the user message
+        chat_history.append(types.Content(role="user", parts=[types.Part.from_text(text=self.current_user_message)]))
+        
+        try:
+            # Get the streaming response
+            stream_generator = await self.client.aio.models.generate_content_stream(
+                model=self.model,
+                contents=chat_history,
+                config=config
+            )
+            
+            # Track the complete response to save in history later
+            complete_response = ""
+            
+            # Stream each chunk
+            async for chunk in stream_generator:
+                if hasattr(chunk, 'text') and chunk.text:
+                    chunk_text = chunk.text
+                    complete_response += chunk_text
+                    yield chunk_text
+            
+            # Save the complete response to history
+            ai_message = self.create_message_structure("ai", complete_response, self.model, self.params)
+            self.conversation_history.append(ai_message)
+            
+            # Clear the current message after processing
+            self.current_user_message = None
+            
+            # Auto-save after response
+            await self.save_conversation(quiet=True)
+            
+        except Exception as e:
+            error_message = f"Error generating streaming response: {e}"
+            print(f"{Colors.FAIL}{error_message}{Colors.ENDC}")
+            yield error_message
+    
+    def get_conversation_history(self) -> List[Dict[str, Any]]:
+        """Get the conversation history in a format suitable for the UI.
+        
+        Returns:
+            List of message dictionaries with 'role' and 'content' keys
+        """
+        history = []
+        for item in self.conversation_history:
+            if item["type"] == "message":
+                history.append({
+                    'role': item["content"]["role"],
+                    'content': item["content"]["text"]
+                })
+        return history

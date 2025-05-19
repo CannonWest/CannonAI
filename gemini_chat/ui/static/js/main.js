@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const sendButton = document.getElementById('sendButton');
     const modelDisplay = document.getElementById('model-display');
     const streamingDisplay = document.getElementById('streaming-display');
+    const connectionStatus = document.getElementById('connection-status');
     const thinkingIndicator = document.getElementById('thinkingIndicator');
     const conversationsList = document.getElementById('conversationsList');
     
@@ -21,11 +22,24 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize WebSocket
     function connectWebSocket() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+        console.log('Attempting to connect to WebSocket URL:', wsUrl);
+        
+        // Update connection status
+        connectionStatus.textContent = 'Connection: Connecting...';
+        connectionStatus.className = 'connecting';
+        
+        addSystemMessage(`Connecting to server at ${wsUrl}...`);
+        ws = new WebSocket(wsUrl);
+        
+        // Log the WebSocket state changes
+        logWebSocketStateChange(ws);
         
         ws.onopen = function() {
-            console.log('WebSocket connected');
+            console.log('WebSocket connected successfully');
             addSystemMessage('Connected to Gemini Chat');
+            connectionStatus.textContent = 'Connection: Connected';
+            connectionStatus.className = 'connected';
             reconnectAttempts = 0;
             
             // Request UI refresh to get initial state
@@ -40,11 +54,40 @@ document.addEventListener('DOMContentLoaded', function() {
         
         ws.onerror = function(error) {
             console.error('WebSocket error:', error);
-            addSystemMessage('Connection error occurred');
+            // More detailed error information
+            console.log('WebSocket readyState at error:', ws.readyState);
+            
+            // Log the current state of the WebSocket
+            const stateDescriptions = {
+                0: 'CONNECTING', 
+                1: 'OPEN', 
+                2: 'CLOSING', 
+                3: 'CLOSED'
+            };
+            
+            const stateDesc = stateDescriptions[ws.readyState] || 'UNKNOWN';
+            addSystemMessage(`Connection error occurred (State: ${stateDesc})`);
+            
+            // Update connection status
+            connectionStatus.textContent = `Connection: Error (${stateDesc})`;
+            connectionStatus.className = 'error';
+            
+            // Add instructions for common issues
+            if (ws.readyState === 3) { // CLOSED
+                addSystemMessage('Your connection was rejected. This might be due to:');
+                addSystemMessage('1. Security issues (e.g., CORS, origin policy)');
+                addSystemMessage('2. Server authentication requirements');
+                addSystemMessage('3. Server middleware rejecting the connection');
+                addSystemMessage('Check the server logs for more details.');
+            }
         };
         
         ws.onclose = function() {
             addSystemMessage('Disconnected from server');
+            
+            // Update connection status
+            connectionStatus.textContent = 'Connection: Disconnected';
+            connectionStatus.className = 'disconnected';
             
             // Attempt to reconnect
             if (reconnectAttempts < maxReconnectAttempts) {
@@ -52,9 +95,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 const delay = Math.min(1000 * reconnectAttempts, 5000);
                 
                 addSystemMessage(`Reconnecting in ${delay/1000} seconds...`);
+                connectionStatus.textContent = `Connection: Reconnecting in ${delay/1000}s`;
                 setTimeout(connectWebSocket, delay);
             } else {
                 addSystemMessage('Could not reconnect to server. Please refresh the page.');
+                connectionStatus.textContent = 'Connection: Failed - Refresh page';
             }
         };
     }
@@ -149,12 +194,13 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Add each conversation
         if (data.conversations && data.conversations.length > 0) {
-            data.conversations.forEach(conv => {
+            data.conversations.forEach((title, index) => {
                 const item = document.createElement('div');
                 item.className = 'conversation-item';
-                item.textContent = conv;
+                item.textContent = `${index + 1}. ${title}`;
                 item.addEventListener('click', () => {
-                    sendMessage(`/load ${conv}`);
+                    sendMessage(`/load ${title}`);
+                    addSystemMessage(`Loading conversation: ${title}`);
                 });
                 conversationsList.appendChild(item);
             });
@@ -293,6 +339,30 @@ document.addEventListener('DOMContentLoaded', function() {
     // Scroll conversation to bottom
     function scrollToBottom() {
         conversation.scrollTop = conversation.scrollHeight;
+    }
+    
+    // Helper function to log WebSocket state changes
+    function logWebSocketStateChange(socket) {
+        const states = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'];
+        let lastState = socket.readyState;
+        
+        console.log(`Initial WebSocket state: ${states[lastState]}`);
+        
+        // Create a function to check for state changes
+        const stateChecker = setInterval(function() {
+            if (socket.readyState !== lastState) {
+                lastState = socket.readyState;
+                console.log(`WebSocket state changed to: ${states[lastState]}`);
+                
+                // Clear interval if closed state is reached
+                if (lastState === 3) {
+                    clearInterval(stateChecker);
+                }
+            }
+        }, 100);
+        
+        // Clear the interval after a reasonable timeout
+        setTimeout(() => clearInterval(stateChecker), 10000);
     }
     
     // Connect WebSocket
