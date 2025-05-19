@@ -227,14 +227,6 @@ class BaseGeminiClient:
             
         return token_usage
 
-    def get_timestamp(self) -> str:
-        """Get a formatted timestamp string for naming conversations.
-        
-        Returns:
-            Formatted timestamp string
-        """
-        return datetime.now().strftime('%Y%m%d_%H%M%S')
-
     def get_version(self) -> str:
         """Get the current version of the Gemini Chat CLI.
         

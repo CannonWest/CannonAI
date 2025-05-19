@@ -35,11 +35,14 @@ class Config:
         # Set up config file path
         self.config_file = Path(config_file) if config_file else self._get_default_config_path()
         
+        # Determine project root directory
+        project_root = Path(__file__).resolve().parent.parent
+        
         # Default configuration
         self.config = {
             "api_key": "",
             "default_model": self.DEFAULT_MODEL,
-            "conversations_dir": str(Path.home() / "gemini_chat_conversations"),
+            "conversations_dir": str(project_root / "gemini_chat_conversations"),
             "generation_params": {
                 "temperature": 0.7,
                 "max_output_tokens": 800,
@@ -64,35 +67,25 @@ class Config:
         Returns:
             Path to the default configuration file
         """
-        # First, try to find conversations directory from current file structure
+        # Always use the gemini_chat_config directory relative to the project
         try:
             # Get the current file path and determine the project structure
             current_file = Path(__file__).resolve()
             current_dir = current_file.parent
             
-            # Check if we're in the correct project structure
-            if current_dir.name == "gemini_chat":
-                # "gemini_chat" is the current directory
-                # The parent should be the repository root
-                parent_dir = current_dir.parent
-                
-                # Set config directory adjacent to gemini_chat
-                config_dir = parent_dir / "gemini_chat_config"
-                config_dir.mkdir(parents=True, exist_ok=True)
-                return config_dir / self.DEFAULT_CONFIG_FILE
-        except Exception as e:
-            print(f"Could not create project-based config path: {e}. Using fallback.")
+            # The parent should be the repository root
+            parent_dir = current_dir.parent
             
-        # Fallback to OS-specific paths if project structure detection fails
-        if sys.platform == 'win32':
-            config_dir = Path(os.environ.get('APPDATA', Path.home()))
-        else:
-            config_dir = Path.home() / '.config'
-        
-        # Ensure the config directory exists
-        config_dir.mkdir(parents=True, exist_ok=True)
-        
-        return config_dir / self.DEFAULT_CONFIG_FILE
+            # Set config directory adjacent to gemini_chat
+            config_dir = parent_dir / "gemini_chat_config"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            return config_dir / self.DEFAULT_CONFIG_FILE
+        except Exception as e:
+            # If we can't determine the project structure, use the current directory
+            print(f"Error finding project structure: {e}. Using current directory.")
+            config_dir = Path.cwd() / "gemini_chat_config"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            return config_dir / self.DEFAULT_CONFIG_FILE
     
     def load_config(self) -> Dict[str, Any]:
         """Load configuration from file.

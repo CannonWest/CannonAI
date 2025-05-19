@@ -48,14 +48,9 @@ class AsyncGeminiClient(BaseGeminiClient):
         self.params: Dict[str, Any] = self.default_params.copy()
         self.use_streaming: bool = False  # Default to non-streaming
         
-        # Ensure the conversations directory exists
-        print(f"AsyncGeminiClient using conversations directory: {self.base_directory}")
+        # The base directory is already set by the parent constructor
         self.conversations_dir = self.base_directory
         self.ensure_directories(self.conversations_dir)
-        
-        # Print directory status
-        print(f"Conversations will be stored in: {self.conversations_dir}")
-        print(f"Directory exists: {self.conversations_dir.exists()}")
     
     async def initialize_client(self) -> bool:
         """Initialize the Gemini client with API key asynchronously.
@@ -129,17 +124,6 @@ class AsyncGeminiClient(BaseGeminiClient):
         # Create filename with sanitized title
         filename = self.format_filename(title, self.conversation_id)
         filepath = self.conversations_dir / filename
-        
-        # DEBUG - Print directory information
-        print(f"DEBUG - Saving conversation to directory: {self.conversations_dir}")
-        print(f"DEBUG - Full file path: {filepath}")
-        print(f"DEBUG - Directory exists: {self.conversations_dir.exists()}")
-        if not self.conversations_dir.exists():
-            try:
-                self.conversations_dir.mkdir(parents=True, exist_ok=True)
-                print(f"DEBUG - Created directory: {self.conversations_dir}")
-            except Exception as e:
-                print(f"DEBUG - Error creating directory: {e}")
         
         # Update metadata
         for item in self.conversation_history:
@@ -407,22 +391,6 @@ class AsyncGeminiClient(BaseGeminiClient):
         Returns:
             List of conversation information dictionaries
         """
-        # Ensure conversation directory exists
-        self.ensure_directories(self.conversations_dir)
-        
-        # Print debug info
-        print(f"DEBUG: Listing conversations from {self.conversations_dir}")
-        print(f"DEBUG: Directory exists: {self.conversations_dir.exists()}")
-        
-        # Try to list files in directory
-        try:
-            files = list(self.conversations_dir.glob("*.json"))
-            print(f"DEBUG: Found {len(files)} JSON files")
-            for file in files:
-                print(f"DEBUG: Found file: {file.name}")
-        except Exception as e:
-            print(f"DEBUG: Error listing files: {e}")
-        
         # Define function for synchronous file operations
         def read_conversation_files():
             result = []

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini Chat</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <h1>Gemini Chat</h1>
+        <div>
+            <button id="settingsButton">Settings</button>
+        </div>
+    </header>
+    
+    <div class="container">
+        <main>
+            <div id="conversation"></div>
+            <div class="thinking" id="thinkingIndicator">Gemini is thinking...</div>
+            
+            <div class="input-container">
+                <input type="text" id="userInput" placeholder="Type a message or command..." autofocus>
+                <button id="sendButton">Send</button>
+            </div>
+        </main>
+        
+        <div class="sidebar">
+            <h3>Commands</h3>
+            
+            <div class="command-section">
+                <h4>Conversations</h4>
+                <div class="command-item" data-cmd="/new">/new - New conversation</div>
+                <div class="command-item" data-cmd="/save">/save - Save conversation</div>
+                <div class="command-item" data-cmd="/list">/list - List conversations</div>
+                <div class="command-item" data-cmd="/history">/history - Show history</div>
+                <div id="conversationsList" class="conversation-list"></div>
+            </div>
+            
+            <div class="command-section">
+                <h4>Settings</h4>
+                <div class="command-item" data-cmd="/model">/model - Change model</div>
+                <div class="command-item" data-cmd="/params">/params - Set parameters</div>
+                <div class="command-item" data-cmd="/stream">/stream - Toggle streaming</div>
+            </div>
+            
+            <div class="command-section">
+                <h4>Help</h4>
+                <div class="command-item" data-cmd="/help">/help - Show help</div>
+                <div class="command-item" data-cmd="/ui_refresh">/ui_refresh - Refresh UI</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="status-bar">
+        <div id="model-display">Model: Loading...</div>
+        <div id="streaming-display">Streaming: No</div>
+    </div>
+
+    <script src="/static/js/main.js"></script>
+</body>
+</html>
