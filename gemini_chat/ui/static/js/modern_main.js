@@ -1,4 +1,47 @@
-// Modern JavaScript for Gemini Chat UI
+    // Function to update the model selector with fetched models
+    function updateModelSelector(models) {
+        if (!models || !Array.isArray(models) || models.length === 0) {
+            console.log('No models available to populate selector');
+            return;
+        }
+        
+        console.log(`Received ${models.length} models to update selector:`);
+        models.forEach(model => {
+            console.log(`- ${model.name}: ${model.display_name || 'No display name'}`);
+        });
+        
+        // Clear existing options
+        modelSelector.innerHTML = '';
+        
+        // Add each model as an option
+        models.forEach(model => {
+            const option = document.createElement('option');
+            option.value = model.name;
+            option.textContent = model.display_name || model.name;
+            
+            // Set the current model as selected
+            if (model.name === currentModel) {
+                option.selected = true;
+            }
+            
+            modelSelector.appendChild(option);
+        });
+        
+        console.log(`Updated model selector with ${models.length} models`);
+    }
+    
+    // Function to fetch available models from the server
+    function fetchAvailableModels() {
+        // Check if WebSocket is initialized and connected
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            console.log('Fetching available models from server...');
+            displaySystemMessage('Fetching available models...');
+            sendCommand('/fetch_models');
+        } else {
+            console.log('Not connected to server. Cannot fetch models.');
+            displaySystemMessage('Not connected to server. Cannot fetch models.');
+        }
+    }// Modern JavaScript for Gemini Chat UI
 document.addEventListener('DOMContentLoaded', function() {
     // DOM Elements
     const userInput = document.getElementById('user-input');
@@ -135,6 +178,10 @@ document.addEventListener('DOMContentLoaded', function() {
             case 'conversation_list':
                 updateConversationsList(data.content, data.conversations);
                 break;
+                
+            case 'available_models':
+                updateModelSelector(data.models);
+                break;
             
             default:
                 console.warn('Unknown message type:', data.type);
@@ -168,7 +215,13 @@ document.addEventListener('DOMContentLoaded', function() {
         // Update model info
         currentModel = state.model;
         modelIndicator.textContent = state.model;
-        modelSelector.value = state.model;
+        
+        // Try to set the model in the selector
+        try {
+            modelSelector.value = state.model;
+        } catch (e) {
+            console.log(`Model ${state.model} not found in selector, will be updated when models are fetched`);
+        }
         
         // Update streaming mode
         streamingMode = state.streaming;
@@ -473,7 +526,14 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     function toggleSettingsSidebar() {
+        const isCollapsed = settingsSidebar.classList.contains('collapsed');
         settingsSidebar.classList.toggle('collapsed');
+        
+        // If we're opening the sidebar, fetch the latest models
+        if (isCollapsed) {
+            console.log('Settings sidebar opened, fetching available models...');
+            fetchAvailableModels();
+        }
     }
     
     function saveSettings() {

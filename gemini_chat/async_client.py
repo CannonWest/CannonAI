@@ -284,20 +284,73 @@ class AsyncGeminiClient(BaseGeminiClient):
             
         models = []
         try:
+            print(f"Fetching available models from Google AI API...")
+            # Try to get models from the API
             model_list = await self.client.aio.models.list()
-            for model in model_list:
-                # Only include models that support text generation
-                if "generateContent" in model.supported_actions:
-                    # Extract model info
-                    model_info = {
-                        "name": model.name,
-                        "display_name": model.display_name if hasattr(model, 'display_name') else model.name,
-                        "input_token_limit": model.input_token_limit if hasattr(model, 'input_token_limit') else "Unknown",
-                        "output_token_limit": model.output_token_limit if hasattr(model, 'output_token_limit') else "Unknown"
+            
+            if model_list:
+                for model in model_list:
+                    # Only include models that support text generation
+                    if hasattr(model, 'supported_actions') and "generateContent" in model.supported_actions:
+                        # Extract model info
+                        model_info = {
+                            "name": model.name,
+                            "display_name": model.display_name if hasattr(model, 'display_name') else model.name,
+                            "input_token_limit": model.input_token_limit if hasattr(model, 'input_token_limit') else "Unknown",
+                            "output_token_limit": model.output_token_limit if hasattr(model, 'output_token_limit') else "Unknown"
+                        }
+                        models.append(model_info)
+                        print(f"Found model: {model_info['name']}")
+                        
+            # If API doesn't return any usable models, add defaults
+            if not models:
+                print("No models returned from API, adding default models")
+                # Add default models
+                models = [
+                    {
+                        "name": "gemini-2.0-flash",
+                        "display_name": "Gemini 2.0 Flash",
+                        "input_token_limit": 32768,
+                        "output_token_limit": 8192
+                    },
+                    {
+                        "name": "gemini-2.0-pro",
+                        "display_name": "Gemini 2.0 Pro",
+                        "input_token_limit": 32768,
+                        "output_token_limit": 8192
+                    },
+                    {
+                        "name": "gemini-2.0-vision",
+                        "display_name": "Gemini 2.0 Vision",
+                        "input_token_limit": 32768,
+                        "output_token_limit": 8192
                     }
-                    models.append(model_info)
+                ]
+                
         except Exception as e:
             print(f"{Colors.FAIL}Error retrieving models: {e}{Colors.ENDC}")
+            print(f"Adding default models instead")
+            # Add default models in case of error
+            models = [
+                {
+                    "name": "gemini-2.0-flash",
+                    "display_name": "Gemini 2.0 Flash",
+                    "input_token_limit": 32768,
+                    "output_token_limit": 8192
+                },
+                {
+                    "name": "gemini-2.0-pro",
+                    "display_name": "Gemini 2.0 Pro",
+                    "input_token_limit": 32768,
+                    "output_token_limit": 8192
+                },
+                {
+                    "name": "gemini-2.0-vision",
+                    "display_name": "Gemini 2.0 Vision",
+                    "input_token_limit": 32768,
+                    "output_token_limit": 8192
+                }
+            ]
         
         return models
         

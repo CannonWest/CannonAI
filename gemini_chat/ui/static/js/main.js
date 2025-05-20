@@ -428,8 +428,14 @@ document.addEventListener('DOMContentLoaded', function() {
         // If no models were provided, do nothing
         if (!models || !Array.isArray(models) || models.length === 0) {
             addSystemMessage("No models available");
+            console.log("No models available to populate dropdown");
             return;
         }
+        
+        console.log(`Received ${models.length} models to update dropdown:`);
+        models.forEach(model => {
+            console.log(`- ${model.name}: ${model.display_name || 'No display name'}`);
+        });
         
         // If there's no active model dropdown, create the memory but don't update DOM
         if (!modelDropdown) {
@@ -441,6 +447,7 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Clear existing options
         modelDropdown.innerHTML = '';
+        console.log("Cleared existing dropdown options");
         
         // Add each model as an option
         models.forEach(model => {
@@ -450,6 +457,7 @@ document.addEventListener('DOMContentLoaded', function() {
             // If this is the currently selected model, select it
             if (model.name === window.currentModel) {
                 option.selected = true;
+                console.log(`Selected model: ${model.name}`);
             }
             modelDropdown.appendChild(option);
         });
@@ -467,7 +475,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
     
-    // Enhance the params handler to create a dynamic model selection UI
+    // Create model select dropdown with initial models
     function createModelSelection(parentElement) {
         const modelSection = document.createElement('div');
         modelSection.className = 'settings-section';
@@ -495,17 +503,27 @@ document.addEventListener('DOMContentLoaded', function() {
         // Add the section to the parent
         parentElement.appendChild(modelSection);
         
+        // Add initial models while we wait for the API response
+        const initialModels = [
+            { name: 'gemini-2.0-flash', display_name: 'Gemini 2.0 Flash' },
+            { name: 'gemini-2.0-pro', display_name: 'Gemini 2.0 Pro' },
+            { name: 'gemini-2.0-vision', display_name: 'Gemini 2.0 Vision' }
+        ];
+        updateModelDropdown(initialModels);
+        
         // If we have cached models, use them
         if (window.availableModels) {
             updateModelDropdown(window.availableModels);
-        } else {
-            // Otherwise fetch models
-            fetchAvailableModels();
         }
+        
+        // Fetch the latest models from server
+        console.log('Fetching available models from server...');
+        fetchAvailableModels();
         
         // Handle model selection change
         dropdown.addEventListener('change', function() {
             const selectedModel = this.value;
+            console.log(`Model selected: ${selectedModel}`);
             sendMessage(`/model ${selectedModel}`);
         });
     }

@@ -514,7 +514,7 @@ async def fetch_available_models(websocket: WebSocket):
     chat_client = get_client()
     
     if not chat_client:
-        logger.warning("Cannot fetch models - client not initialized")
+        logger.error("Cannot fetch models - client not initialized")
         await websocket.send_json({
             'type': 'system',
             'content': "Error: Chat client not initialized"
@@ -523,7 +523,7 @@ async def fetch_available_models(websocket: WebSocket):
     
     # Check if client has get_available_models method
     if not hasattr(chat_client, 'get_available_models'):
-        logger.warning("Client does not have get_available_models method")
+        logger.error("Client does not have get_available_models method")
         await websocket.send_json({
             'type': 'system',
             'content': "Error: This client doesn't support retrieving available models"
@@ -532,11 +532,11 @@ async def fetch_available_models(websocket: WebSocket):
     
     try:
         # Get the list of models
-        logger.debug("Retrieving available models list")
+        logger.info("Fetching available models from the API...")
         models = await chat_client.get_available_models()
         
         if not models:
-            logger.debug("No models found")
+            logger.warning("No models found")
             await websocket.send_json({
                 'type': 'available_models',
                 'content': "No models available.",
@@ -559,7 +559,9 @@ async def fetch_available_models(websocket: WebSocket):
                 "output_token_limit": model["output_token_limit"]
             })
         
-        logger.debug(f"Found {len(formatted_models)} models")
+        logger.info(f"Found {len(formatted_models)} models from the API")
+        for model in formatted_models:
+            logger.info(f"  Model: {model['name']} - {model['display_name']}")
         
         # Send the models to the client
         await websocket.send_json({
@@ -570,6 +572,7 @@ async def fetch_available_models(websocket: WebSocket):
         
     except Exception as e:
         logger.error(f"Error retrieving models: {str(e)}")
+        logger.debug("Detailed error trace:", exc_info=True)
         await websocket.send_json({
             'type': 'system',
             'content': f"Error retrieving models: {str(e)}"
@@ -591,6 +594,7 @@ async def handle_client_message(websocket: WebSocket, message: str, command_hand
     
     # Check for special UI commands
     if message == "/fetch_models":
+        logger.info("Received /fetch_models command from client")
         await fetch_available_models(websocket)
         return
     
