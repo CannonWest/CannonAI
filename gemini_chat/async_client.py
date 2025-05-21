@@ -49,6 +49,7 @@ class AsyncGeminiClient(BaseGeminiClient):
         self.use_streaming: bool = False  # Default to non-streaming
         self.conversation_name: str = "New Conversation"  # Default conversation name
         self.current_user_message: Optional[str] = None  # Store the current user message for streaming
+        self.is_web_ui: bool = False  # Flag for web UI mode
         
         # The base directory is already set by the parent constructor
         self.conversations_dir = self.base_directory
@@ -84,15 +85,27 @@ class AsyncGeminiClient(BaseGeminiClient):
         """
         return str(uuid.uuid4())
     
-    async def start_new_conversation(self) -> None:
-        """Start a new conversation asynchronously."""
+    async def start_new_conversation(self, title: Optional[str] = None, is_web_ui: bool = False) -> None:
+        """Start a new conversation asynchronously.
+        
+        Args:
+            title: Optional title for the conversation. If None, will prompt or generate.
+            is_web_ui: Whether this is being called from the web UI.
+        """
         self.conversation_id = self.generate_conversation_id()
         self.conversation_history = []
         
         # Get title for the conversation
-        title = input("Enter a title for this conversation (or leave blank for timestamp): ")
+        if title is None and not is_web_ui:
+            # Only prompt for input in CLI mode
+            title = input("Enter a title for this conversation (or leave blank for timestamp): ")
+            
+        # Generate default title if none provided
         if not title:
             title = f"Conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        # Update the conversation name property
+        self.conversation_name = title
         
         # Create initial metadata
         metadata = self.create_metadata_structure(title, self.model, self.params)

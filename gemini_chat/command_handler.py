@@ -196,10 +196,23 @@ class CommandHandler:
         await self.client.save_conversation()
         return False
     
-    async def cmd_new(self) -> bool:
-        """Start a new conversation (async version)."""
+    async def cmd_new(self, command_args: str = "") -> bool:
+        """Start a new conversation (async version).
+        
+        Args:
+            command_args: Optional title for the new conversation
+        """
         await self.client.save_conversation()
-        await self.client.start_new_conversation()
+        
+        # Check if we're in web UI mode
+        is_web_ui = getattr(self.client, 'is_web_ui', False)
+        
+        # If we have a title passed as an argument, use it
+        if command_args.strip():
+            await self.client.start_new_conversation(title=command_args.strip(), is_web_ui=is_web_ui)
+        else:
+            # Otherwise use default interactive mode, but still pass the is_web_ui flag
+            await self.client.start_new_conversation(is_web_ui=is_web_ui)
         return False
     
     async def cmd_list(self) -> bool:
@@ -329,10 +342,20 @@ class CommandHandler:
         self.client.save_conversation()
         return False
     
-    def sync_cmd_new(self) -> bool:
-        """Start a new conversation (sync version)."""
+    def sync_cmd_new(self, command_args: str = "") -> bool:
+        """Start a new conversation (sync version).
+        
+        Args:
+            command_args: Optional title for the new conversation
+        """
         self.client.save_conversation()
-        self.client.start_new_conversation()
+        
+        # If we have a title passed as an argument, use it
+        if command_args.strip():
+            self.client.start_new_conversation(title=command_args.strip())
+        else:
+            # Otherwise use default interactive mode
+            self.client.start_new_conversation()
         return False
     
     def sync_cmd_list(self) -> bool:

@@ -9,6 +9,7 @@ import logging
 import json
 import os
 import asyncio
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 from starlette.websockets import WebSocket
 from pathlib import Path
@@ -363,6 +364,10 @@ async def handle_command(websocket: WebSocket, command_text: str, command_handle
     cmd = parts[0].lower()
     args = parts[1] if len(parts) > 1 else ""
     
+    # Set a flag indicating we're in web UI mode - this needs to be persistent
+    # between commands, so we set it on the client itself
+    chat_client.is_web_ui = True
+    
     # Special handling for commands that need UI feedback
     if cmd == '/help':
         # Send help directly from the web UI
@@ -414,6 +419,30 @@ async def handle_command(websocket: WebSocket, command_text: str, command_handle
     elif cmd == '/model' and args:
         # Direct model setting with a model name
         should_exit = await command_handler.cmd_model(args)
+    elif cmd == '/new':
+        # Handle new conversation with web UI mode
+        # Extract title from args if provided
+        title = args.strip() if args else f"Conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        logger.debug(f"Creating new conversation with title: {title}")
+        
+        # Pass the title to cmd_new and set is_web_ui flag in the client
+        chat_client.is_web_ui = True  # Set flag to indicate this is a web UI request
+        should_exit = await command_handler.cmd_new(args)
+        
+        # After creating a new conversation, update all UI elements
+        # First refresh the UI state to get current model, streaming mode, etc.
+        await refresh_ui_state(websocket)
+        
+        # Then refresh the conversation list
+        await send_available_conversations(websocket)
+        
+        # Finally, send the empty conversation history
+        await send_conversation_history(websocket)
+        
+        # Log that we're updating the conversation list
+        logger.debug("Explicitly refreshing conversation list after new conversation creation")
+        # Explicitly refresh the conversation list again to ensure the UI is updated
+        await send_available_conversations(websocket)
     else:
         # Execute the command using the normal handler
         should_exit = await command_handler.async_handle_command(cmd)
@@ -431,34 +460,19 @@ async def handle_command(websocket: WebSocket, command_text: str, command_handle
     if cmd in ['/load', '/new']:
         # After loading/creating conversation, show history
         await send_conversation_history(websocket)
-    elif cmd == '/list':
-        # Get the list of conversations
-        logger.debug("Getting list of conversations for /list command")
-        conversations = await chat_client.list_conversations() if hasattr(chat_client, 'list_conversations') else []
-        logger.debug(f"Found {len(conversations)} conversations in /list")
         
-        # Format conversation list for better display
-        if conversations:
-            # Convert WindowsPath objects to strings before JSON serialization
-            serializable_conversations = []
-            for conv in conversations:
-                serialized_conv = {}
-                for key, value in conv.items():
-                    # Convert Path objects to strings
-                    if key == 'path':
-                        serialized_conv[key] = str(value)
-                    else:
-                        serialized_conv[key] = value
-                serializable_conversations.append(serialized_conv)
-                
-            formatted = "Available conversations:\n" + "\n".join(
-                f"- {conv['title']}" for conv in serializable_conversations
-            ) + "\n\nClick on a conversation name to load it or use /load <n>"
-            await websocket.send_json({
-                'type': 'conversation_list',
-                'content': formatted,
-                'conversations': [conv['title'] for conv in serializable_conversations]  # Send only titles for simplicity
-            })
+        # Also refresh the conversation list
+        await send_available_conversations(websocket)
+        
+        # Update UI state (model, streaming status, etc.)
+        await refresh_ui_state(websocket)
+    elif cmd in ['/save', '/list', '/delete', '/rename']:
+        # For conversation management commands, refresh the conversation list
+        logger.debug(f"Refreshing conversation list after {cmd} command")
+        await send_available_conversations(websocket)
+    elif cmd in ['/model', '/params', '/stream']:
+        # For setting changes, update the UI state
+        await refresh_ui_state(websocket)
 
 
 async def handle_chat_message(websocket: WebSocket, message: str):
