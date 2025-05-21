@@ -74,6 +74,42 @@ async def refresh_ui_state(websocket: WebSocket):
     await send_available_conversations(websocket)
 
 
+async def handle_stream_toggle(websocket: WebSocket):
+    """Specifically handle the streaming toggle command."""
+    chat_client = get_client()
+    
+    if not chat_client:
+        logger.error("Cannot toggle streaming - client not initialized")
+        await websocket.send_json({
+            'type': 'system',
+            'content': "Error: Chat client not initialized"
+        })
+        return
+    
+    # Toggle the streaming mode
+    chat_client.use_streaming = not chat_client.use_streaming
+    new_state = chat_client.use_streaming
+    
+    # Log the change
+    logger.info(f"Streaming mode toggled to: {new_state}")
+    print(f"Streaming mode toggled to: {new_state}")
+    
+    # Send immediate UI update with new streaming state
+    await websocket.send_json({
+        'type': 'state_update',
+        'model': chat_client.model,
+        'streaming': new_state,
+        'conversation_name': getattr(chat_client, 'conversation_name', 'New Conversation'),
+        'params': getattr(chat_client, 'params', {}) or getattr(chat_client, 'generation_params', {})
+    })
+    
+    # Also send confirmation message
+    await websocket.send_json({
+        'type': 'system',
+        'content': f"Streaming mode {'enabled' if new_state else 'disabled'}"
+    })
+
+
 async def send_conversation_history(websocket: WebSocket):
     """Send the current conversation history to the client."""
     chat_client = get_client()
@@ -380,6 +416,11 @@ async def handle_command(websocket: WebSocket, command_text: str, command_handle
         await refresh_ui_state(websocket)
         return
     
+    # Special handling for streaming toggle
+    if cmd == '/stream':
+        await handle_stream_toggle(websocket)
+        return
+    
     # New commands for the modern UI
     if cmd == '/rename' and args:
         # Split the args into old and new names
@@ -470,8 +511,8 @@ async def handle_command(websocket: WebSocket, command_text: str, command_handle
         # For conversation management commands, refresh the conversation list
         logger.debug(f"Refreshing conversation list after {cmd} command")
         await send_available_conversations(websocket)
-    elif cmd in ['/model', '/params', '/stream']:
-        # For setting changes, update the UI state
+    elif cmd in ['/model', '/params']:
+        # For other setting changes, update the UI state
         await refresh_ui_state(websocket)
 
 

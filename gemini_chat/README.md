@@ -26,6 +26,18 @@ When using the web UI mode:
 - The same commands available in CLI mode are available through the web interface
 - The web interface provides a more visual experience with better formatting
 
+#### UI Versions
+
+The application includes two UI versions:
+- **Standard UI**: The default web interface (index.html, style.css, main.js)
+- **Modern UI**: An enhanced interface with improved styling and features (new_index.html, modern_style.css, modern_main.js)
+
+The modern UI includes additional features:
+- Markdown rendering with syntax highlighting for code blocks
+- Improved conversation management
+- More intuitive settings interface
+- Real-time streaming with visual feedback
+
 **Note**: To use the web interface, you need to install the additional UI dependencies:
 ```bash
 pip install -r gemini_chat/ui_requirements.txt
@@ -267,6 +279,54 @@ make help
 - `google-genai` package (≥ 0.5.0)
 - `tabulate` package (≥ 0.9.0)
 - `colorama` package (≥ 0.4.4)
+
+### Web UI Additional Requirements
+- `fastapi` (≥ 0.68.0)
+- `uvicorn` (≥ 0.15.0)
+- `websockets` (≥ 10.0)
+- `jinja2` (≥ 3.0.0) 
+- `markdown` (for rendering markdown in the modern UI)
+- `pygments` (for syntax highlighting in the modern UI)
+
+## Supported Models
+
+Gemini Chat supports multiple Gemini AI models, including:
+
+- **Gemini 2.0 Flash** - Fastest model, good for quick responses
+- **Gemini 2.0 Pro** - More advanced model with better reasoning capabilities
+- **Gemini 2.0 Vision** - Model with support for image understanding
+
+Model availability may vary based on your API access level and Google's current offerings.
+
+## Troubleshooting
+
+### Common Issues
+
+#### WebSocket Connection Errors
+- **Symptom**: "Not connected to server" messages in the web UI
+- **Solution**: Check that the server is running and refresh the page. The UI will automatically attempt to reconnect.
+
+#### Model Selector Not Populating
+- **Symptom**: Empty model dropdown in settings
+- **Solution**: The UI automatically fetches available models when the settings sidebar is opened. If this fails, try closing and reopening the settings panel.
+
+#### JavaScript Console Errors
+- If you encounter JavaScript errors in the browser console, please report them as issues on the repository.
+
+### Debugging
+
+For WebSocket connection debugging, you can use the diagnostic tools in the `debug` directory:
+```bash
+python gemini_chat/debug/websocket_diagnostics.py
+```
+
+## Browser Compatibility
+
+The web interface has been tested and confirmed working on:
+- Chrome 90+
+- Firefox 88+
+- Edge 90+
+- Safari 14+
 
 ## License
 

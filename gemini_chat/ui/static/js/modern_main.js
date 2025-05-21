@@ -1,3 +1,47 @@
+// Modern JavaScript for Gemini Chat UI
+document.addEventListener('DOMContentLoaded', function() {
+    // DOM Elements
+    const userInput = document.getElementById('user-input');
+    const sendButton = document.getElementById('send-button');
+    const messagesContainer = document.getElementById('messages-container');
+    const conversationsList = document.getElementById('conversations-list');
+    const newChatButton = document.getElementById('new-chat-btn');
+    const settingsToggle = document.getElementById('settings-toggle');
+    const closeSettings = document.getElementById('close-settings');
+    const settingsSidebar = document.querySelector('.settings-sidebar');
+    const currentChatTitle = document.getElementById('current-chat-title');
+    const modelIndicator = document.getElementById('model-indicator');
+    
+    // Parameter elements
+    const modelSelector = document.getElementById('model-selector');
+    const temperatureSlider = document.getElementById('temperature');
+    const temperatureValue = document.getElementById('temperature-value');
+    const maxTokensSlider = document.getElementById('max-tokens');
+    const maxTokensValue = document.getElementById('max-tokens-value');
+    const topPSlider = document.getElementById('top-p');
+    const topPValue = document.getElementById('top-p-value');
+    const topKSlider = document.getElementById('top-k');
+    const topKValue = document.getElementById('top-k-value');
+    const streamingToggle = document.getElementById('streaming-toggle');
+    const saveSettingsButton = document.getElementById('save-settings');
+    
+    // WebSocket Connection
+    let ws;
+    let isConnected = false;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 5;
+    
+    // Chat State
+    let currentModel = 'gemini-2.0-flash';
+    let streamingMode = true;
+    let currentConversationTitle = 'New Conversation';
+    let parameters = {
+        temperature: 0.7,
+        max_output_tokens: 1024,
+        top_p: 0.9,
+        top_k: 40
+    };
+    
     // Function to update the model selector with fetched models
     function updateModelSelector(models) {
         if (!models || !Array.isArray(models) || models.length === 0) {
@@ -41,49 +85,7 @@
             console.log('Not connected to server. Cannot fetch models.');
             displaySystemMessage('Not connected to server. Cannot fetch models.');
         }
-    }// Modern JavaScript for Gemini Chat UI
-document.addEventListener('DOMContentLoaded', function() {
-    // DOM Elements
-    const userInput = document.getElementById('user-input');
-    const sendButton = document.getElementById('send-button');
-    const messagesContainer = document.getElementById('messages-container');
-    const conversationsList = document.getElementById('conversations-list');
-    const newChatButton = document.getElementById('new-chat-btn');
-    const settingsToggle = document.getElementById('settings-toggle');
-    const closeSettings = document.getElementById('close-settings');
-    const settingsSidebar = document.querySelector('.settings-sidebar');
-    const currentChatTitle = document.getElementById('current-chat-title');
-    const modelIndicator = document.getElementById('model-indicator');
-    
-    // Parameter elements
-    const modelSelector = document.getElementById('model-selector');
-    const temperatureSlider = document.getElementById('temperature');
-    const temperatureValue = document.getElementById('temperature-value');
-    const maxTokensSlider = document.getElementById('max-tokens');
-    const maxTokensValue = document.getElementById('max-tokens-value');
-    const topPSlider = document.getElementById('top-p');
-    const topPValue = document.getElementById('top-p-value');
-    const topKSlider = document.getElementById('top-k');
-    const topKValue = document.getElementById('top-k-value');
-    const streamingToggle = document.getElementById('streaming-toggle');
-    const saveSettingsButton = document.getElementById('save-settings');
-    
-    // WebSocket Connection
-    let ws;
-    let isConnected = false;
-    let reconnectAttempts = 0;
-    const maxReconnectAttempts = 5;
-    
-    // Chat State
-    let currentModel = 'gemini-2.0-flash';
-    let streamingMode = true;
-    let currentConversationTitle = 'New Conversation';
-    let parameters = {
-        temperature: 0.7,
-        max_output_tokens: 1024,
-        top_p: 0.9,
-        top_k: 40
-    };
+    }
     
     // Initialize WebSocket Connection
     function initWebSocket() {
@@ -219,6 +221,9 @@ document.addEventListener('DOMContentLoaded', function() {
         // Try to set the model in the selector
         try {
             modelSelector.value = state.model;
+            
+            // Update max tokens range based on model
+            updateMaxTokensRangeForModel(state.model);
         } catch (e) {
             console.log(`Model ${state.model} not found in selector, will be updated when models are fetched`);
         }
@@ -618,6 +623,49 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     
     saveSettingsButton.addEventListener('click', saveSettings);
+    
+    // Add event listener for model selection change
+    modelSelector.addEventListener('change', function() {
+        console.log(`Model changed to: ${this.value}`);
+        updateMaxTokensRangeForModel(this.value);
+    });
+    
+    // Add event listener for streaming toggle
+    streamingToggle.addEventListener('change', function() {
+        console.log(`Streaming mode toggled to: ${this.checked}`);
+        // Send the streaming toggle command immediately
+        sendCommand('/stream');
+    });
+    
+        // Function to update max tokens range based on selected model
+    function updateMaxTokensRangeForModel(modelName) {
+        console.log(`Updating max tokens range for model: ${modelName}`);
+        
+        // Default values
+        let minTokens = 256;
+        let maxTokens = 8192;
+        let defaultValue = 1024;
+        
+        // Adjust based on model (update these values based on actual model capabilities)
+        if (modelName.includes('flash')) {
+            maxTokens = 4096;
+            defaultValue = Math.min(parameters.max_output_tokens || 1024, maxTokens);
+        } else if (modelName.includes('pro')) {
+            maxTokens = 8192;
+            defaultValue = Math.min(parameters.max_output_tokens || 2048, maxTokens);
+        } else if (modelName.includes('vision')) {
+            maxTokens = 4096;
+            defaultValue = Math.min(parameters.max_output_tokens || 1024, maxTokens);
+        }
+        
+        // Update the slider attributes
+        maxTokensSlider.min = minTokens;
+        maxTokensSlider.max = maxTokens;
+        maxTokensSlider.value = defaultValue;
+        maxTokensValue.textContent = defaultValue;
+        
+        console.log(`Updated max tokens range: min=${minTokens}, max=${maxTokens}, current=${defaultValue}`);
+    }
     
     // Initialize the chat
     initWebSocket();
