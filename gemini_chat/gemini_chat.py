@@ -1,3 +1,11 @@
+import argparse
+import sys
+import os
+try:
+    from gui.app import app
+    flask_available = True
+except ImportError:
+    flask_available = False
 #!/usr/bin/env python3
 """
 Gemini Chat CLI - Main Entry Point
@@ -159,4 +167,23 @@ async def async_initialize_and_run(client):
 
 
 if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    # Create an ArgumentParser object.
+    parser = argparse.ArgumentParser(description='Gemini Chat Client')
+    # Add an argument to the parser that listens for the --ui flag.
+    parser.add_argument('--ui', action='store_true', help='Launch the Flask UI')
+    # Parse the arguments using parser.parse_args().
+    args = parser.parse_args()
+    # Add an if condition to check if the --ui flag was provided.
+    if args.ui:
+        # Inside the if block, run the Flask application.
+        if flask_available:
+            print("Launching Flask UI...")
+            # Using port 5000, host 0.0.0.0 to be accessible
+            app.run(debug=True, host='0.0.0.0', port=5000)
+        else:
+            print("Error: Flask or the 'gui' module not found. Cannot launch UI.")
+            print("Please ensure Flask is installed (pip install Flask) and the 'gui' directory exists.")
+    # Move the existing console-based chat logic into an else block by calling main().
+    else:
+        main()
