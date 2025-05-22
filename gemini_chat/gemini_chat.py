@@ -166,7 +166,6 @@ async def async_initialize_and_run(client):
     await async_command_loop(client)
 
 
-if __name__ == "__main__":
 if __name__ == '__main__':
     # Create an ArgumentParser object.
     parser = argparse.ArgumentParser(description='Gemini Chat Client')
