@@ -74,6 +74,84 @@ async def refresh_ui_state(websocket: WebSocket):
     await send_available_conversations(websocket)
 
 
+async def update_model_token_limits(websocket: WebSocket, model_name: str, chat_client):
+    """Fetch actual token limits for the specified model and update parameters."""
+    logger.info(f"Fetching token limits for model: {model_name}")
+    print(f"Fetching token limits for model: {model_name}")
+    
+    try:
+        # Get the specific model information
+        if hasattr(chat_client, 'get_model_info'):
+            model_info = await chat_client.get_model_info(model_name)
+        elif hasattr(chat_client, 'client') and hasattr(chat_client.client, 'models'):
+            # Try to get model info using the genai client
+            try:
+                model_info = await chat_client.client.aio.models.get(model=model_name)
+                logger.info(f"Successfully fetched model info for {model_name}")
+                print(f"Model info retrieved: {model_info}")
+            except Exception as e:
+                logger.warning(f"Could not fetch model info via client.aio.models.get: {e}")
+                print(f"Could not fetch model info via client.aio.models.get: {e}")
+                model_info = None
+        else:
+            logger.warning("No method available to fetch model info")
+            print("No method available to fetch model info")
+            model_info = None
+        
+        if model_info:
+            # Extract output token limit
+            output_limit = getattr(model_info, 'output_token_limit', None) or getattr(model_info, 'outputTokenLimit', 4096)
+            input_limit = getattr(model_info, 'input_token_limit', None) or getattr(model_info, 'inputTokenLimit', 0)
+            
+            logger.info(f"Model {model_name} limits: input={input_limit}, output={output_limit}")
+            print(f"Model {model_name} limits: input={input_limit}, output={output_limit}")
+            
+            # Update max tokens if needed
+            current_max = chat_client.params.get("max_output_tokens", 0)
+            if current_max > output_limit:
+                logger.info(f"Adjusting max_output_tokens from {current_max} to {output_limit}")
+                print(f"Adjusting max_output_tokens from {current_max} to {output_limit}")
+                chat_client.params["max_output_tokens"] = output_limit
+            
+            # Send model info update to frontend with actual token limits
+            await websocket.send_json({
+                'type': 'model_token_limits',
+                'model': model_name,
+                'input_token_limit': input_limit,
+                'output_token_limit': output_limit,
+                'current_max_tokens': chat_client.params.get("max_output_tokens", output_limit)
+            })
+        else:
+            logger.warning(f"Could not retrieve model info for {model_name}, using fallback limits")
+            print(f"Could not retrieve model info for {model_name}, using fallback limits")
+            
+            # Fallback to reasonable defaults based on model name
+            if "flash" in model_name.lower():
+                fallback_limit = 4096
+            elif "pro" in model_name.lower():
+                fallback_limit = 8192
+            else:
+                fallback_limit = 4096
+            
+            # Send fallback limits
+            await websocket.send_json({
+                'type': 'model_token_limits',
+                'model': model_name,
+                'input_token_limit': 0,
+                'output_token_limit': fallback_limit,
+                'current_max_tokens': chat_client.params.get("max_output_tokens", fallback_limit)
+            })
+            
+    except Exception as e:
+        logger.error(f"Error fetching model token limits: {str(e)}")
+        print(f"Error fetching model token limits: {str(e)}")
+        # Send error message to client
+        await websocket.send_json({
+            'type': 'system',
+            'content': f"Warning: Could not fetch token limits for {model_name}"
+        })
+
+
 async def handle_stream_toggle(websocket: WebSocket):
     """Specifically handle the streaming toggle command."""
     chat_client = get_client()
@@ -460,6 +538,10 @@ async def handle_command(websocket: WebSocket, command_text: str, command_handle
     elif cmd == '/model' and args:
         # Direct model setting with a model name
         should_exit = await command_handler.cmd_model(args)
+        
+        # Get the actual token limits for the selected model
+        logger.info(f"Model changed to {args}, fetching actual token limits from API")
+        await update_model_token_limits(websocket, args, chat_client)
     elif cmd == '/new':
         # Handle new conversation with web UI mode
         # Extract title from args if provided
@@ -607,11 +689,17 @@ async def fetch_available_models(websocket: WebSocket):
             if '/' in name:
                 name = name.split('/')[-1]
             
+            # Get token limits with fallback values
+            input_limit = model.get("input_token_limit", 0)
+            output_limit = model.get("output_token_limit", 4096)  # Default fallback
+            
+            print(f"Model {name}: input_limit={input_limit}, output_limit={output_limit}")
+            
             formatted_models.append({
                 "name": name,
                 "display_name": model["display_name"],
-                "input_token_limit": model["input_token_limit"],
-                "output_token_limit": model["output_token_limit"]
+                "input_token_limit": input_limit,
+                "output_token_limit": output_limit
             })
         
         logger.info(f"Found {len(formatted_models)} models from the API")
