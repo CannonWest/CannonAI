@@ -181,11 +181,11 @@ class BaseGeminiClient:
         }
 
     def build_chat_history(self, conversation_history: List[Dict[str, Any]]) -> List[types.Content]:
-        """Build API-compatible chat history from conversation history.
-        
+        """Build API-compatible chat history from conversation_history.
+
         Args:
             conversation_history: List of conversation history entries
-            
+
         Returns:
             List of Content objects for the API
         """
@@ -194,13 +194,16 @@ class BaseGeminiClient:
             if item["type"] == "message":
                 role = item["content"]["role"]
                 text = item["content"]["text"]
-                
-                # Convert to API role format
+
+                # Ensure text is a string, even if it was None/null in the stored history.
+                # An empty string is acceptable for a part, but None might not be.
+                current_text = text if text is not None else ""
+
                 api_role = "user" if role == "user" else "model"
-                chat_history.append(types.Content(role=api_role, parts=[types.Part.from_text(text=text)]))
-        
+                chat_history.append(types.Content(role=api_role, parts=[types.Part.from_text(text=current_text)]))
+
         return chat_history
-        
+
     def extract_token_usage(self, response) -> Dict[str, Any]:
         """Extract token usage metadata from response if available.
         

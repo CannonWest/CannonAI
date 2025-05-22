@@ -600,51 +600,57 @@ async def handle_command(websocket: WebSocket, command_text: str, command_handle
 
 async def handle_chat_message(websocket: WebSocket, message: str):
     """Handle a regular chat message."""
-    chat_client = get_client()
-    
-    # Store the message for processing (without adding to history yet)
-    chat_client.current_user_message = message
-    
-    # Notify the client that the message was received
+    chat_client = get_client() # Fetches the AsyncGeminiClient instance
+
+    if not chat_client:
+        logger.error("Chat client not initialized in handle_chat_message")
+        await websocket.send_json({'type': 'system', 'content': "Error: Chat client not initialized"})
+        return
+
+    # 1. Add user's message to the client's conversation_history
+    # This method also sets chat_client.current_user_message internally
+    chat_client.add_user_message(message)
+
+    # 2. Notify the UI to display the user's message
     await websocket.send_json({
         'type': 'user_message',
         'content': message
     })
-    
-    # Determine if we're in streaming mode
+
+    # 3. Get response from the AI
     if chat_client.use_streaming:
-        # Start streaming response
-        await websocket.send_json({
-            'type': 'assistant_start',
-        })
-        
-        # Get streaming response (reusing existing method)
-        full_response = ""
-        async for chunk in chat_client.get_streaming_response():
-            full_response += chunk
-            # Send each chunk to the client
-            await websocket.send_json({
-                'type': 'assistant_chunk',
-                'content': chunk
-            })
-        
-        # Add the full response to history
-        chat_client.add_assistant_message(full_response)
-        
-        # Signal end of response
-        await websocket.send_json({
-            'type': 'assistant_end',
-        })
-    else:
-        # Get non-streaming response (reusing existing method)
-        response = await chat_client.get_response()
-        
-        # Send the response
+        await websocket.send_json({'type': 'assistant_start'})
+        full_response_text = ""
+        try:
+            # get_streaming_response uses chat_client.conversation_history (which now includes the user's message)
+            async for chunk in chat_client.get_streaming_response():
+                full_response_text += chunk
+                await websocket.send_json({'type': 'assistant_chunk', 'content': chunk})
+        except Exception as e:
+            logger.error(f"Error during streaming response: {e}", exc_info=True)
+            error_chunk_message = f"\nError processing stream: {e}"
+            await websocket.send_json({'type': 'assistant_chunk', 'content': error_chunk_message})
+            full_response_text += error_chunk_message # Ensure error is part of the history
+        finally:
+            # Add the complete AI-streamed response to the client's history
+            # Note: Token usage details might not be fully available from streaming in the current setup
+            chat_client.add_assistant_message(full_response_text)
+            await websocket.send_json({'type': 'assistant_end'})
+    else: # Non-streaming
+        # get_response uses chat_client.conversation_history (which now includes the user's message)
+        response_text = await chat_client.get_response()
+
+        # Add the AI's non-streamed response to the client's history
+        # Note: Similar to streaming, detailed token_usage might need get_response to return it
+        # if it's to be stored accurately per message via add_assistant_message.
+        # For now, add_assistant_message will use defaults if token_usage isn't explicitly passed or handled within get_response.
+        chat_client.add_assistant_message(response_text)
+
+        # Send the complete AI message to the UI
         await websocket.send_json({
             'type': 'assistant_message',
-            'content': response
+            'content': response_text
         })
-
 
 async def fetch_available_models(websocket: WebSocket):
     """Fetch and send the list of available models to the client."""

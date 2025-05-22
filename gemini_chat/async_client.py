@@ -645,35 +645,54 @@ class AsyncGeminiClient(BaseGeminiClient):
         if not self.client:
             return "Error: Gemini client not initialized."
 
-        # current_user_message is already added to history by add_user_message()
-        # So, DO NOT add it again here.
-
         config = types.GenerateContentConfig(**self.params)
-        chat_history = self.build_chat_history(self.conversation_history) # History includes the latest user message
+        chat_history = self.build_chat_history(self.conversation_history)
+
+        # <<< --- ADD DETAILED LOGGING HERE --- >>>
+        print(f"\nDEBUG ASYNC_CLIENT: Attempting to call generate_content")
+        print(f"DEBUG ASYNC_CLIENT: Model: {self.model}")
+        print(f"DEBUG ASYNC_CLIENT: Current User Message: {self.current_user_message}")
+        print(f"DEBUG ASYNC_CLIENT: Entire self.conversation_history (length {len(self.conversation_history)}):")
+        for idx, item in enumerate(self.conversation_history):
+            print(f"  Item {idx}: type={item.get('type')}, content_keys={list(item.get('content', {}).keys()) if item.get('content') else 'N/A'}")
+            if item.get('type') == 'message':
+                print(f"    Role: {item['content'].get('role')}, Text: '{item['content'].get('text')}'")
+
+        print(f"DEBUG ASYNC_CLIENT: Constructed chat_history for API (length {len(chat_history)}):")
+        if chat_history:
+            for i, content_item in enumerate(chat_history):
+                # Print role and a summary of parts to avoid overly verbose logs if parts are complex
+                parts_summary = []
+                if hasattr(content_item, 'parts') and content_item.parts:
+                    for part_idx, part_item in enumerate(content_item.parts):
+                        if hasattr(part_item, 'text'):
+                            parts_summary.append(f"Part {part_idx} (text): '{part_item.text[:50]}{'...' if len(part_item.text) > 50 else ''}'")
+                        else:
+                            parts_summary.append(f"Part {part_idx}: (non-text part)")
+                print(f"  API Content Item {i}: role='{content_item.role}', parts=[{', '.join(parts_summary)}]")
+        else:
+            print("  API chat_history is EMPTY or None!")
+        # <<< --- END OF DETAILED LOGGING --- >>>
 
         try:
             print(f"\r{Colors.CYAN}AI is thinking (non-streaming UI)...{Colors.ENDC}", end="", flush=True)
             api_response = await self.client.aio.models.generate_content(
-                model=self.model, contents=chat_history, generation_config=config) # Use generation_config
+                model=self.model, contents=chat_history, config=config)
             print("\r" + " " * 50 + "\r", end="", flush=True)
 
             response_text = api_response.text
-            if response_text is None: # Ensure response_text is not None
+            if response_text is None:
                 response_text = ""
 
             token_usage = self.extract_token_usage(api_response)
-            # Add AI response to history (handled by add_assistant_message by caller)
-            # self.add_assistant_message(response_text, token_usage) # No, caller does this
-
             await self.save_conversation(quiet=True)
-            self.current_user_message = None # Clear after processing
+            self.current_user_message = None
             return response_text
         except Exception as e:
             error_msg = f"Error generating non-streaming response: {e}"
             print(f"{Colors.FAIL}{error_msg}{Colors.ENDC}")
-            # self.add_assistant_message(error_msg) # Caller should handle adding error to history
             self.current_user_message = None
-            return error_msg # Return error message to UI
+            return error_msg
 
     async def get_streaming_response(self) -> AsyncIterator[str]:
         """Get a streaming response for self.current_user_message (for UI)."""
@@ -694,7 +713,7 @@ class AsyncGeminiClient(BaseGeminiClient):
         try:
             print(f"\r{Colors.CYAN}AI is thinking (streaming UI)...{Colors.ENDC}", end="", flush=True)
             stream_generator = await self.client.aio.models.generate_content_stream(
-                model=self.model, contents=chat_history, generation_config=config) # Use generation_config
+                model=self.model, contents=chat_history, config=config) # CORRECTED
             print("\r" + " " * 50 + "\r", end="", flush=True)
 
             async for chunk in stream_generator:
