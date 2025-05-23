@@ -1,6 +1,73 @@
-# Gemini Chat CLI
+## User Interface Modes
 
-A powerful, modular command-line interface for interacting with Google's Gemini AI models, supporting both synchronous and asynchronous operations.
+The application supports two different user interface modes:
+
+### Command-Line Interface (CLI) Mode
+
+This is the default mode when running the application without any UI-related flags:
+
+```bash
+python gemini_chat/gemini_chat.py
+```
+
+The CLI mode provides a traditional terminal-based interface with command-line commands.
+
+### Web Interface Mode (FastAPI)
+
+The original web interface provides a WebSocket-based experience:
+
+```bash
+python gemini_chat/gemini_chat.py --ui
+```
+
+When using the web UI mode:
+- A FastAPI server will start (default: http://127.0.0.1:8000)
+- Uses WebSockets for real-time communication
+- Provides a modern, responsive interface
+
+### GUI Mode (Flask + Bootstrap)
+
+The new GUI mode provides a clean, Bootstrap-based interface:
+
+```bash
+python gemini_chat/gemini_chat.py --gui
+```
+
+When using the GUI mode:
+- A Flask web server will start (default: http://127.0.0.1:8080)
+- Your default web browser will automatically open to the Gemini Chat GUI
+- Uses Server-Sent Events (SSE) for streaming responses
+- Interactive modals for user inputs (conversation titles, model selection, etc.)
+- Bootstrap-based responsive design
+- All CLI commands are available through the graphical interface
+
+#### UI Versions
+
+The application includes two UI versions:
+- **Standard UI**: The default web interface (index.html, style.css, main.js)
+- **Modern UI**: An enhanced interface with improved styling and features (new_index.html, modern_style.css, modern_main.js)
+
+The modern UI includes additional features:
+- Markdown rendering with syntax highlighting for code blocks
+- Improved conversation management
+- More intuitive settings interface
+- Real-time streaming with visual feedback
+
+**Note**: To use the web interfaces, you need to install the additional dependencies:
+
+For FastAPI UI mode:
+```bash
+pip install -r gemini_chat/ui_requirements.txt
+```
+
+For Flask GUI mode:
+```bash
+pip install -r gemini_chat/gui_requirements.txt
+```
+
+# Gemini Chat
+
+A powerful, modular application for interacting with Google's Gemini AI models, supporting both command-line and web interfaces.
 
 [![Python Version](https://img.shields.io/badge/python-3.6%2B-blue)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -17,13 +84,14 @@ A powerful, modular command-line interface for interacting with Google's Gemini 
 - Support for both synchronous and asynchronous implementations
 - Cross-platform terminal colors
 - Persistent configuration system
+- Web-based user interface
 
 ## Project Structure
 
 The application is organized with a modular architecture to minimize redundancy:
 
 ```
-CannonAI/
+CannonAI_GIT/
 ├── gemini_chat/                  # Main application code
 │   ├── gemini_chat.py            # Single unified entry point
 │   ├── base_client.py            # Core shared functionality
@@ -32,9 +100,19 @@ CannonAI/
 │   ├── command_handler.py        # Command processing for both modes
 │   ├── client_manager.py         # Client creation and management
 │   ├── config.py                 # Configuration management
+│   ├── ui/                       # Web interface implementation
+│   │   ├── server.py             # FastAPI server for web UI
+│   │   ├── websocket_fix.py      # WebSocket handling improvements
+│   │   ├── static/               # Static UI assets
+│   │   │   ├── css/style.css     # UI styling
+│   │   │   ├── js/main.js        # UI JavaScript functionality
+│   │   │   └── index.html        # Main UI template
+│   │   └── deprecated/           # Legacy code kept for reference
 │   ├── __init__.py               # Package initialization
-│   ├── requirements.txt          # Dependencies
+│   ├── requirements.txt          # Core dependencies
+│   ├── ui_requirements.txt       # Web UI dependencies
 │   └── tests/                    # Test suite
+├── gemini_chat_config/           # Configuration storage
 └── gemini_chat_conversations/    # Saved conversations (auto-created)
 ```
 
@@ -48,7 +126,11 @@ CannonAI/
 
 2. Install the required dependencies:
    ```bash
+   # Core dependencies
    pip install -r gemini_chat/requirements.txt
+   
+   # Optional: Web UI dependencies (if you want to use the web interface)
+   pip install -r gemini_chat/ui_requirements.txt
    ```
 
 3. Set up your API key (choose one method):
@@ -88,6 +170,7 @@ Available arguments:
 - `--model`: Specify the model to use (default: from config or gemini-2.0-flash)
 - `--async`: Use asynchronous client implementation
 - `--dir`, `--conversations-dir`: Directory to store conversations
+- `--ui`: Launch with the web-based user interface
 - `--setup`: Run the configuration setup wizard
 - `--config`: Specify a custom configuration file path
 
@@ -130,10 +213,14 @@ You can navigate between saved conversations using the `/list` and `/load` comma
 
 ## Configuration System
 
-The application uses a persistent configuration system that saves your settings between sessions. Configuration is stored in:
+The application uses a persistent configuration system that saves your settings between sessions. Configuration is stored in the `gemini_chat_config` directory adjacent to the `gemini_chat` directory:
 
-- Windows: `%APPDATA%\gemini_chat_config.json`
-- Linux/macOS: `~/.config/gemini_chat_config.json`
+```
+CannonAI_GIT/
+├── gemini_chat/             # Main application code
+└── gemini_chat_config/      # Configuration storage
+    └── gemini_chat_config.json
+```
 
 Configuration options include:
 - API key
@@ -214,6 +301,54 @@ make help
 - `google-genai` package (≥ 0.5.0)
 - `tabulate` package (≥ 0.9.0)
 - `colorama` package (≥ 0.4.4)
+
+### Web UI Additional Requirements
+- `fastapi` (≥ 0.68.0)
+- `uvicorn` (≥ 0.15.0)
+- `websockets` (≥ 10.0)
+- `jinja2` (≥ 3.0.0) 
+- `markdown` (for rendering markdown in the modern UI)
+- `pygments` (for syntax highlighting in the modern UI)
+
+## Supported Models
+
+Gemini Chat supports multiple Gemini AI models, including:
+
+- **Gemini 2.0 Flash** - Fastest model, good for quick responses
+- **Gemini 2.0 Pro** - More advanced model with better reasoning capabilities
+- **Gemini 2.0 Vision** - Model with support for image understanding
+
+Model availability may vary based on your API access level and Google's current offerings.
+
+## Troubleshooting
+
+### Common Issues
+
+#### WebSocket Connection Errors
+- **Symptom**: "Not connected to server" messages in the web UI
+- **Solution**: Check that the server is running and refresh the page. The UI will automatically attempt to reconnect.
+
+#### Model Selector Not Populating
+- **Symptom**: Empty model dropdown in settings
+- **Solution**: The UI automatically fetches available models when the settings sidebar is opened. If this fails, try closing and reopening the settings panel.
+
+#### JavaScript Console Errors
+- If you encounter JavaScript errors in the browser console, please report them as issues on the repository.
+
+### Debugging
+
+For WebSocket connection debugging, you can use the diagnostic tools in the `debug` directory:
+```bash
+python gemini_chat/debug/websocket_diagnostics.py
+```
+
+## Browser Compatibility
+
+The web interface has been tested and confirmed working on:
+- Chrome 90+
+- Firefox 88+
+- Edge 90+
+- Safari 14+
 
 ## License
 

@@ -99,14 +99,22 @@ class CommandHandler:
         Returns:
             True if the application should exit, False otherwise
         """
-        command = command.lower()
+        # Parse command and arguments
+        parts = command.lower().split(maxsplit=1)
+        cmd = parts[0]
+        args = parts[1] if len(parts) > 1 else ""
         
         # Check for command aliases
-        for cmd, info in self.commands.items():
+        for command_key, info in self.commands.items():
             aliases = info.get("aliases", [])
-            if command == cmd or command in aliases:
+            if cmd == command_key or cmd in aliases:
                 # Call the method with await since we're in an async context
-                result = await info["handler"]()
+                # Pass arguments if the command accepts them
+                handler = info["handler"]
+                if args and (cmd == "/model" or cmd == "/load"):
+                    result = await handler(args)
+                else:
+                    result = await handler()
                 return result
         
         print(f"{Colors.WARNING}Unknown command. Type /help for available commands.{Colors.ENDC}")
@@ -121,14 +129,23 @@ class CommandHandler:
         Returns:
             True if the application should exit, False otherwise
         """
-        command = command.lower()
+        # Parse command and arguments
+        parts = command.lower().split(maxsplit=1)
+        cmd = parts[0]
+        args = parts[1] if len(parts) > 1 else ""
         
         # Check for command aliases
-        for cmd, info in self.commands.items():
+        for command_key, info in self.commands.items():
             aliases = info.get("aliases", [])
-            if command == cmd or command in aliases:
+            if cmd == command_key or cmd in aliases:
                 # Call the sync version of the method
-                result = getattr(self, f"sync_{info['handler'].__name__}")()
+                sync_method = getattr(self, f"sync_{info['handler'].__name__}")
+                
+                # Pass arguments if the command accepts them
+                if args and (cmd == "/model" or cmd == "/load"):
+                    result = sync_method(args)
+                else:
+                    result = sync_method()
                 return result
         
         print(f"{Colors.WARNING}Unknown command. Type /help for available commands.{Colors.ENDC}")
@@ -179,10 +196,23 @@ class CommandHandler:
         await self.client.save_conversation()
         return False
     
-    async def cmd_new(self) -> bool:
-        """Start a new conversation (async version)."""
+    async def cmd_new(self, command_args: str = "") -> bool:
+        """Start a new conversation (async version).
+        
+        Args:
+            command_args: Optional title for the new conversation
+        """
         await self.client.save_conversation()
-        await self.client.start_new_conversation()
+        
+        # Check if we're in web UI mode
+        is_web_ui = getattr(self.client, 'is_web_ui', False)
+        
+        # If we have a title passed as an argument, use it
+        if command_args.strip():
+            await self.client.start_new_conversation(title=command_args.strip(), is_web_ui=is_web_ui)
+        else:
+            # Otherwise use default interactive mode, but still pass the is_web_ui flag
+            await self.client.start_new_conversation(is_web_ui=is_web_ui)
         return False
     
     async def cmd_list(self) -> bool:
@@ -190,10 +220,20 @@ class CommandHandler:
         await self.client.display_conversations()
         return False
     
-    async def cmd_load(self) -> bool:
-        """Load a saved conversation (async version)."""
+    async def cmd_load(self, command_args: str = "") -> bool:
+        """Load a saved conversation (async version).
+        
+        Args:
+            command_args: Optional name or number of conversation to load directly
+        """
         await self.client.save_conversation()
-        await self.client.load_conversation()
+        
+        # If we have a conversation name passed as an argument, use it
+        if command_args.strip():
+            await self.client.load_conversation(command_args.strip())
+        else:
+            # Otherwise use interactive mode
+            await self.client.load_conversation()
         return False
     
     async def cmd_history(self) -> bool:
@@ -201,8 +241,43 @@ class CommandHandler:
         await self.client.display_conversation_history()
         return False
     
-    async def cmd_model(self) -> bool:
-        """Select a different model (async version)."""
+    async def cmd_model(self, command_args: str = "") -> bool:
+        """Select a different model (async version).
+        
+        Args:
+            command_args: Optional model name to switch to directly
+        """
+        # If model name is provided, try to set it directly
+        if command_args.strip():
+            model_name = command_args.strip()
+            print(f"Attempting to set model to: {model_name}")
+            
+            # Check if the model is available (fetch models first)
+            available_models = await self.client.get_available_models()
+            
+            # Map to keep both full path and short names
+            model_map = {}
+            for model in available_models:
+                # Get both the full and short name
+                full_name = model["name"]
+                short_name = full_name.split('/')[-1] if '/' in full_name else full_name
+                model_map[short_name.lower()] = full_name
+                model_map[full_name.lower()] = full_name
+            
+            # Check if the provided model name exists (case insensitive)
+            if model_name.lower() in model_map:
+                # Set the model
+                actual_model_name = model_map[model_name.lower()]
+                self.client.model = actual_model_name
+                print(f"{Colors.GREEN}Model set to: {self.client.model}{Colors.ENDC}")
+                return False
+            else:
+                print(f"{Colors.WARNING}Model '{model_name}' not found. Available models:{Colors.ENDC}")
+                # Show the model list if the provided name is not found
+                await self.client.display_models()
+                return False
+        
+        # No model name provided, show the list as usual
         await self.client.select_model()
         return False
     
@@ -267,10 +342,20 @@ class CommandHandler:
         self.client.save_conversation()
         return False
     
-    def sync_cmd_new(self) -> bool:
-        """Start a new conversation (sync version)."""
+    def sync_cmd_new(self, command_args: str = "") -> bool:
+        """Start a new conversation (sync version).
+        
+        Args:
+            command_args: Optional title for the new conversation
+        """
         self.client.save_conversation()
-        self.client.start_new_conversation()
+        
+        # If we have a title passed as an argument, use it
+        if command_args.strip():
+            self.client.start_new_conversation(title=command_args.strip())
+        else:
+            # Otherwise use default interactive mode
+            self.client.start_new_conversation()
         return False
     
     def sync_cmd_list(self) -> bool:
@@ -289,8 +374,43 @@ class CommandHandler:
         self.client.display_conversation_history()
         return False
     
-    def sync_cmd_model(self) -> bool:
-        """Select a different model (sync version)."""
+    def sync_cmd_model(self, command_args: str = "") -> bool:
+        """Select a different model (sync version).
+        
+        Args:
+            command_args: Optional model name to switch to directly
+        """
+        # If model name is provided, try to set it directly
+        if command_args.strip():
+            model_name = command_args.strip()
+            print(f"Attempting to set model to: {model_name}")
+            
+            # Check if the model is available (fetch models first)
+            available_models = self.client.get_available_models()
+            
+            # Map to keep both full path and short names
+            model_map = {}
+            for model in available_models:
+                # Get both the full and short name
+                full_name = model["name"]
+                short_name = full_name.split('/')[-1] if '/' in full_name else full_name
+                model_map[short_name.lower()] = full_name
+                model_map[full_name.lower()] = full_name
+            
+            # Check if the provided model name exists (case insensitive)
+            if model_name.lower() in model_map:
+                # Set the model
+                actual_model_name = model_map[model_name.lower()]
+                self.client.model = actual_model_name
+                print(f"{Colors.GREEN}Model set to: {self.client.model}{Colors.ENDC}")
+                return False
+            else:
+                print(f"{Colors.WARNING}Model '{model_name}' not found. Available models:{Colors.ENDC}")
+                # Show the model list if the provided name is not found
+                self.client.display_models()
+                return False
+        
+        # No model name provided, show the list as usual
         self.client.select_model()
         return False
     

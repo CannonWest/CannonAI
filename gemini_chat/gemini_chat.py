@@ -1,11 +1,3 @@
-import argparse
-import sys
-import os
-try:
-    from gui.app import app
-    flask_available = True
-except ImportError:
-    flask_available = False
 #!/usr/bin/env python3
 """
 Gemini Chat CLI - Main Entry Point
@@ -63,6 +55,10 @@ def parse_arguments():
                         help='Use asynchronous client implementation')
     parser.add_argument('--dir', '--conversations-dir', dest='conversations_dir',
                        help='Directory to store conversations')
+    parser.add_argument('--ui', action='store_true',
+                       help='Launch with web UI interface (FastAPI)')
+    parser.add_argument('--gui', action='store_true',
+                       help='Launch with GUI interface (Flask + Bootstrap)')
     
     # Configuration options
     config_group = parser.add_argument_group('Configuration')
@@ -98,6 +94,50 @@ def main():
     if args.setup:
         config.setup_wizard()
         sys.exit(0)
+    
+    # Launch GUI if requested (Flask + Bootstrap)
+    if args.gui:
+        display_welcome_message()
+        print(f"{Colors.BLUE}Starting GUI mode (Flask + Bootstrap)...{Colors.ENDC}")
+        try:
+            # Import the GUI module
+            try:
+                from gui.server import start_gui_server
+                start_gui_server(config)
+            except ModuleNotFoundError:
+                print(f"{Colors.FAIL}Error: Required GUI packages not installed{Colors.ENDC}")
+                print(f"{Colors.WARNING}Please install GUI dependencies: pip install flask flask-cors{Colors.ENDC}")
+                sys.exit(1)
+        except ImportError as e:
+            print(f"{Colors.FAIL}Error: {e}{Colors.ENDC}")
+            print(f"{Colors.WARNING}Please install required packages: pip install flask flask-cors{Colors.ENDC}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"{Colors.FAIL}Error starting GUI: {e}{Colors.ENDC}")
+            sys.exit(1)
+        return
+    
+    # Launch web UI if requested (FastAPI)
+    elif args.ui:
+        display_welcome_message()
+        print(f"{Colors.BLUE}Starting Web UI mode...{Colors.ENDC}")
+        try:
+            # Import the UI module
+            try:
+                from ui.server import start_web_ui
+                start_web_ui(config)
+            except ModuleNotFoundError:
+                print(f"{Colors.FAIL}Error: Required UI packages not installed{Colors.ENDC}")
+                print(f"{Colors.WARNING}Please install UI dependencies: pip install -r gemini_chat/ui_requirements.txt{Colors.ENDC}")
+                sys.exit(1)
+        except ImportError as e:
+            print(f"{Colors.FAIL}Error: {e}{Colors.ENDC}")
+            print(f"{Colors.WARNING}Please install required packages: pip install fastapi uvicorn websockets{Colors.ENDC}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"{Colors.FAIL}Error starting Web UI: {e}{Colors.ENDC}")
+            sys.exit(1)
+        return
     
     # Display welcome message
     display_welcome_message()
@@ -166,23 +206,5 @@ async def async_initialize_and_run(client):
     await async_command_loop(client)
 
 
-if __name__ == '__main__':
-    # Create an ArgumentParser object.
-    parser = argparse.ArgumentParser(description='Gemini Chat Client')
-    # Add an argument to the parser that listens for the --ui flag.
-    parser.add_argument('--ui', action='store_true', help='Launch the Flask UI')
-    # Parse the arguments using parser.parse_args().
-    args = parser.parse_args()
-    # Add an if condition to check if the --ui flag was provided.
-    if args.ui:
-        # Inside the if block, run the Flask application.
-        if flask_available:
-            print("Launching Flask UI...")
-            # Using port 5000, host 0.0.0.0 to be accessible
-            app.run(debug=True, host='0.0.0.0', port=5000)
-        else:
-            print("Error: Flask or the 'gui' module not found. Cannot launch UI.")
-            print("Please ensure Flask is installed (pip install Flask) and the 'gui' directory exists.")
-    # Move the existing console-based chat logic into an else block by calling main().
-    else:
-        main()
+if __name__ == "__main__":
+    main()

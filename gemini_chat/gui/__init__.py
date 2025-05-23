@@ -1,6 +1,9 @@
 """
-Gemini Chat GUI - A graphical user interface for interacting with Google's Gemini AI models.
+Gemini Chat GUI Package
 
-This package provides a powerful GUI for having conversations with Google's Gemini models,
-using gemini_chat's asynchronous interactions.
+This package contains the Flask-based web GUI implementation for Gemini Chat.
 """
+
+from .server import start_gui_server
+
+__all__ = ['start_gui_server']
