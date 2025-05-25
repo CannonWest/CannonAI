@@ -91,6 +91,117 @@ class APIHandlers:
             logger.error(f"Failed to get models: {e}", exc_info=True)
             return {'error': str(e)}
     
+    def retry_message(self, message_id: str) -> Dict[str, Any]:
+        """Retry generating a response for a specific message
+        
+        Args:
+            message_id: The ID of the assistant message to retry
+            
+        Returns:
+            Dictionary with new message data or error
+        """
+        print(f"[DEBUG APIHandlers] Retrying message: {message_id}")
+        
+        try:
+            result = self.run_async(self.client.retry_message(message_id))
+            
+            print(f"[DEBUG APIHandlers] Retry successful, new message ID: {result['message']['id']}")
+            print(f"[DEBUG APIHandlers] Siblings: {result['total_siblings']} total")
+            
+            return {
+                'success': True,
+                'message': result['message'],
+                'sibling_index': result['sibling_index'],
+                'total_siblings': result['total_siblings']
+            }
+        except Exception as e:
+            logger.error(f"Failed to retry message: {e}", exc_info=True)
+            return {'error': str(e)}
+    
+    def get_message_info(self, message_id: str) -> Dict[str, Any]:
+        """Get detailed information about a message including siblings
+        
+        Args:
+            message_id: The message ID to get info for
+            
+        Returns:
+            Dictionary with message info or error
+        """
+        print(f"[DEBUG APIHandlers] Getting info for message: {message_id}")
+        
+        try:
+            sibling_info = self.run_async(self.client.get_message_siblings(message_id))
+            
+            # Get the actual message data
+            messages = self.client.conversation_data.get('messages', {})
+            message = messages.get(message_id, {})
+            
+            print(f"[DEBUG APIHandlers] Message has {sibling_info['total']} siblings")
+            
+            return {
+                'success': True,
+                'message': message,
+                'siblings': sibling_info['siblings'],
+                'current_index': sibling_info['current_index'],
+                'total_siblings': sibling_info['total']
+            }
+        except Exception as e:
+            logger.error(f"Failed to get message info: {e}", exc_info=True)
+            return {'error': str(e)}
+    
+    def navigate_sibling(self, message_id: str, direction: str) -> Dict[str, Any]:
+        """Navigate to a sibling message (prev/next)
+        
+        Args:
+            message_id: Current message ID
+            direction: 'prev' or 'next'
+            
+        Returns:
+            Dictionary with new active message or error
+        """
+        print(f"[DEBUG APIHandlers] Navigating {direction} from message: {message_id}")
+        
+        try:
+            result = self.run_async(self.client.switch_to_sibling(message_id, direction))
+            
+            print(f"[DEBUG APIHandlers] Navigated to message: {result['message']['id']}")
+            print(f"[DEBUG APIHandlers] Now at position {result['sibling_index'] + 1} of {result['total_siblings']}")
+            
+            # Get the updated conversation history for the new branch
+            history = self.client.get_conversation_history()
+            
+            return {
+                'success': True,
+                'message': result['message'],
+                'sibling_index': result['sibling_index'],
+                'total_siblings': result['total_siblings'],
+                'history': history
+            }
+        except Exception as e:
+            logger.error(f"Failed to navigate sibling: {e}", exc_info=True)
+            return {'error': str(e)}
+    
+    def get_conversation_tree(self) -> Dict[str, Any]:
+        """Get the full conversation tree structure
+        
+        Returns:
+            Dictionary with tree data or error
+        """
+        print("[DEBUG APIHandlers] Getting conversation tree")
+        
+        try:
+            tree = self.run_async(self.client.get_conversation_tree())
+            
+            print(f"[DEBUG APIHandlers] Tree has {len(tree['nodes'])} nodes and {len(tree['edges'])} edges")
+            
+            return {
+                'success': True,
+                'tree': tree
+            }
+        except Exception as e:
+            logger.error(f"Failed to get conversation tree: {e}", exc_info=True)
+            return {'error': str(e)}
+    
     def get_conversations(self) -> Dict[str, Any]:
         """Get list of saved conversations
         

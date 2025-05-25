@@ -44,12 +44,14 @@ class AsyncGeminiClient(BaseGeminiClient):
 
         # Async-specific initialization
         self.conversation_id: Optional[str] = None
-        self.conversation_history: List[Dict[str, Any]] = []
+        self.conversation_data: Dict[str, Any] = {}  # New structure replaces conversation_history
         self.params: Dict[str, Any] = self.default_params.copy()
         self.use_streaming: bool = False  # Default to non-streaming
         self.conversation_name: str = "New Conversation"  # Default conversation name
         self.current_user_message: Optional[str] = None  # Store the current user message for streaming
+        self.current_user_message_id: Optional[str] = None  # Store the ID of current user message
         self.is_web_ui: bool = False  # Flag for web UI mode
+        self.active_branch: str = "main"  # Track active branch
 
         # The base directory is already set by the parent constructor
         self.conversations_dir = self.base_directory
@@ -84,6 +86,55 @@ class AsyncGeminiClient(BaseGeminiClient):
             A UUID string
         """
         return str(uuid.uuid4())
+    
+    def _add_message_to_conversation(self, message: Dict[str, Any]) -> None:
+        """Add a message to the conversation structure and update relationships.
+        
+        Args:
+            message: The message dictionary to add
+        """
+        msg_id = message["id"]
+        parent_id = message.get("parent_id")
+        branch_id = message.get("branch_id", "main")
+        
+        print(f"{Colors.CYAN}Adding message {msg_id[:8]}... to branch '{branch_id}'{Colors.ENDC}")
+        
+        # Add message to messages dict
+        self.conversation_data["messages"][msg_id] = message
+        
+        # Update parent's children list if parent exists
+        if parent_id and parent_id in self.conversation_data["messages"]:
+            parent = self.conversation_data["messages"][parent_id]
+            if msg_id not in parent.get("children", []):
+                parent.setdefault("children", []).append(msg_id)
+                print(f"{Colors.CYAN}Updated parent {parent_id[:8]}... children list{Colors.ENDC}")
+        
+        # Update branch information
+        if branch_id in self.conversation_data.get("branches", {}):
+            branch = self.conversation_data["branches"][branch_id]
+            branch["last_message"] = msg_id
+            branch["message_count"] = branch.get("message_count", 0) + 1
+            print(f"{Colors.CYAN}Updated branch '{branch_id}' - last_message: {msg_id[:8]}...{Colors.ENDC}")
+        
+        # Update active leaf in metadata
+        if branch_id == self.conversation_data["metadata"].get("active_branch", "main"):
+            self.conversation_data["metadata"]["active_leaf"] = msg_id
+            print(f"{Colors.CYAN}Updated active leaf to {msg_id[:8]}...{Colors.ENDC}")
+    
+    def _get_last_message_id(self, branch_id: Optional[str] = None) -> Optional[str]:
+        """Get the ID of the last message in a branch.
+        
+        Args:
+            branch_id: The branch to check (defaults to active branch)
+            
+        Returns:
+            The ID of the last message or None
+        """
+        if branch_id is None:
+            branch_id = self.conversation_data["metadata"].get("active_branch", "main")
+        
+        branch = self.conversation_data.get("branches", {}).get(branch_id, {})
+        return branch.get("last_message")
 
     async def start_new_conversation(self, title: Optional[str] = None, is_web_ui: bool = False) -> None:
         """Start a new conversation asynchronously.
@@ -92,9 +143,9 @@ class AsyncGeminiClient(BaseGeminiClient):
             title: Optional title for the conversation. If None, will prompt or generate.
             is_web_ui: Whether this is being called from the web UI.
         """
+        print(f"{Colors.CYAN}Starting new conversation...{Colors.ENDC}")
         self.conversation_id = self.generate_conversation_id()
-        self.conversation_history = []
-
+        
         # Get title for the conversation
         if title is None and not is_web_ui:
             # Only prompt for input in CLI mode
@@ -107,16 +158,275 @@ class AsyncGeminiClient(BaseGeminiClient):
         # Update the conversation name property
         self.conversation_name = title
 
-        # Create initial metadata
-        metadata = self.create_metadata_structure(title, self.model, self.params)
-
-        # Add to conversation history
-        self.conversation_history.append(metadata)
-
+        # Create initial conversation structure using new format
+        self.conversation_data = self.create_metadata_structure(title, self.conversation_id)
+        self.active_branch = "main"
+        
         print(f"{Colors.GREEN}Started new conversation: {title}{Colors.ENDC}")
+        print(f"{Colors.CYAN}Conversation ID: {self.conversation_id[:8]}...{Colors.ENDC}")
+        print(f"{Colors.CYAN}Active branch: {self.active_branch}{Colors.ENDC}")
 
         # Initial save of the new conversation
         await self.save_conversation()
+
+    async def retry_message(self, message_id: str) -> Dict[str, Any]:
+        """Retry generating a response for a specific message.
+        
+        Args:
+            message_id: The ID of the assistant message to retry
+            
+        Returns:
+            Dict with new message data
+        """
+        print(f"[DEBUG] Retrying message: {message_id}")
+        
+        if not self.conversation_data:
+            raise ValueError("No active conversation")
+            
+        messages = self.conversation_data.get("messages", {})
+        target_message = messages.get(message_id)
+        
+        if not target_message:
+            raise ValueError(f"Message {message_id} not found")
+            
+        if target_message["type"] != "assistant":
+            raise ValueError("Can only retry assistant messages")
+            
+        # Get parent message (user's prompt)
+        parent_id = target_message["parent_id"]
+        parent_message = messages.get(parent_id)
+        
+        if not parent_message:
+            raise ValueError("Parent message not found")
+            
+        print(f"[DEBUG] Found parent message: {parent_id}")
+        print(f"[DEBUG] Parent content: {parent_message['content'][:50]}...")
+        
+        # Create new branch ID for this retry
+        import uuid
+        new_branch_id = f"branch-{uuid.uuid4().hex[:8]}"
+        
+        # Build conversation history up to parent message
+        branch_id = parent_message.get("branch_id", "main")
+        message_chain = self._build_message_chain(self.conversation_data, branch_id)
+        
+        # Find index of parent in chain and slice up to it
+        parent_index = message_chain.index(parent_id) if parent_id in message_chain else -1
+        if parent_index >= 0:
+            message_chain = message_chain[:parent_index + 1]
+        
+        # Build chat history for API
+        chat_history = []
+        for msg_id in message_chain:
+            msg = messages[msg_id]
+            api_role = "user" if msg["type"] == "user" else "model"
+            chat_history.append(types.Content(
+                role=api_role,
+                parts=[types.Part.from_text(text=msg["content"])]
+            ))
+        
+        print(f"[DEBUG] Built history with {len(chat_history)} messages")
+        
+        # Generate new response
+        try:
+            response = await self.client.models.generate_content_async(
+                model=self.model,
+                contents=chat_history,
+                config=types.GenerateContentConfig(**self.params)
+            )
+            
+            response_text = response.text
+            token_usage = self.extract_token_usage(response)
+            
+            print(f"[DEBUG] Got new response: {response_text[:50]}...")
+            
+            # Create new message
+            new_message = self.create_message_structure(
+                role="assistant",
+                text=response_text,
+                model=self.model,
+                params=self.params,
+                token_usage=token_usage,
+                parent_id=parent_id,
+                branch_id=new_branch_id
+            )
+            
+            # Update parent's children list
+            if parent_id not in messages[parent_id]["children"]:
+                messages[parent_id]["children"].append(new_message["id"])
+            
+            # Add to messages
+            messages[new_message["id"]] = new_message
+            
+            # Update branch info
+            if new_branch_id not in self.conversation_data["branches"]:
+                self.conversation_data["branches"][new_branch_id] = {
+                    "created_at": datetime.now().isoformat(),
+                    "last_message": new_message["id"],
+                    "message_count": 1
+                }
+            
+            # Update sibling information
+            siblings = messages[parent_id]["children"]
+            for idx, sibling_id in enumerate(siblings):
+                sibling = messages.get(sibling_id)
+                if sibling:
+                    sibling["sibling_index"] = idx
+                    sibling["total_siblings"] = len(siblings)
+            
+            # Update metadata
+            self.conversation_data["metadata"]["updated_at"] = datetime.now().isoformat()
+            self.conversation_data["metadata"]["active_branch"] = new_branch_id
+            self.conversation_data["metadata"]["active_leaf"] = new_message["id"]
+            
+            print(f"[DEBUG] Created new message {new_message['id']} on branch {new_branch_id}")
+            print(f"[DEBUG] Parent now has {len(siblings)} children")
+            
+            return {
+                "message": new_message,
+                "siblings": siblings,
+                "sibling_index": len(siblings) - 1,
+                "total_siblings": len(siblings)
+            }
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to retry message: {e}")
+            raise
+    
+    async def get_message_siblings(self, message_id: str) -> Dict[str, Any]:
+        """Get sibling messages (alternative responses to same prompt).
+        
+        Args:
+            message_id: The message ID to find siblings for
+            
+        Returns:
+            Dict with sibling information
+        """
+        print(f"[DEBUG] Getting siblings for message: {message_id}")
+        
+        if not self.conversation_data:
+            raise ValueError("No active conversation")
+            
+        messages = self.conversation_data.get("messages", {})
+        target_message = messages.get(message_id)
+        
+        if not target_message:
+            raise ValueError(f"Message {message_id} not found")
+            
+        parent_id = target_message.get("parent_id")
+        if not parent_id:
+            # Root message has no siblings
+            return {
+                "siblings": [message_id],
+                "current_index": 0,
+                "total": 1
+            }
+            
+        parent = messages.get(parent_id)
+        if not parent:
+            raise ValueError("Parent message not found")
+            
+        siblings = parent.get("children", [])
+        current_index = siblings.index(message_id) if message_id in siblings else -1
+        
+        print(f"[DEBUG] Found {len(siblings)} siblings, current at index {current_index}")
+        
+        return {
+            "siblings": siblings,
+            "current_index": current_index,
+            "total": len(siblings),
+            "parent_id": parent_id
+        }
+    
+    async def switch_to_sibling(self, message_id: str, direction: str) -> Dict[str, Any]:
+        """Switch to a sibling message (prev/next alternative response).
+        
+        Args:
+            message_id: Current message ID
+            direction: 'prev' or 'next'
+            
+        Returns:
+            Dict with new active message info
+        """
+        print(f"[DEBUG] Switching {direction} from message: {message_id}")
+        
+        sibling_info = await self.get_message_siblings(message_id)
+        siblings = sibling_info["siblings"]
+        current_index = sibling_info["current_index"]
+        
+        if current_index < 0:
+            raise ValueError("Current message not found in siblings")
+            
+        # Calculate new index
+        if direction == "prev":
+            new_index = current_index - 1
+            if new_index < 0:
+                new_index = len(siblings) - 1  # Wrap around
+        else:  # next
+            new_index = current_index + 1
+            if new_index >= len(siblings):
+                new_index = 0  # Wrap around
+                
+        new_message_id = siblings[new_index]
+        new_message = self.conversation_data["messages"].get(new_message_id)
+        
+        if not new_message:
+            raise ValueError("New message not found")
+            
+        # Update active branch and leaf
+        self.conversation_data["metadata"]["active_branch"] = new_message.get("branch_id", "main")
+        self.conversation_data["metadata"]["active_leaf"] = new_message_id
+        
+        print(f"[DEBUG] Switched to message {new_message_id} (index {new_index} of {len(siblings)})")
+        
+        return {
+            "message": new_message,
+            "sibling_index": new_index,
+            "total_siblings": len(siblings)
+        }
+    
+    async def get_conversation_tree(self) -> Dict[str, Any]:
+        """Get the full conversation tree structure.
+        
+        Returns:
+            Dict representing the conversation tree
+        """
+        print("[DEBUG] Building conversation tree")
+        
+        if not self.conversation_data:
+            return {"nodes": [], "edges": []}
+            
+        messages = self.conversation_data.get("messages", {})
+        nodes = []
+        edges = []
+        
+        for msg_id, msg in messages.items():
+            # Create node
+            node = {
+                "id": msg_id,
+                "type": msg["type"],
+                "content_preview": msg["content"][:50] + "..." if len(msg["content"]) > 50 else msg["content"],
+                "timestamp": msg["timestamp"],
+                "branch_id": msg.get("branch_id", "main"),
+                "model": msg.get("model"),
+                "is_active": msg_id == self.conversation_data["metadata"].get("active_leaf")
+            }
+            nodes.append(node)
+            
+            # Create edges to children
+            for child_id in msg.get("children", []):
+                edges.append({
+                    "from": msg_id,
+                    "to": child_id
+                })
+                
+        print(f"[DEBUG] Built tree with {len(nodes)} nodes and {len(edges)} edges")
+        
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "metadata": self.conversation_data["metadata"]
+        }
 
     async def save_conversation(self, quiet: bool = False) -> None:
         """Save the current conversation to a JSON file asynchronously.
@@ -124,45 +434,44 @@ class AsyncGeminiClient(BaseGeminiClient):
         Args:
             quiet: If True, don't print success messages (for auto-save)
         """
-        if not self.conversation_id or not self.conversation_history:
+        if not self.conversation_id or not self.conversation_data:
             if not quiet:
                 print(f"{Colors.WARNING}No active conversation to save.{Colors.ENDC}")
             return
 
         # Get conversation title from metadata
-        title = "Untitled"
-        for item in self.conversation_history:
-            if item["type"] == "metadata" and "title" in item["content"]:
-                title = item["content"]["title"]
-                break
-
+        title = self.conversation_data.get("metadata", {}).get("title", "Untitled")
+        
         # Create filename with sanitized title
         filename = self.format_filename(title, self.conversation_id)
         filepath = self.conversations_dir / filename
 
-        # Update metadata
-        for item in self.conversation_history:
-            if item["type"] == "metadata":
-                item["content"]["updated_at"] = datetime.now().isoformat()
-                item["content"]["model"] = self.model
-                item["content"]["params"] = self.params.copy()
-                item["content"]["message_count"] = sum(1 for i in self.conversation_history if i["type"] == "message")
-                break
+        # Update metadata timestamps and counts
+        if "metadata" in self.conversation_data:
+            self.conversation_data["metadata"]["updated_at"] = datetime.now().isoformat()
+            # Count total messages across all branches
+            total_messages = len(self.conversation_data.get("messages", {}))
+            # Update branch message counts
+            for branch_id, branch_info in self.conversation_data.get("branches", {}).items():
+                branch_messages = sum(1 for msg in self.conversation_data.get("messages", {}).values() 
+                                    if msg.get("branch_id") == branch_id)
+                branch_info["message_count"] = branch_messages
+        
+        if not quiet:
+            print(f"{Colors.CYAN}Saving conversation structure v{self.VERSION}...{Colors.ENDC}")
 
         # Save to file using non-blocking io
         try:
             def save_json():
                 with open(filepath, 'w', encoding='utf-8') as f:
-                    json.dump({
-                        "conversation_id": self.conversation_id,
-                        "history": self.conversation_history
-                    }, f, indent=2, ensure_ascii=False)
+                    json.dump(self.conversation_data, f, indent=2, ensure_ascii=False)
 
             # Use to_thread to make file I/O non-blocking
             await asyncio.to_thread(save_json)
 
             if not quiet:
                 print(f"{Colors.GREEN}Conversation saved to: {filepath}{Colors.ENDC}")
+                print(f"{Colors.CYAN}Total messages: {total_messages}{Colors.ENDC}")
         except Exception as e:
             print(f"{Colors.FAIL}Error saving conversation: {e}{Colors.ENDC}")
 
@@ -183,13 +492,28 @@ class AsyncGeminiClient(BaseGeminiClient):
             return None
 
         try:
+            print(f"\n{Colors.CYAN}=== Processing Message ==={Colors.ENDC}")
+            print(f"{Colors.CYAN}Active branch: {self.active_branch}{Colors.ENDC}")
+            
             response_text = ""
             token_usage = {}
 
-            # Add user message to history with enhanced metadata
-            # This is for the CLI path; UI path uses add_user_message separately.
-            user_message_struct = self.create_message_structure("user", message, self.model, self.params)
-            self.conversation_history.append(user_message_struct)
+            # Get the parent ID (last message in the active branch)
+            parent_id = self._get_last_message_id(self.active_branch)
+            print(f"{Colors.CYAN}Parent message: {parent_id[:8] if parent_id else 'None (first message)'}...{Colors.ENDC}")
+            
+            # Create and add user message to the conversation structure
+            user_message = self.create_message_structure(
+                role="user", 
+                text=message, 
+                model=self.model,  # Model not stored for user messages in new structure
+                params=self.params,  # Params not stored for user messages
+                parent_id=parent_id,
+                branch_id=self.active_branch
+            )
+            self._add_message_to_conversation(user_message)
+            user_message_id = user_message["id"]
+            print(f"{Colors.BLUE}User message ID: {user_message_id[:8]}...{Colors.ENDC}")
 
             # Configure generation parameters
             config = types.GenerateContentConfig(
@@ -199,8 +523,9 @@ class AsyncGeminiClient(BaseGeminiClient):
                 top_k=self.params["top_k"]
             )
 
-            # Build chat history for the API (now includes the latest user message)
-            chat_history = self.build_chat_history(self.conversation_history)
+            # Build chat history from the tree structure
+            chat_history = self.build_chat_history(self.conversation_data, self.active_branch)
+            print(f"{Colors.CYAN}Chat history length: {len(chat_history)} messages{Colors.ENDC}")
 
             if self.use_streaming:
                 print(f"\r{Colors.CYAN}AI is thinking... (streaming mode){Colors.ENDC}", end="", flush=True)
@@ -232,19 +557,18 @@ class AsyncGeminiClient(BaseGeminiClient):
                 print(f"\n{Colors.GREEN}AI: {Colors.ENDC}{response_text}")
                 token_usage = self.extract_token_usage(api_response)
 
-            # Add AI response to history
-            # Ensure response_text used for history is not None (already handled for non-streaming)
-            # For streaming, response_text is initialized to ""
-            ai_message_struct = self.create_message_structure("ai", response_text, self.model, self.params, token_usage)
-            self.conversation_history.append(ai_message_struct)
-
-            # Update metadata
-            for item in self.conversation_history:
-                if item["type"] == "metadata":
-                    item["content"]["updated_at"] = datetime.now().isoformat()
-                    item["content"]["model"] = self.model
-                    item["content"]["params"] = self.params.copy()
-                    break
+            # Create and add AI response to the conversation structure
+            ai_message = self.create_message_structure(
+                role="assistant",  # Using "assistant" instead of "ai" for new structure
+                text=response_text, 
+                model=self.model,  # Model IS stored for assistant messages
+                params=self.params,  # Params ARE stored for assistant messages
+                token_usage=token_usage,
+                parent_id=user_message_id,  # AI response is child of user message
+                branch_id=self.active_branch
+            )
+            self._add_message_to_conversation(ai_message)
+            print(f"{Colors.GREEN}AI message ID: {ai_message['id'][:8]}...{Colors.ENDC}")
 
             print(f"{Colors.CYAN}Auto-saving conversation...{Colors.ENDC}")
             await self.save_conversation(quiet=True)
@@ -253,8 +577,15 @@ class AsyncGeminiClient(BaseGeminiClient):
         except Exception as e:
             print(f"{Colors.FAIL}Error generating response: {e}{Colors.ENDC}")
             # Add a placeholder AI message in history to mark the error
-            error_ai_message = self.create_message_structure("ai", f"Error: {e}", self.model, self.params)
-            self.conversation_history.append(error_ai_message)
+            error_message = self.create_message_structure(
+                role="assistant", 
+                text=f"Error: {e}", 
+                model=self.model, 
+                params=self.params,
+                parent_id=user_message_id if 'user_message_id' in locals() else self._get_last_message_id(),
+                branch_id=self.active_branch
+            )
+            self._add_message_to_conversation(error_message)
             await self.save_conversation(quiet=True)
             return None
 

@@ -15,6 +15,12 @@ class GeminiChatApp {
         // Bootstrap modal instances
         this.modals = {};
         
+        // Branch management
+        this.messageTree = {}; // Full tree structure
+        this.messageElements = {}; // DOM element references
+        this.activePath = []; // Current active path of message IDs
+        this.activeLeaf = null; // Current leaf message ID
+        
         // Initialize on DOM ready
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => this.init());
@@ -325,7 +331,127 @@ class GeminiChatApp {
         });
     }
     
-    addMessage(role, content, messageId = null) {
+    async retryMessage(messageId) {
+        console.log(`[DEBUG] Retrying message: ${messageId}`);
+        
+        try {
+            const response = await fetch(`${this.apiBase}/api/retry/${messageId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            
+            const data = await response.json();
+            console.log(`[DEBUG] Retry response:`, data);
+            
+            if (data.error) {
+                this.showAlert(data.error, 'danger');
+                return;
+            }
+            
+            // Add the new message to the chat
+            const newMessage = data.message;
+            this.addMessage(
+                'assistant', 
+                newMessage.content, 
+                newMessage.id,
+                {
+                    model: newMessage.model,
+                    siblingIndex: data.sibling_index,
+                    totalSiblings: data.total_siblings
+                }
+            );
+            
+            // Update the sibling indicators for all siblings
+            await this.updateSiblingIndicators(newMessage.parent_id);
+            
+            this.showAlert('Generated new response', 'success');
+        } catch (error) {
+            console.error("[ERROR] Failed to retry message:", error);
+            this.showAlert('Failed to retry message', 'danger');
+        }
+    }
+    
+    async navigateSibling(messageId, direction) {
+        console.log(`[DEBUG] Navigating ${direction} from message: ${messageId}`);
+        
+        try {
+            const response = await fetch(`${this.apiBase}/api/navigate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message_id: messageId, direction })
+            });
+            
+            const data = await response.json();
+            console.log(`[DEBUG] Navigation response:`, data);
+            
+            if (data.error) {
+                this.showAlert(data.error, 'danger');
+                return;
+            }
+            
+            // Clear and rebuild the chat with the new branch
+            this.clearChat();
+            
+            // Display the updated conversation history
+            if (data.history && data.history.length > 0) {
+                data.history.forEach(msg => {
+                    this.addMessage(
+                        msg.role === 'user' ? 'user' : 'assistant', 
+                        msg.content,
+                        msg.id,
+                        {
+                            model: msg.model,
+                            siblingIndex: msg.sibling_index,
+                            totalSiblings: msg.total_siblings
+                        }
+                    );
+                });
+            }
+            
+            // Update active leaf
+            this.activeLeaf = data.message.id;
+            
+            this.showAlert(`Switched to response ${data.sibling_index + 1} of ${data.total_siblings}`, 'info');
+        } catch (error) {
+            console.error("[ERROR] Failed to navigate sibling:", error);
+            this.showAlert('Failed to navigate to sibling', 'danger');
+        }
+    }
+    
+    async updateSiblingIndicators(parentId) {
+        console.log(`[DEBUG] Updating sibling indicators for parent: ${parentId}`);
+        
+        // Get all messages with this parent
+        const siblings = Object.values(this.messageTree).filter(msg => msg.parent_id === parentId);
+        console.log(`[DEBUG] Found ${siblings.length} siblings`);
+        
+        siblings.forEach((sibling, index) => {
+            const element = document.getElementById(sibling.id);
+            if (element) {
+                const indicator = element.querySelector('.branch-indicator');
+                if (indicator) {
+                    indicator.textContent = `${index + 1} of ${siblings.length}`;
+                }
+                
+                // Update navigation buttons
+                const prevBtn = element.querySelector('.btn-prev-sibling');
+                const nextBtn = element.querySelector('.btn-next-sibling');
+                
+                if (prevBtn && nextBtn) {
+                    // Show/hide based on siblings
+                    if (siblings.length > 1) {
+                        prevBtn.style.display = 'inline-block';
+                        nextBtn.style.display = 'inline-block';
+                    } else {
+                        prevBtn.style.display = 'none';
+                        nextBtn.style.display = 'none';
+                    }
+                }
+            }
+        });
+    }
+    
+    addMessage(role, content, messageId = null, metadata = {}) {
         const chatMessages = document.getElementById('chatMessages');
         
         // Remove empty state message if it exists
@@ -338,6 +464,13 @@ class GeminiChatApp {
         messageDiv.className = `message message-${role} mb-3`;
         if (messageId) {
             messageDiv.id = messageId;
+            // Store message data in our tree
+            this.messageTree[messageId] = {
+                id: messageId,
+                role: role,
+                content: content,
+                ...metadata
+            };
         }
         
         let icon, roleLabel, bgClass;
@@ -359,6 +492,34 @@ class GeminiChatApp {
                 break;
         }
         
+        // Build header with metadata for assistant messages
+        let headerContent = `<strong>${roleLabel}</strong>`;
+        if (role === 'assistant' && metadata.model) {
+            headerContent += ` <span class="badge bg-secondary">${metadata.model}</span>`;
+        }
+        if (role === 'assistant' && metadata.totalSiblings > 1) {
+            headerContent += ` <span class="branch-indicator badge bg-info">${metadata.siblingIndex + 1} of ${metadata.totalSiblings}</span>`;
+        }
+        headerContent += ` <span class="text-muted ms-2">${new Date().toLocaleTimeString()}</span>`;
+        
+        // Build message actions for assistant messages
+        let messageActions = '';
+        if (role === 'assistant' && messageId) {
+            messageActions = `
+                <div class="message-actions mt-2">
+                    <button class="btn btn-sm btn-outline-secondary btn-retry" onclick="app.retryMessage('${messageId}')" title="Retry this response">
+                        <i class="bi bi-arrow-clockwise"></i> Retry
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary btn-prev-sibling" onclick="app.navigateSibling('${messageId}', 'prev')" title="Previous response" style="display: none;">
+                        <i class="bi bi-chevron-left"></i>
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary btn-next-sibling" onclick="app.navigateSibling('${messageId}', 'next')" title="Next response" style="display: none;">
+                        <i class="bi bi-chevron-right"></i>
+                    </button>
+                </div>
+            `;
+        }
+        
         messageDiv.innerHTML = `
             <div class="d-flex align-items-start">
                 <div class="message-icon me-3">
@@ -366,18 +527,28 @@ class GeminiChatApp {
                 </div>
                 <div class="message-body flex-grow-1">
                     <div class="message-header mb-1">
-                        <strong>${roleLabel}</strong>
-                        <span class="text-muted ms-2">${new Date().toLocaleTimeString()}</span>
+                        ${headerContent}
                     </div>
                     <div class="message-content ${bgClass} p-3 rounded">
                         ${this.formatMessage(content)}
                     </div>
+                    ${messageActions}
                 </div>
             </div>
         `;
         
         chatMessages.appendChild(messageDiv);
         this.scrollToBottom();
+        
+        // Update sibling navigation buttons if needed
+        if (role === 'assistant' && metadata.totalSiblings > 1) {
+            const prevBtn = messageDiv.querySelector('.btn-prev-sibling');
+            const nextBtn = messageDiv.querySelector('.btn-next-sibling');
+            if (prevBtn && nextBtn) {
+                prevBtn.style.display = 'inline-block';
+                nextBtn.style.display = 'inline-block';
+            }
+        }
     }
     
     formatMessage(content) {

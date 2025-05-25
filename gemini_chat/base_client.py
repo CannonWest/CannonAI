@@ -53,7 +53,7 @@ class BaseGeminiClient:
     """Base class for Gemini Chat clients (both sync and async)."""
     
     DEFAULT_MODEL = "gemini-2.0-flash"
-    VERSION = "1.0.0"
+    VERSION = "2.0.0"  # Updated for new conversation structure
     
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None, 
                  conversations_dir: Optional[Path] = None):
@@ -125,81 +125,143 @@ class BaseGeminiClient:
         return f"{safe_title}_{conversation_id[:8]}.json"
 
     def create_message_structure(self, role: str, text: str, model: str, 
-                                params: Dict[str, Any], token_usage: Dict[str, Any] = None) -> Dict[str, Any]:
+                                params: Dict[str, Any], token_usage: Dict[str, Any] = None,
+                                message_id: Optional[str] = None, parent_id: Optional[str] = None,
+                                branch_id: str = "main") -> Dict[str, Any]:
         """Create a standard message structure for conversation history.
         
         Args:
-            role: The role of the message ("user" or "ai")
+            role: The role of the message ("user" or "assistant")
             text: The message text content
-            model: The model used
-            params: Generation parameters
+            model: The model used (only stored for assistant messages)
+            params: Generation parameters (only stored for assistant messages)
             token_usage: Optional token usage metrics
+            message_id: Unique identifier for this message
+            parent_id: ID of the parent message
+            branch_id: ID of the branch this message belongs to
             
         Returns:
             Message structure dictionary
         """
+        import uuid
+        
+        if message_id is None:
+            message_id = str(uuid.uuid4())
+            
         message = {
-            "type": "message",
-            "content": {
-                "role": role,
-                "text": text,
-                "timestamp": datetime.now().isoformat(),
-                "model": model,
-                "params": params.copy(),
-            }
+            "id": message_id,
+            "parent_id": parent_id,
+            "branch_id": branch_id,
+            "type": role,  # "user" or "assistant"
+            "content": text,
+            "timestamp": datetime.now().isoformat(),
+            "children": []  # Will be populated as new messages are added
         }
         
-        if token_usage:
-            message["content"]["token_usage"] = token_usage
+        # Only store model/params for assistant messages
+        if role == "assistant" or role == "ai":
+            message["model"] = model
+            message["params"] = params.copy()
+            if token_usage:
+                message["token_usage"] = token_usage
             
         return message
         
-    def create_metadata_structure(self, title: str, model: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    def create_metadata_structure(self, title: str, conversation_id: str) -> Dict[str, Any]:
         """Create metadata structure for conversation.
         
         Args:
             title: Conversation title
-            model: Model used
-            params: Generation parameters
+            conversation_id: Unique conversation identifier
             
         Returns:
             Metadata structure dictionary
         """
         return {
-            "type": "metadata",
-            "content": {
+            "conversation_id": conversation_id,
+            "version": self.VERSION,
+            "metadata": {
                 "title": title,
-                "model": model,
-                "params": params.copy(),
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
-                "message_count": 0,
-                "version": self.VERSION,
                 "app_info": "Gemini Chat CLI",
-                "platform": platform.system()
+                "platform": platform.system(),
+                "active_branch": "main",
+                "active_leaf": None  # Will be updated as messages are added
+            },
+            "messages": {},  # Message ID -> Message dict
+            "branches": {
+                "main": {
+                    "created_at": datetime.now().isoformat(),
+                    "last_message": None,
+                    "message_count": 0
+                }
             }
         }
 
-    def build_chat_history(self, conversation_history: List[Dict[str, Any]]) -> List[types.Content]:
-        """Build API-compatible chat history from conversation history.
+    def build_chat_history(self, conversation_data: Dict[str, Any], branch_id: str = None) -> List[types.Content]:
+        """Build API-compatible chat history from conversation structure.
         
         Args:
-            conversation_history: List of conversation history entries
+            conversation_data: The full conversation data structure
+            branch_id: Optional branch to follow (defaults to active_branch)
             
         Returns:
             List of Content objects for the API
         """
+        if branch_id is None:
+            branch_id = conversation_data.get("metadata", {}).get("active_branch", "main")
+            
+        # Build the message chain for the specified branch
+        message_chain = self._build_message_chain(conversation_data, branch_id)
+        
+        # Convert to API-compatible format
         chat_history = []
-        for item in conversation_history:
-            if item["type"] == "message":
-                role = item["content"]["role"]
-                text = item["content"]["text"]
-                
-                # Convert to API role format
-                api_role = "user" if role == "user" else "model"
-                chat_history.append(types.Content(role=api_role, parts=[types.Part.from_text(text=text)]))
+        for msg_id in message_chain:
+            msg = conversation_data["messages"][msg_id]
+            if msg["type"] in ["user", "assistant", "ai"]:
+                # Convert role to API format
+                api_role = "user" if msg["type"] == "user" else "model"
+                chat_history.append(types.Content(
+                    role=api_role, 
+                    parts=[types.Part.from_text(text=msg["content"])]
+                ))
         
         return chat_history
+    
+    def _build_message_chain(self, conversation_data: Dict[str, Any], branch_id: str) -> List[str]:
+        """Build ordered list of message IDs for a specific branch.
+        
+        Args:
+            conversation_data: The full conversation data
+            branch_id: The branch to follow
+            
+        Returns:
+            Ordered list of message IDs from root to leaf
+        """
+        messages = conversation_data.get("messages", {})
+        if not messages:
+            return []
+            
+        # Find the leaf node for this branch
+        branch_info = conversation_data.get("branches", {}).get(branch_id, {})
+        leaf_id = branch_info.get("last_message")
+        
+        if not leaf_id or leaf_id not in messages:
+            return []
+            
+        # Build chain from leaf to root
+        chain = []
+        current_id = leaf_id
+        
+        while current_id:
+            chain.append(current_id)
+            current_msg = messages.get(current_id, {})
+            current_id = current_msg.get("parent_id")
+            
+        # Reverse to get root-to-leaf order
+        chain.reverse()
+        return chain
         
     def extract_token_usage(self, response) -> Dict[str, Any]:
         """Extract token usage metadata from response if available.

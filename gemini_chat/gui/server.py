@@ -340,6 +340,68 @@ def execute_command():
     return jsonify(result)
 
 
+@app.route('/api/retry/<message_id>', methods=['POST'])
+def retry_message(message_id: str):
+    """Retry generating a response for a specific message"""
+    print(f"[DEBUG Flask] Retry request for message: {message_id}")
+    
+    if not api_handlers:
+        return jsonify({'error': 'API handlers not initialized'}), 500
+    
+    result = api_handlers.retry_message(message_id)
+    if 'error' in result:
+        return jsonify(result), 500
+    return jsonify(result)
+
+
+@app.route('/api/message/<message_id>', methods=['GET'])
+def get_message_info(message_id: str):
+    """Get detailed information about a message including siblings"""
+    print(f"[DEBUG Flask] Getting info for message: {message_id}")
+    
+    if not api_handlers:
+        return jsonify({'error': 'API handlers not initialized'}), 500
+    
+    result = api_handlers.get_message_info(message_id)
+    if 'error' in result:
+        return jsonify(result), 500
+    return jsonify(result)
+
+
+@app.route('/api/navigate', methods=['POST'])
+def navigate_sibling():
+    """Navigate to a sibling message"""
+    if not api_handlers:
+        return jsonify({'error': 'API handlers not initialized'}), 500
+    
+    data = request.get_json()
+    message_id = data.get('message_id')
+    direction = data.get('direction', 'next')
+    
+    if not message_id:
+        return jsonify({'error': 'No message ID provided'}), 400
+    
+    print(f"[DEBUG Flask] Navigate {direction} from message: {message_id}")
+    result = api_handlers.navigate_sibling(message_id, direction)
+    if 'error' in result:
+        return jsonify(result), 500
+    return jsonify(result)
+
+
+@app.route('/api/tree', methods=['GET'])
+def get_conversation_tree():
+    """Get the full conversation tree structure"""
+    print("[DEBUG Flask] Getting conversation tree")
+    
+    if not api_handlers:
+        return jsonify({'error': 'API handlers not initialized'}), 500
+    
+    result = api_handlers.get_conversation_tree()
+    if 'error' in result:
+        return jsonify(result), 500
+    return jsonify(result)
+
+
 def start_gui_server(config: Config, host: str = "127.0.0.1", port: int = 8080):
     """Start the Flask GUI server"""
     print("\n" + "=" * 60)
