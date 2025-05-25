@@ -654,7 +654,7 @@ class AsyncGeminiClient(BaseGeminiClient):
         try:
             print(f"\r{Colors.CYAN}AI is thinking (non-streaming UI)...{Colors.ENDC}", end="", flush=True)
             api_response = await self.client.aio.models.generate_content(
-                model=self.model, contents=chat_history, generation_config=config) # Use generation_config
+                model=self.model, contents=chat_history, config=config) # Use config parameter
             print("\r" + " " * 50 + "\r", end="", flush=True)
 
             response_text = api_response.text
@@ -694,7 +694,7 @@ class AsyncGeminiClient(BaseGeminiClient):
         try:
             print(f"\r{Colors.CYAN}AI is thinking (streaming UI)...{Colors.ENDC}", end="", flush=True)
             stream_generator = await self.client.aio.models.generate_content_stream(
-                model=self.model, contents=chat_history, generation_config=config) # Use generation_config
+                model=self.model, contents=chat_history, config=config) # Use config parameter
             print("\r" + " " * 50 + "\r", end="", flush=True)
 
             async for chunk in stream_generator:
