@@ -1250,7 +1250,8 @@ class AsyncGeminiClient(BaseGeminiClient):
                         'content': msg.get("content", ""),
                         'id': msg_id,
                         'model': msg.get("model"),
-                        'timestamp': msg.get("timestamp")
+                        'timestamp': msg.get("timestamp"),
+                        'parent_id': msg.get("parent_id")
                     })
         
         # Fallback to old format

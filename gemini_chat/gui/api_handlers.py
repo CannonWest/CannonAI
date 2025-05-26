@@ -131,6 +131,9 @@ class APIHandlers:
         try:
             result = self.run_async(self.client.retry_message(message_id))
             
+            # Ensure conversation is saved after retry
+            self.run_async(self.client.save_conversation(quiet=True))
+            
             print(f"[DEBUG APIHandlers] Retry successful, new message ID: {result['message']['id']}")
             print(f"[DEBUG APIHandlers] Siblings: {result['total_siblings']} total")
             
@@ -195,6 +198,16 @@ class APIHandlers:
             
             # Get the updated conversation history for the new branch
             history = self.client.get_conversation_history()
+            
+            # Add parent_id info to each message in history
+            messages = self.client.conversation_data.get("messages", {})
+            for hist_msg in history:
+                msg_id = hist_msg.get('id')
+                if msg_id and msg_id in messages:
+                    hist_msg['parent_id'] = messages[msg_id].get('parent_id')
+            
+            # Ensure conversation is saved after navigation
+            self.run_async(self.client.save_conversation(quiet=True))
             
             return {
                 'success': True,
@@ -308,6 +321,13 @@ class APIHandlers:
             # Get the conversation history
             history = self.client.get_conversation_history()
             
+            # Ensure parent_id is included in history items
+            messages = self.client.conversation_data.get("messages", {})
+            for hist_msg in history:
+                msg_id = hist_msg.get('id')
+                if msg_id and msg_id in messages:
+                    hist_msg['parent_id'] = messages[msg_id].get('parent_id')
+            
             result = {
                 'success': True,
                 'conversation_id': self.client.conversation_id,
@@ -354,8 +374,12 @@ class APIHandlers:
                 print("[DEBUG APIHandlers] No active conversation, starting new one")
                 self.run_async(self.client.start_new_conversation(is_web_ui=True))
             
+            # Get the parent message ID before adding new message
+            parent_id = self.client._get_last_message_id(self.client.active_branch)
+            
             # Add user message to history
             self.client.add_user_message(message)
+            user_message_id = self.client.current_user_message_id
             
             # Get response
             response = self.run_async(self.client.get_response())
@@ -363,11 +387,22 @@ class APIHandlers:
             # Add assistant message to history
             self.client.add_assistant_message(response)
             
+            # Get the assistant message ID from the conversation data
+            # It should be the last message in the active branch
+            assistant_message_id = self.client._get_last_message_id(self.client.active_branch)
+            
             print(f"[DEBUG APIHandlers] Got response: '{response[:50]}...'")
+            print(f"[DEBUG APIHandlers] Message IDs - User: {user_message_id}, Assistant: {assistant_message_id}")
+            
+            # Ensure conversation is saved
+            self.run_async(self.client.save_conversation(quiet=True))
             
             return {
                 'response': response,
-                'conversation_id': self.client.conversation_id
+                'conversation_id': self.client.conversation_id,
+                'message_id': assistant_message_id,
+                'parent_id': user_message_id,
+                'model': self.client.model
             }
         except Exception as e:
             logger.error(f"Failed to send message: {e}", exc_info=True)
@@ -404,13 +439,25 @@ class APIHandlers:
             # Add complete response to history
             self.client.add_assistant_message(complete_response)
             
-            # Send completion signal
-            yield f"data: {json.dumps({'done': True, 'conversation_id': self.client.conversation_id})}\n\n"
+            # Get the message IDs for the frontend
+            user_message_id = self.client.current_user_message_id
+            assistant_message_id = self.client._get_last_message_id(self.client.active_branch)
+            
+            # Ensure conversation is saved
+            await self.client.save_conversation(quiet=True)
+            
+            # Send completion signal with message info
+            yield f"data: {json.dumps({'done': True, 'conversation_id': self.client.conversation_id, 'message_id': assistant_message_id, 'parent_id': user_message_id, 'model': self.client.model})}\n\n"
             
             print(f"[DEBUG APIHandlers] Streaming complete, response length: {len(complete_response)}")
             
         except Exception as e:
             logger.error(f"Streaming error: {e}", exc_info=True)
+            # Ensure conversation is saved even on error
+            try:
+                await self.client.save_conversation(quiet=True)
+            except:
+                pass
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
     
     def update_settings(self, model: Optional[str] = None, 

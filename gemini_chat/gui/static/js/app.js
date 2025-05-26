@@ -154,9 +154,15 @@ class GeminiChatApp {
             return;
         }
         
-        // Add user message to chat
-        this.addMessage('user', message);
+        // Generate a temporary ID for the user message
+        const userMessageId = `msg-user-${Date.now()}`;
+        
+        // Add user message to chat with ID
+        this.addMessage('user', message, userMessageId);
         messageInput.value = '';
+        
+        // Store the current parent ID for the assistant message
+        const parentMessageId = userMessageId;
         
         // Show thinking indicator
         this.showThinking(true);
@@ -164,7 +170,7 @@ class GeminiChatApp {
         try {
             if (this.streamingEnabled) {
                 // Use Server-Sent Events for streaming
-                await this.sendStreamingMessage(message);
+                await this.sendStreamingMessage(message, parentMessageId);
             } else {
                 // Regular request-response
                 const response = await fetch(`${this.apiBase}/api/send`, {
@@ -179,8 +185,37 @@ class GeminiChatApp {
                     this.showAlert(data.error, 'danger');
                     this.addMessage('system', `Error: ${data.error}`);
                 } else {
-                    this.addMessage('assistant', data.response);
+                    console.log('[DEBUG] Got successful response from server');
+                    console.log('[DEBUG] Response data:', data);
+                    
+                    // Extract message details from response if available
+                    const messageId = data.message_id || `msg-assistant-${Date.now()}`;
+                    const parentId = data.parent_id || parentMessageId;
+                    
+                    console.log(`[DEBUG] Message IDs - Assistant: ${messageId}, Parent: ${parentId}`);
+                    
+                    this.addMessage('assistant', data.response, messageId, {
+                        model: data.model || this.currentModel,
+                        parent_id: parentId
+                    });
                     this.currentConversationId = data.conversation_id;
+                    
+                    // Ensure parent has this child in its children list
+                    if (parentId && this.messageTree[parentId]) {
+                        if (!this.messageTree[parentId].children) {
+                            this.messageTree[parentId].children = [];
+                        }
+                        if (!this.messageTree[parentId].children.includes(messageId)) {
+                            this.messageTree[parentId].children.push(messageId);
+                            console.log(`[DEBUG] Added ${messageId} to parent ${parentId} children list`);
+                        }
+                    }
+                    
+                    // Update sibling indicators after a short delay
+                    setTimeout(() => {
+                        console.log(`[DEBUG] Updating sibling indicators for parent: ${parentId}`);
+                        this.updateSiblingIndicators(parentId);
+                    }, 100);
                 }
             }
         } catch (error) {
@@ -191,12 +226,14 @@ class GeminiChatApp {
         }
     }
     
-    async sendStreamingMessage(message) {
-        console.log("[DEBUG] Sending streaming message");
+    async sendStreamingMessage(message, parentMessageId) {
+        console.log("[DEBUG] Sending streaming message with parent:", parentMessageId);
         
         // Create a temporary message element for streaming
         const tempMessageId = `msg-${Date.now()}`;
-        this.addMessage('assistant', '', tempMessageId);
+        this.addMessage('assistant', '', tempMessageId, {
+            parent_id: parentMessageId
+        });
         
         const messageElement = document.getElementById(tempMessageId);
         let fullResponse = '';
@@ -231,6 +268,45 @@ class GeminiChatApp {
                             } else if (data.done) {
                                 console.log("[DEBUG] Streaming complete");
                                 this.currentConversationId = data.conversation_id;
+                                
+                                // Update message with proper IDs and metadata
+                                console.log('[DEBUG] Streaming complete with data:', data);
+                                
+                                // Update message ID if provided
+                                const finalMessageId = data.message_id || tempMessageId;
+                                const finalParentId = data.parent_id || parentMessageId;
+                                
+                                console.log(`[DEBUG] Final message IDs - Assistant: ${finalMessageId}, Parent: ${finalParentId}`);
+                                
+                                if (finalMessageId !== tempMessageId) {
+                                    messageElement.id = finalMessageId;
+                                }
+                                
+                                // Update message tree with final data
+                                this.messageTree[finalMessageId] = {
+                                    id: finalMessageId,
+                                    role: 'assistant',
+                                    content: fullResponse,
+                                    parent_id: finalParentId,
+                                    model: data.model || this.currentModel
+                                };
+                                
+                                // Ensure parent has this child in its children list
+                                if (finalParentId && this.messageTree[finalParentId]) {
+                                    if (!this.messageTree[finalParentId].children) {
+                                        this.messageTree[finalParentId].children = [];
+                                    }
+                                    if (!this.messageTree[finalParentId].children.includes(finalMessageId)) {
+                                        this.messageTree[finalParentId].children.push(finalMessageId);
+                                        console.log(`[DEBUG] Added ${finalMessageId} to parent ${finalParentId} children list`);
+                                    }
+                                    
+                                    // Update sibling indicators
+                                    setTimeout(() => {
+                                        console.log(`[DEBUG] Updating sibling indicators for parent: ${finalParentId}`);
+                                        this.updateSiblingIndicators(finalParentId);
+                                    }, 100);
+                                }
                             } else if (data.error) {
                                 console.error("[ERROR] Streaming error:", data.error);
                                 this.showAlert(data.error, 'danger');
@@ -352,6 +428,11 @@ class GeminiChatApp {
             // The backend has already created the new message on a new branch
             await this.navigateSibling(data.message.id, 'none');
             
+            // After navigation, update the sibling indicators for the parent
+            if (data.message && data.message.parent_id) {
+                await this.updateSiblingIndicators(data.message.parent_id);
+            }
+            
             this.showAlert('Generated new response', 'success');
         } catch (error) {
             console.error("[ERROR] Failed to retry message:", error);
@@ -435,15 +516,42 @@ class GeminiChatApp {
     async updateSiblingIndicators(parentId) {
         console.log(`[DEBUG] Updating sibling indicators for parent: ${parentId}`);
         
-        // Get all messages with this parent
-        const siblings = Object.values(this.messageTree).filter(msg => msg.parent_id === parentId);
-        console.log(`[DEBUG] Found ${siblings.length} siblings`);
+        // Get parent message to find children
+        const parent = this.messageTree[parentId];
+        if (!parent || !parent.children) {
+            console.log(`[DEBUG] No parent or children found for ${parentId}`);
+            return;
+        }
         
-        siblings.forEach((sibling, index) => {
-            const element = document.getElementById(sibling.id);
+        const siblings = parent.children;
+        console.log(`[DEBUG] Found ${siblings.length} siblings from parent's children list`);
+        
+        siblings.forEach((siblingId, index) => {
+            const element = document.getElementById(siblingId);
             if (element) {
-                const indicator = element.querySelector('.branch-indicator');
-                if (indicator) {
+                // Update or create the indicator
+                let indicator = element.querySelector('.branch-indicator');
+                if (!indicator && siblings.length > 1) {
+                    // Create indicator if it doesn't exist
+                    const header = element.querySelector('.message-header');
+                    if (header) {
+                        const newIndicator = document.createElement('span');
+                        newIndicator.className = 'branch-indicator badge bg-info';
+                        newIndicator.textContent = `${index + 1} of ${siblings.length}`;
+                        // Insert after the model badge or after the role label
+                        const modelBadge = header.querySelector('.badge.bg-secondary');
+                        if (modelBadge) {
+                            modelBadge.insertAdjacentElement('afterend', document.createTextNode(' '));
+                            modelBadge.insertAdjacentElement('afterend', newIndicator);
+                        } else {
+                            const strong = header.querySelector('strong');
+                            if (strong) {
+                                strong.insertAdjacentElement('afterend', document.createTextNode(' '));
+                                strong.insertAdjacentElement('afterend', newIndicator);
+                            }
+                        }
+                    }
+                } else if (indicator) {
                     indicator.textContent = `${index + 1} of ${siblings.length}`;
                 }
                 
@@ -532,30 +640,45 @@ class GeminiChatApp {
         // Build header with metadata for assistant messages
         let headerContent = `<strong>${roleLabel}</strong>`;
         if (role === 'assistant' && metadata.model) {
-            headerContent += ` <span class="badge bg-secondary">${metadata.model}</span>`;
+        headerContent += ` <span class="badge bg-secondary">${metadata.model}</span>`;
         }
-        if (role === 'assistant' && metadata.totalSiblings > 1) {
-            headerContent += ` <span class="branch-indicator badge bg-info">${metadata.siblingIndex + 1} of ${metadata.totalSiblings}</span>`;
+        
+        // Calculate actual sibling info if not provided
+        let actualSiblings = 1;
+        let actualIndex = 0;
+        if (role === 'assistant' && messageId && metadata.parent_id) {
+            const parent = this.messageTree[metadata.parent_id];
+            if (parent && parent.children) {
+                actualSiblings = parent.children.length;
+            actualIndex = parent.children.indexOf(messageId);
+        if (actualIndex === -1) actualIndex = 0;
+        }
+        }
+        
+        // Show sibling indicator if there are multiple siblings
+        if (role === 'assistant' && actualSiblings > 1) {
+        headerContent += ` <span class="branch-indicator badge bg-info">${actualIndex + 1} of ${actualSiblings}</span>`;
         }
         headerContent += ` <span class="text-muted ms-2">${new Date().toLocaleTimeString()}</span>`;
         
         // Build message actions for assistant messages
         let messageActions = '';
         if (role === 'assistant' && messageId) {
-            messageActions = `
-                <div class="message-actions mt-2">
-                    <button class="btn btn-sm btn-outline-secondary btn-retry" onclick="app.retryMessage('${messageId}')" title="Retry this response">
-                        <i class="bi bi-arrow-clockwise"></i> Retry
-                    </button>
-                    <button class="btn btn-sm btn-outline-secondary btn-prev-sibling" onclick="app.navigateSibling('${messageId}', 'prev')" title="Previous response" style="display: none;">
-                        <i class="bi bi-chevron-left"></i>
-                    </button>
-                    <button class="btn btn-sm btn-outline-secondary btn-next-sibling" onclick="app.navigateSibling('${messageId}', 'next')" title="Next response" style="display: none;">
-                        <i class="bi bi-chevron-right"></i>
-                    </button>
-                </div>
-            `;
-        }
+                const showNavButtons = actualSiblings > 1 ? 'inline-block' : 'none';
+                messageActions = `
+                    <div class="message-actions mt-2">
+                        <button class="btn btn-sm btn-outline-secondary btn-retry" onclick="app.retryMessage('${messageId}')" title="Retry this response">
+                            <i class="bi bi-arrow-clockwise"></i> Retry
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary btn-prev-sibling" onclick="app.navigateSibling('${messageId}', 'prev')" title="Previous response" style="display: ${showNavButtons};">
+                            <i class="bi bi-chevron-left"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary btn-next-sibling" onclick="app.navigateSibling('${messageId}', 'next')" title="Next response" style="display: ${showNavButtons};">
+                            <i class="bi bi-chevron-right"></i>
+                        </button>
+                    </div>
+                `;
+            }
         
         messageDiv.innerHTML = `
             <div class="d-flex align-items-start">
@@ -577,14 +700,27 @@ class GeminiChatApp {
         chatMessages.appendChild(messageDiv);
         this.scrollToBottom();
         
-        // Update sibling navigation buttons if needed
-        if (role === 'assistant' && metadata.totalSiblings > 1) {
-            const prevBtn = messageDiv.querySelector('.btn-prev-sibling');
-            const nextBtn = messageDiv.querySelector('.btn-next-sibling');
-            if (prevBtn && nextBtn) {
-                prevBtn.style.display = 'inline-block';
-                nextBtn.style.display = 'inline-block';
-            }
+        // Ensure parent-child relationships are updated if this is a new assistant message
+        if (role === 'assistant' && messageId && metadata.parent_id) {
+            console.log(`[DEBUG] New assistant message added, updating parent-child relationships`);
+            console.log(`[DEBUG] Message ID: ${messageId}, Parent ID: ${metadata.parent_id}`);
+            
+            // Update sibling indicators after adding the message
+            setTimeout(() => {
+                this.updateSiblingIndicators(metadata.parent_id);
+                
+                // Also re-render the action buttons if siblings exist
+                const parent = this.messageTree[metadata.parent_id];
+                if (parent && parent.children && parent.children.length > 1) {
+                    console.log(`[DEBUG] Parent has ${parent.children.length} children, showing nav buttons`);
+                    const prevBtn = messageDiv.querySelector('.btn-prev-sibling');
+                    const nextBtn = messageDiv.querySelector('.btn-next-sibling');
+                    if (prevBtn && nextBtn) {
+                        prevBtn.style.display = 'inline-block';
+                        nextBtn.style.display = 'inline-block';
+                    }
+                }
+            }, 100);
         }
     }
     
