@@ -12,25 +12,21 @@ python gemini_chat/gemini_chat.py
 
 The CLI mode provides a traditional terminal-based interface with command-line commands.
 
+
 ### Web Interface Mode
 
 The web interface provides a more user-friendly experience with the same functionality:
 
 ```bash
-python gemini_chat/gemini_chat.py --ui
+python gemini_chat/gemini_chat.py --gui
 ```
 
 When using the web UI mode:
+
 - A local web server will start (default: http://127.0.0.1:8000)
 - Your default web browser will automatically open to the Gemini Chat interface
 - The same commands available in CLI mode are available through the web interface
 - The web interface provides a more visual experience with better formatting
-
-#### UI Versions
-
-The application includes two UI versions:
-- **Standard UI**: The default web interface (index.html, style.css, main.js)
-- **Modern UI**: An enhanced interface with improved styling and features (new_index.html, modern_style.css, modern_main.js)
 
 The modern UI includes additional features:
 - Markdown rendering with syntax highlighting for code blocks
@@ -39,8 +35,10 @@ The modern UI includes additional features:
 - Real-time streaming with visual feedback
 
 **Note**: To use the web interface, you need to install the additional UI dependencies:
+
+For Flask GUI mode:
 ```bash
-pip install -r gemini_chat/ui_requirements.txt
+pip install -r gemini_chat/gui_requirements.txt
 ```
 
 # Gemini Chat

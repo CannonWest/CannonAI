@@ -55,8 +55,9 @@ def parse_arguments():
                         help='Use asynchronous client implementation')
     parser.add_argument('--dir', '--conversations-dir', dest='conversations_dir',
                        help='Directory to store conversations')
-    parser.add_argument('--ui', action='store_true',
-                       help='Launch with web UI interface')
+    parser.add_argument('--gui', action='store_true',
+                       help='Launch with GUI interface (Flask + Bootstrap)')
+
     
     # Configuration options
     config_group = parser.add_argument_group('Configuration')
@@ -93,25 +94,26 @@ def main():
         config.setup_wizard()
         sys.exit(0)
     
-    # Launch web UI if requested
-    if args.ui:
+    # Launch GUI if requested (Flask + Bootstrap)
+    if args.gui:
         display_welcome_message()
-        print(f"{Colors.BLUE}Starting Web UI mode...{Colors.ENDC}")
+        print(f"{Colors.BLUE}Starting GUI mode (Flask + Bootstrap)...{Colors.ENDC}")
         try:
-            # Import the UI module
+            # Import the GUI module
             try:
-                from ui.server import start_web_ui
-                start_web_ui(config)
+                from gui.server import start_gui_server
+                start_gui_server(config)
             except ModuleNotFoundError:
-                print(f"{Colors.FAIL}Error: Required UI packages not installed{Colors.ENDC}")
-                print(f"{Colors.WARNING}Please install UI dependencies: pip install -r gemini_chat/ui_requirements.txt{Colors.ENDC}")
+                print(f"{Colors.FAIL}Error: Required GUI packages not installed{Colors.ENDC}")
+                print(f"{Colors.WARNING}Please install GUI dependencies: pip install flask flask-cors{Colors.ENDC}")
                 sys.exit(1)
         except ImportError as e:
             print(f"{Colors.FAIL}Error: {e}{Colors.ENDC}")
-            print(f"{Colors.WARNING}Please install required packages: pip install fastapi uvicorn websockets{Colors.ENDC}")
+            print(f"{Colors.WARNING}Please install required packages: pip install flask flask-cors{Colors.ENDC}")
             sys.exit(1)
         except Exception as e:
-            print(f"{Colors.FAIL}Error starting Web UI: {e}{Colors.ENDC}")
+            print(f"{Colors.FAIL}Error starting GUI: {e}{Colors.ENDC}")
+
             sys.exit(1)
         return
     

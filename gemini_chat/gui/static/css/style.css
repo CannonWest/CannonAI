@@ -1,0 +1,558 @@
+/**
+ * Gemini Chat GUI - Custom Styles
+ * Complements Bootstrap styling for a modern, professional look
+ */
+
+/* Global Styles */
+html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background-color: #f8f9fa;
+}
+
+/* Sidebar Styles */
+.sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 100;
+    padding: 0;
+    box-shadow: inset -1px 0 0 rgba(0, 0, 0, .1);
+    background-color: #f8f9fa !important;
+    overflow-y: auto;
+}
+
+.sidebar-heading {
+    font-size: .875rem;
+    text-transform: uppercase;
+}
+
+.sidebar .nav-link {
+    color: #333;
+    padding: .5rem 1rem;
+    border-radius: .25rem;
+    transition: all 0.2s ease;
+}
+
+.sidebar .nav-link:hover {
+    background-color: #e9ecef;
+    color: #007bff;
+}
+
+.sidebar .nav-link i {
+    margin-right: .25rem;
+}
+
+/* Main Content */
+main {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Chat Container */
+.chat-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background-color: white;
+    border-radius: .5rem;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+}
+
+.chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1.5rem;
+    background-color: #ffffff;
+}
+
+/* Messages */
+.message {
+    animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.message-icon {
+    width: 40px;
+    text-align: center;
+}
+
+.message-user .message-icon {
+    color: #007bff;
+}
+
+.message-assistant .message-icon {
+    color: #28a745;
+}
+
+.message-system .message-icon {
+    color: #ffc107;
+}
+
+.message-content {
+    word-wrap: break-word;
+    white-space: pre-wrap;
+    line-height: 1.6;
+}
+
+.message-content code {
+    background-color: #f8f9fa;
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-size: 0.875em;
+}
+
+/* Thinking Indicator */
+.thinking-indicator {
+    padding: 1rem;
+    background-color: #f8f9fa;
+    border-top: 1px solid #dee2e6;
+    text-align: center;
+    color: #6c757d;
+}
+
+/* Input Area */
+.chat-input-container {
+    padding: 1.5rem;
+    background-color: #f8f9fa;
+    border-top: 1px solid #dee2e6;
+}
+
+.chat-input-container .input-group {
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    border-radius: .375rem;
+    overflow: hidden;
+}
+
+.chat-input-container .form-control {
+    border: none;
+    padding: .75rem 1rem;
+    font-size: 1rem;
+}
+
+.chat-input-container .form-control:focus {
+    box-shadow: none;
+    outline: none;
+}
+
+.chat-input-container .btn {
+    border: none;
+    padding: .75rem 1.5rem;
+}
+
+/* Status Bar */
+.status-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background-color: #343a40;
+    color: white;
+    padding: .5rem 1rem;
+    font-size: .875rem;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.status-bar span {
+    margin: 0 .5rem;
+}
+
+/* Modals */
+.modal-content {
+    border: none;
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+}
+
+.modal-header {
+    background-color: #f8f9fa;
+    border-bottom: 1px solid #dee2e6;
+}
+
+/* Conversation List */
+.conversation-list {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+/* Form Controls */
+.form-range {
+    margin-top: .5rem;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .sidebar {
+        position: static;
+        height: auto;
+    }
+    
+    main {
+        margin-left: 0 !important;
+    }
+    
+    .status-bar {
+        font-size: .75rem;
+    }
+}
+
+/* Scrollbar Styling */
+.chat-messages::-webkit-scrollbar,
+.sidebar::-webkit-scrollbar,
+.conversation-list::-webkit-scrollbar {
+    width: 8px;
+}
+
+.chat-messages::-webkit-scrollbar-track,
+.sidebar::-webkit-scrollbar-track,
+.conversation-list::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+
+.chat-messages::-webkit-scrollbar-thumb,
+.sidebar::-webkit-scrollbar-thumb,
+.conversation-list::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 4px;
+}
+
+.chat-messages::-webkit-scrollbar-thumb:hover,
+.sidebar::-webkit-scrollbar-thumb:hover,
+.conversation-list::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+/* Alert Styling */
+.alert {
+    animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+/* Loading Animation */
+.spinner-border-sm {
+    width: 1rem;
+    height: 1rem;
+    border-width: 0.2em;
+}
+
+/* Code Block Styling */
+pre {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: .25rem;
+    padding: 1rem;
+    overflow-x: auto;
+}
+
+/* Button Hover Effects */
+.btn {
+    transition: all 0.2s ease;
+}
+
+.btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* Conversation Item Hover */
+.nav-link:hover {
+    background-color: rgba(0, 123, 255, 0.1);
+}
+
+/* Model Table */
+.table th {
+    background-color: #f8f9fa;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.875rem;
+    letter-spacing: 0.5px;
+}
+
+/* Settings Form */
+.form-label {
+    font-weight: 500;
+    color: #495057;
+}
+
+.form-text {
+    font-size: 0.875rem;
+}
+
+/* Connection Status Indicators */
+.text-success {
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.6;
+    }
+    100% {
+        opacity: 1;
+    }
+}
+
+/* Branch Navigation Styling */
+.message-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.message:hover .message-actions {
+    opacity: 1;
+}
+
+/* Retry Button Styling */
+.btn-retry {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    color: #495057;
+    font-size: 0.875rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: 0.375rem;
+    transition: all 0.15s ease;
+}
+
+.btn-retry:hover {
+    background-color: #e9ecef;
+    border-color: #adb5bd;
+    color: #212529;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.btn-retry:active {
+    transform: translateY(0);
+    box-shadow: none;
+}
+
+.btn-retry i {
+    font-size: 0.875rem;
+    margin-right: 0.25rem;
+}
+
+/* Navigation Buttons */
+.btn-prev-sibling,
+.btn-next-sibling {
+    background-color: transparent;
+    border: 1px solid #dee2e6;
+    color: #495057;
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.375rem;
+    transition: all 0.15s ease;
+    min-width: 32px;
+}
+
+.btn-prev-sibling:hover,
+.btn-next-sibling:hover {
+    background-color: #f8f9fa;
+    border-color: #adb5bd;
+    color: #212529;
+}
+
+/* Branch Indicator Badge */
+.branch-indicator {
+    background-color: #6c757d !important;
+    color: white;
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    margin-left: 0.5rem;
+    font-weight: 500;
+}
+
+/* Message Header Improvements */
+.message-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.message-header .badge {
+    font-size: 0.75rem;
+    font-weight: normal;
+    padding: 0.25rem 0.5rem;
+}
+
+/* Model Badge */
+.message-header .badge.bg-secondary {
+    background-color: #e9ecef !important;
+    color: #495057 !important;
+}
+
+/* Assistant Message Styling */
+.message-assistant {
+    position: relative;
+    transition: background-color 0.15s ease;
+}
+
+.message-assistant:hover {
+    background-color: rgba(0, 0, 0, 0.02);
+    border-radius: 0.5rem;
+}
+
+/* Message Content Box for Assistant */
+.message-assistant .message-content {
+    background-color: #f8f9fa;
+    border: 1px solid #e9ecef;
+    position: relative;
+}
+
+/* Thinking Indicator Improvements */
+.thinking-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+}
+
+.thinking-indicator .spinner-border {
+    width: 1rem;
+    height: 1rem;
+    border-width: 0.15em;
+}
+
+/* Active Branch Indicator */
+.message.active-branch {
+    border-left: 3px solid #007bff;
+    margin-left: -3px;
+    padding-left: calc(1rem + 3px);
+}
+
+/* Sibling Navigation Container */
+.sibling-navigation {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-left: 0.5rem;
+}
+
+/* Improved hover state for messages with siblings */
+.message-assistant.has-siblings {
+    cursor: pointer;
+}
+
+/* Toast-style notifications for branch switches */
+.branch-notification {
+    position: fixed;
+    bottom: 60px;
+    right: 20px;
+    background-color: #212529;
+    color: white;
+    padding: 0.75rem 1.25rem;
+    border-radius: 0.375rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    z-index: 1050;
+    animation: slideInRight 0.3s ease-out;
+}
+
+@keyframes slideInRight {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+/* Loading state for retry button */
+.btn-retry.loading {
+    position: relative;
+    color: transparent;
+}
+
+.btn-retry.loading::after {
+    content: "";
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    top: 50%;
+    left: 50%;
+    margin-left: -8px;
+    margin-top: -8px;
+    border: 2px solid #f8f9fa;
+    border-radius: 50%;
+    border-top-color: #007bff;
+    animation: spinner 0.6s linear infinite;
+}
+
+@keyframes spinner {
+    to { transform: rotate(360deg); }
+}
+
+/* Enhanced message actions container */
+.message-body {
+    position: relative;
+}
+
+.message-actions {
+    position: absolute;
+    top: 0;
+    right: -10px;
+    background-color: white;
+    border: 1px solid #dee2e6;
+    border-radius: 0.375rem;
+    padding: 0.25rem;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    z-index: 10;
+}
+
+/* Responsive improvements */
+@media (max-width: 768px) {
+    .message-actions {
+        position: static;
+        margin-top: 0.5rem;
+        opacity: 1;
+        background-color: transparent;
+        border: none;
+        box-shadow: none;
+        padding: 0;
+    }
+    
+    .branch-indicator {
+        display: block;
+        margin-left: 0;
+        margin-top: 0.25rem;
+    }
+}
