@@ -424,14 +424,36 @@ class GeminiChatApp {
                 return;
             }
             
-            // Instead of adding the message below, we need to navigate to the new branch
-            // The backend has already created the new message on a new branch
+            // Store the parent ID before navigation (which clears the chat)
+            const parentId = data.message.parent_id;
+            console.log(`[DEBUG] Parent ID for sibling update: ${parentId}`);
+            
+            // Navigate to show the new message in context
             await this.navigateSibling(data.message.id, 'none');
             
-            // After navigation, update the sibling indicators for the parent
-            if (data.message && data.message.parent_id) {
-                await this.updateSiblingIndicators(data.message.parent_id);
-            }
+            // Force update of sibling indicators after a delay to ensure DOM is ready
+            setTimeout(() => {
+                console.log(`[DEBUG] Force updating sibling indicators after retry`);
+                // Update all messages with the same parent
+                if (parentId && this.messageTree[parentId] && this.messageTree[parentId].children) {
+                    console.log(`[DEBUG] Updating indicators for ${this.messageTree[parentId].children.length} siblings`);
+                    this.updateSiblingIndicators(parentId);
+                    
+                    // Also ensure the navigation buttons are visible for all siblings
+                    this.messageTree[parentId].children.forEach(childId => {
+                        const element = document.getElementById(childId);
+                        if (element) {
+                            const prevBtn = element.querySelector('.btn-prev-sibling');
+                            const nextBtn = element.querySelector('.btn-next-sibling');
+                            if (prevBtn && nextBtn && this.messageTree[parentId].children.length > 1) {
+                                prevBtn.style.display = 'inline-block';
+                                nextBtn.style.display = 'inline-block';
+                                console.log(`[DEBUG] Made nav buttons visible for message ${childId}`);
+                            }
+                        }
+                    });
+                }
+            }, 200);
             
             this.showAlert('Generated new response', 'success');
         } catch (error) {
@@ -466,22 +488,41 @@ class GeminiChatApp {
             
             // Display the updated conversation history
             if (data.history && data.history.length > 0) {
-                // Build parent-child relationships first
-                const messagesByParent = {};
+                // First pass: Create all messages in the tree
                 data.history.forEach(msg => {
-                    if (msg.parent_id) {
-                        if (!messagesByParent[msg.parent_id]) {
-                            messagesByParent[msg.parent_id] = [];
+                    this.messageTree[msg.id] = {
+                        id: msg.id,
+                        role: msg.role,
+                        content: msg.content,
+                        parent_id: msg.parent_id,
+                        model: msg.model,
+                        children: []
+                    };
+                });
+                
+                // Second pass: Build parent-child relationships
+                data.history.forEach(msg => {
+                    if (msg.parent_id && this.messageTree[msg.parent_id]) {
+                        if (!this.messageTree[msg.parent_id].children.includes(msg.id)) {
+                            this.messageTree[msg.parent_id].children.push(msg.id);
                         }
-                        messagesByParent[msg.parent_id].push(msg);
                     }
                 });
                 
-                // Add messages and calculate sibling info
+                // Log the tree structure for debugging
+                console.log('[DEBUG] Message tree after navigation:', this.messageTree);
+                
+                // Third pass: Add messages to DOM with proper sibling info
                 data.history.forEach(msg => {
-                    const siblings = msg.parent_id ? (messagesByParent[msg.parent_id] || []) : [];
-                    const siblingIndex = siblings.findIndex(s => s.id === msg.id);
-                    const totalSiblings = siblings.length;
+                    let siblingIndex = 0;
+                    let totalSiblings = 1;
+                    
+                    if (msg.parent_id && this.messageTree[msg.parent_id]) {
+                        const siblings = this.messageTree[msg.parent_id].children;
+                        totalSiblings = siblings.length;
+                        siblingIndex = siblings.indexOf(msg.id);
+                        if (siblingIndex === -1) siblingIndex = 0;
+                    }
                     
                     this.addMessage(
                         msg.role === 'user' ? 'user' : 'assistant', 
@@ -490,14 +531,17 @@ class GeminiChatApp {
                         {
                             model: msg.model,
                             parent_id: msg.parent_id,
-                            siblingIndex: siblingIndex >= 0 ? siblingIndex : 0,
-                            totalSiblings: totalSiblings > 0 ? totalSiblings : 1
+                            siblingIndex: siblingIndex,
+                            totalSiblings: totalSiblings
                         }
                     );
                 });
                 
                 // Update all sibling indicators after loading
-                this.updateAllSiblingIndicators();
+                setTimeout(() => {
+                    console.log('[DEBUG] Updating all sibling indicators after navigation');
+                    this.updateAllSiblingIndicators();
+                }, 100);
             }
             
             // Update active leaf
@@ -524,11 +568,13 @@ class GeminiChatApp {
         }
         
         const siblings = parent.children;
-        console.log(`[DEBUG] Found ${siblings.length} siblings from parent's children list`);
+        console.log(`[DEBUG] Found ${siblings.length} siblings from parent's children list:`, siblings);
         
         siblings.forEach((siblingId, index) => {
             const element = document.getElementById(siblingId);
             if (element) {
+                console.log(`[DEBUG] Updating sibling ${siblingId} (${index + 1} of ${siblings.length})`);
+                
                 // Update or create the indicator
                 let indicator = element.querySelector('.branch-indicator');
                 if (!indicator && siblings.length > 1) {
@@ -550,25 +596,38 @@ class GeminiChatApp {
                                 strong.insertAdjacentElement('afterend', newIndicator);
                             }
                         }
+                        console.log(`[DEBUG] Created new branch indicator for ${siblingId}`);
                     }
                 } else if (indicator) {
                     indicator.textContent = `${index + 1} of ${siblings.length}`;
+                    console.log(`[DEBUG] Updated existing branch indicator for ${siblingId}`);
                 }
                 
-                // Update navigation buttons
-                const prevBtn = element.querySelector('.btn-prev-sibling');
-                const nextBtn = element.querySelector('.btn-next-sibling');
-                
-                if (prevBtn && nextBtn) {
-                    // Show/hide based on siblings
-                    if (siblings.length > 1) {
-                        prevBtn.style.display = 'inline-block';
-                        nextBtn.style.display = 'inline-block';
+                // Update navigation buttons visibility
+                const messageActions = element.querySelector('.message-actions');
+                if (messageActions) {
+                    const prevBtn = messageActions.querySelector('.btn-prev-sibling');
+                    const nextBtn = messageActions.querySelector('.btn-next-sibling');
+                    
+                    if (prevBtn && nextBtn) {
+                        // Show/hide based on siblings
+                        if (siblings.length > 1) {
+                            prevBtn.style.display = 'inline-block';
+                            nextBtn.style.display = 'inline-block';
+                            console.log(`[DEBUG] Made navigation buttons visible for ${siblingId}`);
+                        } else {
+                            prevBtn.style.display = 'none';
+                            nextBtn.style.display = 'none';
+                            console.log(`[DEBUG] Hid navigation buttons for ${siblingId} (no siblings)`);
+                        }
                     } else {
-                        prevBtn.style.display = 'none';
-                        nextBtn.style.display = 'none';
+                        console.log(`[DEBUG] No navigation buttons found for ${siblingId}`);
                     }
+                } else {
+                    console.log(`[DEBUG] No message-actions div found for ${siblingId}`);
                 }
+            } else {
+                console.log(`[DEBUG] Element not found for sibling ${siblingId}`);
             }
         });
     }
