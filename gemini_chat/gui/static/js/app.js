@@ -15,6 +15,9 @@ class GeminiChatApp {
         // Bootstrap modal instances
         this.modals = {};
         
+        // App settings
+        this.appSettings = this.loadAppSettings();
+        
         // Branch management
         this.messageTree = {}; // Full tree structure
         this.messageElements = {}; // DOM element references
@@ -36,6 +39,26 @@ class GeminiChatApp {
         this.modals.newConversation = new bootstrap.Modal(document.getElementById('newConversationModal'));
         this.modals.modelSelector = new bootstrap.Modal(document.getElementById('modelSelectorModal'));
         this.modals.settings = new bootstrap.Modal(document.getElementById('settingsModal'));
+        this.modals.appSettings = new bootstrap.Modal(document.getElementById('appSettingsModal'));
+        
+        // Apply saved app settings
+        this.applyAppSettings();
+        
+        // Configure marked.js for Markdown parsing
+        marked.setOptions({
+            highlight: function(code, lang) {
+                if (lang && hljs.getLanguage(lang)) {
+                    try {
+                        return hljs.highlight(code, { language: lang }).value;
+                    } catch (e) {
+                        console.error('[ERROR] Highlight.js error:', e);
+                    }
+                }
+                return hljs.highlightAuto(code).value;
+            },
+            breaks: true,
+            gfm: true
+        });
         
         // Set up event listeners
         this.setupEventListeners();
@@ -69,6 +92,29 @@ class GeminiChatApp {
         const topPSlider = document.getElementById('topP');
         topPSlider.addEventListener('input', (e) => {
             document.getElementById('topPValue').textContent = e.target.value;
+        });
+        
+        // App settings form inputs
+        const fontSizeSlider = document.getElementById('fontSize');
+        fontSizeSlider.addEventListener('input', (e) => {
+            document.getElementById('fontSizeValue').textContent = e.target.value;
+            this.updatePreview();
+        });
+        
+        // Theme radio buttons
+        document.querySelectorAll('input[name="theme"]').forEach(radio => {
+            radio.addEventListener('change', () => this.updatePreview());
+        });
+        
+        // Font family select
+        document.getElementById('fontFamily').addEventListener('change', () => this.updatePreview());
+        
+        // Code theme select
+        document.getElementById('codeTheme').addEventListener('change', () => this.updatePreview());
+        
+        // Display settings checkboxes
+        ['showTimestamps', 'showAvatars', 'enableAnimations', 'compactMode', 'showLineNumbers'].forEach(id => {
+            document.getElementById(id).addEventListener('change', () => this.updatePreview());
         });
     }
     
@@ -757,6 +803,12 @@ class GeminiChatApp {
         `;
         
         chatMessages.appendChild(messageDiv);
+        
+        // Apply highlight.js to code blocks
+        messageDiv.querySelectorAll('pre code').forEach(block => {
+            hljs.highlightElement(block);
+        });
+        
         this.scrollToBottom();
         
         // Ensure parent-child relationships are updated if this is a new assistant message
@@ -784,15 +836,44 @@ class GeminiChatApp {
     }
     
     formatMessage(content) {
-        // Basic formatting - escape HTML and convert newlines to <br>
-        const escaped = content
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+        console.log('[DEBUG] Formatting message with Markdown');
         
-        return escaped.replace(/\n/g, '<br>');
+        try {
+            // Parse markdown to HTML
+            const html = marked.parse(content);
+            
+            // If line numbers are enabled, add them to code blocks
+            if (this.appSettings.showLineNumbers) {
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = html;
+                
+                tempDiv.querySelectorAll('pre code').forEach(block => {
+                    const lines = block.textContent.split('\n');
+                    const numberedLines = lines.map((line, i) => {
+                        const lineNum = String(i + 1).padStart(3, ' ');
+                        return `<span class="line-number">${lineNum}</span>${line}`;
+                    }).join('\n');
+                    
+                    block.innerHTML = numberedLines;
+                    block.classList.add('line-numbers');
+                });
+                
+                return tempDiv.innerHTML;
+            }
+            
+            return html;
+        } catch (error) {
+            console.error('[ERROR] Markdown parsing failed:', error);
+            // Fallback to basic formatting
+            const escaped = content
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+            
+            return escaped.replace(/\n/g, '<br>');
+        }
     }
     
     clearChat() {
@@ -1102,6 +1183,247 @@ class GeminiChatApp {
         `;
         
         this.addMessage('system', helpContent);
+    }
+    
+    // App Settings Methods
+    
+    loadAppSettings() {
+        console.log('[DEBUG] Loading app settings from localStorage');
+        
+        const defaults = {
+            theme: 'light',
+            fontSize: 16,
+            fontFamily: 'system-ui',
+            showTimestamps: true,
+            showAvatars: true,
+            enableAnimations: true,
+            compactMode: false,
+            codeTheme: 'github-dark',
+            showLineNumbers: true
+        };
+        
+        try {
+            const saved = localStorage.getItem('geminiChatAppSettings');
+            if (saved) {
+                const settings = JSON.parse(saved);
+                console.log('[DEBUG] Loaded saved settings:', settings);
+                return { ...defaults, ...settings };
+            }
+        } catch (error) {
+            console.error('[ERROR] Failed to load app settings:', error);
+        }
+        
+        console.log('[DEBUG] Using default settings');
+        return defaults;
+    }
+    
+    saveAppSettingsToStorage() {
+        console.log('[DEBUG] Saving app settings to localStorage');
+        
+        try {
+            localStorage.setItem('geminiChatAppSettings', JSON.stringify(this.appSettings));
+            console.log('[DEBUG] Settings saved successfully');
+            return true;
+        } catch (error) {
+            console.error('[ERROR] Failed to save app settings:', error);
+            return false;
+        }
+    }
+    
+    applyAppSettings() {
+        console.log('[DEBUG] Applying app settings');
+        
+        // Apply theme
+        this.applyTheme(this.appSettings.theme);
+        
+        // Apply font settings
+        document.documentElement.style.setProperty('--chat-font-size', `${this.appSettings.fontSize}px`);
+        document.documentElement.style.setProperty('--chat-font-family', this.appSettings.fontFamily);
+        
+        // Apply display settings
+        document.body.classList.toggle('hide-timestamps', !this.appSettings.showTimestamps);
+        document.body.classList.toggle('hide-avatars', !this.appSettings.showAvatars);
+        document.body.classList.toggle('disable-animations', !this.appSettings.enableAnimations);
+        document.body.classList.toggle('compact-mode', this.appSettings.compactMode);
+        
+        // Update code theme
+        this.updateCodeTheme(this.appSettings.codeTheme);
+        
+        console.log('[DEBUG] App settings applied');
+    }
+    
+    applyTheme(theme) {
+        console.log(`[DEBUG] Applying theme: ${theme}`);
+        
+        // Remove all theme classes
+        document.body.classList.remove('theme-light', 'theme-dark', 'theme-auto');
+        
+        if (theme === 'auto') {
+            // Check system preference
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            document.body.classList.add(prefersDark ? 'theme-dark' : 'theme-light');
+        } else {
+            document.body.classList.add(`theme-${theme}`);
+        }
+    }
+    
+    updateCodeTheme(theme) {
+        console.log(`[DEBUG] Updating code theme to: ${theme}`);
+        
+        // Find the highlight.js CSS link
+        const link = document.querySelector('link[href*="highlight.js"]');
+        if (link) {
+            const newHref = `https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/${theme}.min.css`;
+            link.href = newHref;
+        }
+    }
+    
+    showAppSettings() {
+        console.log('[DEBUG] Showing app settings modal');
+        
+        // Update form with current settings
+        document.getElementById(`theme${this.appSettings.theme.charAt(0).toUpperCase() + this.appSettings.theme.slice(1)}`).checked = true;
+        document.getElementById('fontSize').value = this.appSettings.fontSize;
+        document.getElementById('fontSizeValue').textContent = this.appSettings.fontSize;
+        document.getElementById('fontFamily').value = this.appSettings.fontFamily;
+        document.getElementById('showTimestamps').checked = this.appSettings.showTimestamps;
+        document.getElementById('showAvatars').checked = this.appSettings.showAvatars;
+        document.getElementById('enableAnimations').checked = this.appSettings.enableAnimations;
+        document.getElementById('compactMode').checked = this.appSettings.compactMode;
+        document.getElementById('codeTheme').value = this.appSettings.codeTheme;
+        document.getElementById('showLineNumbers').checked = this.appSettings.showLineNumbers;
+        
+        // Update preview
+        this.updatePreview();
+        
+        // Show modal
+        this.modals.appSettings.show();
+    }
+    
+    saveAppSettings() {
+        console.log('[DEBUG] Saving app settings from form');
+        
+        // Get values from form
+        this.appSettings = {
+            theme: document.querySelector('input[name="theme"]:checked').value,
+            fontSize: parseInt(document.getElementById('fontSize').value),
+            fontFamily: document.getElementById('fontFamily').value,
+            showTimestamps: document.getElementById('showTimestamps').checked,
+            showAvatars: document.getElementById('showAvatars').checked,
+            enableAnimations: document.getElementById('enableAnimations').checked,
+            compactMode: document.getElementById('compactMode').checked,
+            codeTheme: document.getElementById('codeTheme').value,
+            showLineNumbers: document.getElementById('showLineNumbers').checked
+        };
+        
+        // Save to localStorage
+        if (this.saveAppSettingsToStorage()) {
+            // Apply settings
+            this.applyAppSettings();
+            
+            // Re-render all messages to apply new formatting
+            this.reRenderAllMessages();
+            
+            // Show success message
+            this.showAlert('App settings saved successfully', 'success');
+            
+            // Close modal
+            this.modals.appSettings.hide();
+        } else {
+            this.showAlert('Failed to save app settings', 'danger');
+        }
+    }
+    
+    resetAppSettings() {
+        console.log('[DEBUG] Resetting app settings to defaults');
+        
+        if (confirm('Are you sure you want to reset all app settings to defaults?')) {
+            // Clear saved settings
+            localStorage.removeItem('geminiChatAppSettings');
+            
+            // Reload defaults
+            this.appSettings = this.loadAppSettings();
+            
+            // Apply defaults
+            this.applyAppSettings();
+            
+            // Update form
+            this.showAppSettings();
+            
+            // Re-render messages
+            this.reRenderAllMessages();
+            
+            this.showAlert('App settings reset to defaults', 'info');
+        }
+    }
+    
+    updatePreview() {
+        console.log('[DEBUG] Updating settings preview');
+        
+        const preview = document.getElementById('settingsPreview');
+        
+        // Get current form values
+        const fontSize = document.getElementById('fontSize').value;
+        const fontFamily = document.getElementById('fontFamily').value;
+        const showTimestamps = document.getElementById('showTimestamps').checked;
+        const showAvatars = document.getElementById('showAvatars').checked;
+        const theme = document.querySelector('input[name="theme"]:checked').value;
+        
+        // Apply styles to preview
+        preview.style.fontSize = `${fontSize}px`;
+        preview.style.fontFamily = fontFamily;
+        
+        // Toggle visibility
+        const avatar = preview.querySelector('#previewAvatar');
+        const timestamp = preview.querySelector('#previewTimestamp');
+        
+        if (avatar) avatar.style.display = showAvatars ? 'block' : 'none';
+        if (timestamp) timestamp.style.display = showTimestamps ? 'inline' : 'none';
+        
+        // Update theme class
+        preview.className = `preview-area border rounded p-3 theme-${theme}`;
+        
+        // Re-highlight code in preview
+        preview.querySelectorAll('pre code').forEach(block => {
+            hljs.highlightElement(block);
+        });
+    }
+    
+    reRenderAllMessages() {
+        console.log('[DEBUG] Re-rendering all messages with new settings');
+        
+        // Get all message elements
+        const messages = document.querySelectorAll('.message');
+        
+        messages.forEach(messageEl => {
+            const messageId = messageEl.id;
+            if (messageId && this.messageTree[messageId]) {
+                const messageData = this.messageTree[messageId];
+                
+                // Find and update the message content
+                const contentEl = messageEl.querySelector('.message-content');
+                if (contentEl && messageData.content) {
+                    contentEl.innerHTML = this.formatMessage(messageData.content);
+                    
+                    // Re-highlight code blocks
+                    contentEl.querySelectorAll('pre code').forEach(block => {
+                        hljs.highlightElement(block);
+                    });
+                }
+                
+                // Update timestamp visibility
+                const timestampEl = messageEl.querySelector('.text-muted');
+                if (timestampEl) {
+                    timestampEl.style.display = this.appSettings.showTimestamps ? 'inline' : 'none';
+                }
+                
+                // Update avatar visibility
+                const avatarEl = messageEl.querySelector('.message-icon');
+                if (avatarEl) {
+                    avatarEl.style.display = this.appSettings.showAvatars ? 'block' : 'none';
+                }
+            }
+        });
     }
     
     showAlert(message, type = 'info') {
