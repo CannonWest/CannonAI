@@ -324,3 +324,235 @@ pre {
         opacity: 1;
     }
 }
+
+/* Branch Navigation Styling */
+.message-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.message:hover .message-actions {
+    opacity: 1;
+}
+
+/* Retry Button Styling */
+.btn-retry {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    color: #495057;
+    font-size: 0.875rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: 0.375rem;
+    transition: all 0.15s ease;
+}
+
+.btn-retry:hover {
+    background-color: #e9ecef;
+    border-color: #adb5bd;
+    color: #212529;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.btn-retry:active {
+    transform: translateY(0);
+    box-shadow: none;
+}
+
+.btn-retry i {
+    font-size: 0.875rem;
+    margin-right: 0.25rem;
+}
+
+/* Navigation Buttons */
+.btn-prev-sibling,
+.btn-next-sibling {
+    background-color: transparent;
+    border: 1px solid #dee2e6;
+    color: #495057;
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.375rem;
+    transition: all 0.15s ease;
+    min-width: 32px;
+}
+
+.btn-prev-sibling:hover,
+.btn-next-sibling:hover {
+    background-color: #f8f9fa;
+    border-color: #adb5bd;
+    color: #212529;
+}
+
+/* Branch Indicator Badge */
+.branch-indicator {
+    background-color: #6c757d !important;
+    color: white;
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    margin-left: 0.5rem;
+    font-weight: 500;
+}
+
+/* Message Header Improvements */
+.message-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.message-header .badge {
+    font-size: 0.75rem;
+    font-weight: normal;
+    padding: 0.25rem 0.5rem;
+}
+
+/* Model Badge */
+.message-header .badge.bg-secondary {
+    background-color: #e9ecef !important;
+    color: #495057 !important;
+}
+
+/* Assistant Message Styling */
+.message-assistant {
+    position: relative;
+    transition: background-color 0.15s ease;
+}
+
+.message-assistant:hover {
+    background-color: rgba(0, 0, 0, 0.02);
+    border-radius: 0.5rem;
+}
+
+/* Message Content Box for Assistant */
+.message-assistant .message-content {
+    background-color: #f8f9fa;
+    border: 1px solid #e9ecef;
+    position: relative;
+}
+
+/* Thinking Indicator Improvements */
+.thinking-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+}
+
+.thinking-indicator .spinner-border {
+    width: 1rem;
+    height: 1rem;
+    border-width: 0.15em;
+}
+
+/* Active Branch Indicator */
+.message.active-branch {
+    border-left: 3px solid #007bff;
+    margin-left: -3px;
+    padding-left: calc(1rem + 3px);
+}
+
+/* Sibling Navigation Container */
+.sibling-navigation {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-left: 0.5rem;
+}
+
+/* Improved hover state for messages with siblings */
+.message-assistant.has-siblings {
+    cursor: pointer;
+}
+
+/* Toast-style notifications for branch switches */
+.branch-notification {
+    position: fixed;
+    bottom: 60px;
+    right: 20px;
+    background-color: #212529;
+    color: white;
+    padding: 0.75rem 1.25rem;
+    border-radius: 0.375rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    z-index: 1050;
+    animation: slideInRight 0.3s ease-out;
+}
+
+@keyframes slideInRight {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+/* Loading state for retry button */
+.btn-retry.loading {
+    position: relative;
+    color: transparent;
+}
+
+.btn-retry.loading::after {
+    content: "";
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    top: 50%;
+    left: 50%;
+    margin-left: -8px;
+    margin-top: -8px;
+    border: 2px solid #f8f9fa;
+    border-radius: 50%;
+    border-top-color: #007bff;
+    animation: spinner 0.6s linear infinite;
+}
+
+@keyframes spinner {
+    to { transform: rotate(360deg); }
+}
+
+/* Enhanced message actions container */
+.message-body {
+    position: relative;
+}
+
+.message-actions {
+    position: absolute;
+    top: 0;
+    right: -10px;
+    background-color: white;
+    border: 1px solid #dee2e6;
+    border-radius: 0.375rem;
+    padding: 0.25rem;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    z-index: 10;
+}
+
+/* Responsive improvements */
+@media (max-width: 768px) {
+    .message-actions {
+        position: static;
+        margin-top: 0.5rem;
+        opacity: 1;
+        background-color: transparent;
+        border: none;
+        box-shadow: none;
+        padding: 0;
+    }
+    
+    .branch-indicator {
+        display: block;
+        margin-left: 0;
+        margin-top: 0.25rem;
+    }
+}

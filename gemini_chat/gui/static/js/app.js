@@ -451,7 +451,28 @@ class GeminiChatApp {
         });
     }
     
+    updateAllSiblingIndicators() {
+        console.log('[DEBUG] Updating all sibling indicators');
+        
+        // Get all unique parent IDs
+        const parentIds = new Set();
+        Object.values(this.messageTree).forEach(msg => {
+            if (msg.parent_id) {
+                parentIds.add(msg.parent_id);
+            }
+        });
+        
+        console.log(`[DEBUG] Found ${parentIds.size} unique parent IDs`);
+        
+        // Update indicators for each parent
+        parentIds.forEach(parentId => {
+            this.updateSiblingIndicators(parentId);
+        });
+    }
+    
     addMessage(role, content, messageId = null, metadata = {}) {
+        console.log(`[DEBUG] Adding message - Role: ${role}, ID: ${messageId}, Metadata:`, metadata);
+        
         const chatMessages = document.getElementById('chatMessages');
         
         // Remove empty state message if it exists
@@ -471,6 +492,7 @@ class GeminiChatApp {
                 content: content,
                 ...metadata
             };
+            this.messageElements[messageId] = messageDiv;
         }
         
         let icon, roleLabel, bgClass;
@@ -677,11 +699,25 @@ class GeminiChatApp {
                 document.getElementById('conversationName').textContent = data.conversation_name;
                 this.clearChat();
                 
-                // Display conversation history
+                // Display conversation history with proper metadata
                 if (data.history && data.history.length > 0) {
+                    console.log(`[DEBUG] Loading ${data.history.length} messages from history`);
                     data.history.forEach(msg => {
-                        this.addMessage(msg.role === 'user' ? 'user' : 'assistant', msg.content);
+                        console.log(`[DEBUG] Loading message: ${msg.id}, role: ${msg.role}`);
+                        this.addMessage(
+                            msg.role === 'user' ? 'user' : 'assistant', 
+                            msg.content,
+                            msg.id,
+                            {
+                                model: msg.model,
+                                timestamp: msg.timestamp
+                            }
+                        );
                     });
+                    
+                    // After loading, update sibling indicators for all messages
+                    console.log('[DEBUG] Updating sibling indicators after load');
+                    this.updateAllSiblingIndicators();
                 } else {
                     this.showAlert('Conversation loaded (no messages)', 'info');
                 }
