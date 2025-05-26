@@ -348,21 +348,9 @@ class GeminiChatApp {
                 return;
             }
             
-            // Add the new message to the chat
-            const newMessage = data.message;
-            this.addMessage(
-                'assistant', 
-                newMessage.content, 
-                newMessage.id,
-                {
-                    model: newMessage.model,
-                    siblingIndex: data.sibling_index,
-                    totalSiblings: data.total_siblings
-                }
-            );
-            
-            // Update the sibling indicators for all siblings
-            await this.updateSiblingIndicators(newMessage.parent_id);
+            // Instead of adding the message below, we need to navigate to the new branch
+            // The backend has already created the new message on a new branch
+            await this.navigateSibling(data.message.id, 'none');
             
             this.showAlert('Generated new response', 'success');
         } catch (error) {
@@ -392,26 +380,52 @@ class GeminiChatApp {
             // Clear and rebuild the chat with the new branch
             this.clearChat();
             
+            // Clear the message tree to rebuild it
+            this.messageTree = {};
+            
             // Display the updated conversation history
             if (data.history && data.history.length > 0) {
+                // Build parent-child relationships first
+                const messagesByParent = {};
                 data.history.forEach(msg => {
+                    if (msg.parent_id) {
+                        if (!messagesByParent[msg.parent_id]) {
+                            messagesByParent[msg.parent_id] = [];
+                        }
+                        messagesByParent[msg.parent_id].push(msg);
+                    }
+                });
+                
+                // Add messages and calculate sibling info
+                data.history.forEach(msg => {
+                    const siblings = msg.parent_id ? (messagesByParent[msg.parent_id] || []) : [];
+                    const siblingIndex = siblings.findIndex(s => s.id === msg.id);
+                    const totalSiblings = siblings.length;
+                    
                     this.addMessage(
                         msg.role === 'user' ? 'user' : 'assistant', 
                         msg.content,
                         msg.id,
                         {
                             model: msg.model,
-                            siblingIndex: msg.sibling_index,
-                            totalSiblings: msg.total_siblings
+                            parent_id: msg.parent_id,
+                            siblingIndex: siblingIndex >= 0 ? siblingIndex : 0,
+                            totalSiblings: totalSiblings > 0 ? totalSiblings : 1
                         }
                     );
                 });
+                
+                // Update all sibling indicators after loading
+                this.updateAllSiblingIndicators();
             }
             
             // Update active leaf
             this.activeLeaf = data.message.id;
             
-            this.showAlert(`Switched to response ${data.sibling_index + 1} of ${data.total_siblings}`, 'info');
+            // Only show alert if we're actually navigating between siblings
+            if (direction !== 'none' && data.total_siblings > 1) {
+                this.showAlert(`Switched to response ${data.sibling_index + 1} of ${data.total_siblings}`, 'info');
+            }
         } catch (error) {
             console.error("[ERROR] Failed to navigate sibling:", error);
             this.showAlert('Failed to navigate to sibling', 'danger');
@@ -485,11 +499,12 @@ class GeminiChatApp {
         messageDiv.className = `message message-${role} mb-3`;
         if (messageId) {
             messageDiv.id = messageId;
-            // Store message data in our tree
+            // Store message data in our tree with all metadata
             this.messageTree[messageId] = {
                 id: messageId,
                 role: role,
                 content: content,
+                parent_id: metadata.parent_id || null,
                 ...metadata
             };
             this.messageElements[messageId] = messageDiv;
@@ -699,18 +714,42 @@ class GeminiChatApp {
                 document.getElementById('conversationName').textContent = data.conversation_name;
                 this.clearChat();
                 
+                // Clear the message tree to rebuild it
+                this.messageTree = {};
+                
                 // Display conversation history with proper metadata
                 if (data.history && data.history.length > 0) {
                     console.log(`[DEBUG] Loading ${data.history.length} messages from history`);
+                    
+                    // Build parent-child relationships first
+                    const messagesByParent = {};
                     data.history.forEach(msg => {
-                        console.log(`[DEBUG] Loading message: ${msg.id}, role: ${msg.role}`);
+                        if (msg.parent_id) {
+                            if (!messagesByParent[msg.parent_id]) {
+                                messagesByParent[msg.parent_id] = [];
+                            }
+                            messagesByParent[msg.parent_id].push(msg);
+                        }
+                    });
+                    
+                    // Add messages with proper sibling info
+                    data.history.forEach(msg => {
+                        console.log(`[DEBUG] Loading message: ${msg.id}, role: ${msg.role}, parent: ${msg.parent_id}`);
+                        
+                        const siblings = msg.parent_id ? (messagesByParent[msg.parent_id] || []) : [];
+                        const siblingIndex = siblings.findIndex(s => s.id === msg.id);
+                        const totalSiblings = siblings.length;
+                        
                         this.addMessage(
                             msg.role === 'user' ? 'user' : 'assistant', 
                             msg.content,
                             msg.id,
                             {
                                 model: msg.model,
-                                timestamp: msg.timestamp
+                                timestamp: msg.timestamp,
+                                parent_id: msg.parent_id,
+                                siblingIndex: siblingIndex >= 0 ? siblingIndex : 0,
+                                totalSiblings: totalSiblings > 0 ? totalSiblings : 1
                             }
                         );
                     });
