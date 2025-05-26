@@ -57,6 +57,7 @@ def parse_arguments():
                        help='Directory to store conversations')
     parser.add_argument('--gui', action='store_true',
                        help='Launch with GUI interface (Flask + Bootstrap)')
+
     
     # Configuration options
     config_group = parser.add_argument_group('Configuration')
@@ -112,6 +113,7 @@ def main():
             sys.exit(1)
         except Exception as e:
             print(f"{Colors.FAIL}Error starting GUI: {e}{Colors.ENDC}")
+
             sys.exit(1)
         return
     

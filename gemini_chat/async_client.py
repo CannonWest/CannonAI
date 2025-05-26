@@ -86,7 +86,7 @@ class AsyncGeminiClient(BaseGeminiClient):
             A UUID string
         """
         return str(uuid.uuid4())
-    
+      
     def _add_message_to_conversation(self, message: Dict[str, Any]) -> None:
         """Add a message to the conversation structure and update relationships.
         
@@ -203,6 +203,7 @@ class AsyncGeminiClient(BaseGeminiClient):
         
         print(f"{Colors.GREEN}Converted {len(messages)} messages to new format{Colors.ENDC}")
 
+
     async def start_new_conversation(self, title: Optional[str] = None, is_web_ui: bool = False) -> None:
         """Start a new conversation asynchronously.
 
@@ -213,6 +214,7 @@ class AsyncGeminiClient(BaseGeminiClient):
         print(f"{Colors.CYAN}Starting new conversation...{Colors.ENDC}")
         self.conversation_id = self.generate_conversation_id()
         
+
         # Get title for the conversation
         if title is None and not is_web_ui:
             # Only prompt for input in CLI mode
@@ -232,6 +234,7 @@ class AsyncGeminiClient(BaseGeminiClient):
         print(f"{Colors.GREEN}Started new conversation: {title}{Colors.ENDC}")
         print(f"{Colors.CYAN}Conversation ID: {self.conversation_id[:8]}...{Colors.ENDC}")
         print(f"{Colors.CYAN}Active branch: {self.active_branch}{Colors.ENDC}")
+
 
         # Initial save of the new conversation
         await self.save_conversation()
@@ -527,11 +530,13 @@ class AsyncGeminiClient(BaseGeminiClient):
         if not quiet:
             print(f"{Colors.CYAN}Saving conversation structure v{self.VERSION}...{Colors.ENDC}")
 
+
         # Save to file using non-blocking io
         try:
             def save_json():
                 with open(filepath, 'w', encoding='utf-8') as f:
                     json.dump(self.conversation_data, f, indent=2, ensure_ascii=False)
+
 
             # Use to_thread to make file I/O non-blocking
             await asyncio.to_thread(save_json)
@@ -582,6 +587,7 @@ class AsyncGeminiClient(BaseGeminiClient):
             user_message_id = user_message["id"]
             print(f"{Colors.BLUE}User message ID: {user_message_id[:8]}...{Colors.ENDC}")
 
+
             # Configure generation parameters
             config = types.GenerateContentConfig(
                 temperature=self.params["temperature"],
@@ -593,6 +599,7 @@ class AsyncGeminiClient(BaseGeminiClient):
             # Build chat history from the tree structure
             chat_history = self.build_chat_history(self.conversation_data, self.active_branch)
             print(f"{Colors.CYAN}Chat history length: {len(chat_history)} messages{Colors.ENDC}")
+
 
             if self.use_streaming:
                 print(f"\r{Colors.CYAN}AI is thinking... (streaming mode){Colors.ENDC}", end="", flush=True)
@@ -637,6 +644,7 @@ class AsyncGeminiClient(BaseGeminiClient):
             self._add_message_to_conversation(ai_message)
             print(f"{Colors.GREEN}AI message ID: {ai_message['id'][:8]}...{Colors.ENDC}")
 
+
             print(f"{Colors.CYAN}Auto-saving conversation...{Colors.ENDC}")
             await self.save_conversation(quiet=True)
             return response_text
@@ -653,6 +661,7 @@ class AsyncGeminiClient(BaseGeminiClient):
                 branch_id=self.active_branch
             )
             self._add_message_to_conversation(error_message)
+
             await self.save_conversation(quiet=True)
             return None
 
@@ -862,6 +871,7 @@ class AsyncGeminiClient(BaseGeminiClient):
                                 break
                         message_count = sum(1 for item in data.get("history", []) if item.get("type") == "message")
 
+
                     result.append({
                         "filename": file_path.name,
                         "path": file_path,
@@ -996,7 +1006,7 @@ class AsyncGeminiClient(BaseGeminiClient):
                             if "params" in metadata:
                                 self.params = metadata["params"]
                             break
-                    
+
                 print(f"{Colors.GREEN}Loaded conversation: {selected_conv['title']}{Colors.ENDC}")
                 await self.display_conversation_history()
         except Exception as e:
@@ -1062,6 +1072,7 @@ class AsyncGeminiClient(BaseGeminiClient):
                     print("")
         else:
             print(f"{Colors.WARNING}No conversation history to display.{Colors.ENDC}")
+
 
     async def toggle_streaming(self) -> bool:
         """Toggle streaming mode asynchronously.
@@ -1129,7 +1140,7 @@ class AsyncGeminiClient(BaseGeminiClient):
     async def get_response(self) -> str:
         """Get a non-streaming response for self.current_user_message (for UI)."""
         print(f"{Colors.CYAN}[UI] Getting non-streaming response{Colors.ENDC}")
-        
+
         if not self.current_user_message:
             return "Error: No current user message to process."
         if not self.client:
@@ -1143,6 +1154,7 @@ class AsyncGeminiClient(BaseGeminiClient):
         # Build chat history from the new conversation_data structure
         chat_history = self.build_chat_history(self.conversation_data, self.active_branch)
         print(f"{Colors.CYAN}[UI] Built chat history with {len(chat_history)} messages{Colors.ENDC}")
+
 
         try:
             print(f"\r{Colors.CYAN}AI is thinking (non-streaming UI)...{Colors.ENDC}", end="", flush=True)
@@ -1166,13 +1178,14 @@ class AsyncGeminiClient(BaseGeminiClient):
             print(f"{Colors.FAIL}[UI] {error_msg}{Colors.ENDC}")
             import traceback
             traceback.print_exc()
+
             self.current_user_message = None
             return error_msg
 
     async def get_streaming_response(self) -> AsyncIterator[str]:
         """Get a streaming response for self.current_user_message (for UI)."""
         print(f"{Colors.CYAN}[UI] Getting streaming response{Colors.ENDC}")
-        
+
         if not self.current_user_message:
             yield "Error: No current user message to process."
             return
@@ -1189,11 +1202,13 @@ class AsyncGeminiClient(BaseGeminiClient):
         chat_history = self.build_chat_history(self.conversation_data, self.active_branch)
         print(f"{Colors.CYAN}[UI] Built chat history with {len(chat_history)} messages for streaming{Colors.ENDC}")
 
+
         complete_response_text = ""
         try:
             print(f"\r{Colors.CYAN}AI is thinking (streaming UI)...{Colors.ENDC}", end="", flush=True)
             stream_generator = await self.client.aio.models.generate_content_stream(
                 model=self.model, contents=chat_history, config=config)
+
             print("\r" + " " * 50 + "\r", end="", flush=True)
 
             async for chunk in stream_generator:
@@ -1214,6 +1229,7 @@ class AsyncGeminiClient(BaseGeminiClient):
             yield error_msg
         finally:
             self.current_user_message = None  # Clear after processing
+
 
     def get_conversation_history(self) -> List[Dict[str, Any]]:
         """Get history for UI (role and content)."""
@@ -1246,4 +1262,5 @@ class AsyncGeminiClient(BaseGeminiClient):
                         'content': item["content"]["text"]
                     })
         
+
         return history

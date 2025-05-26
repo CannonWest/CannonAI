@@ -12,40 +12,21 @@ python gemini_chat/gemini_chat.py
 
 The CLI mode provides a traditional terminal-based interface with command-line commands.
 
-### Web Interface Mode (FastAPI)
 
-The original web interface provides a WebSocket-based experience:
+### Web Interface Mode
 
-```bash
-python gemini_chat/gemini_chat.py --ui
-```
-
-When using the web UI mode:
-- A FastAPI server will start (default: http://127.0.0.1:8000)
-- Uses WebSockets for real-time communication
-- Provides a modern, responsive interface
-
-### GUI Mode (Flask + Bootstrap)
-
-The new GUI mode provides a clean, Bootstrap-based interface:
+The web interface provides a more user-friendly experience with the same functionality:
 
 ```bash
 python gemini_chat/gemini_chat.py --gui
 ```
 
-When using the GUI mode:
-- A Flask web server will start (default: http://127.0.0.1:8080)
-- Your default web browser will automatically open to the Gemini Chat GUI
-- Uses Server-Sent Events (SSE) for streaming responses
-- Interactive modals for user inputs (conversation titles, model selection, etc.)
-- Bootstrap-based responsive design
-- All CLI commands are available through the graphical interface
+When using the web UI mode:
 
-#### UI Versions
-
-The application includes two UI versions:
-- **Standard UI**: The default web interface (index.html, style.css, main.js)
-- **Modern UI**: An enhanced interface with improved styling and features (new_index.html, modern_style.css, modern_main.js)
+- A local web server will start (default: http://127.0.0.1:8000)
+- Your default web browser will automatically open to the Gemini Chat interface
+- The same commands available in CLI mode are available through the web interface
+- The web interface provides a more visual experience with better formatting
 
 The modern UI includes additional features:
 - Markdown rendering with syntax highlighting for code blocks
@@ -53,12 +34,7 @@ The modern UI includes additional features:
 - More intuitive settings interface
 - Real-time streaming with visual feedback
 
-**Note**: To use the web interfaces, you need to install the additional dependencies:
-
-For FastAPI UI mode:
-```bash
-pip install -r gemini_chat/ui_requirements.txt
-```
+**Note**: To use the web interface, you need to install the additional UI dependencies:
 
 For Flask GUI mode:
 ```bash
