@@ -37,6 +37,32 @@ class APIHandlers:
         
         print("[DEBUG APIHandlers] Initialized with client and command handler")
     
+    def _get_messages_dict(self) -> Dict[str, Any]:
+        """Get messages dictionary, handling both old and new conversation formats.
+        
+        Returns:
+            Dictionary mapping message IDs to message data
+        """
+        # Check if we have new format conversation_data
+        if hasattr(self.client, 'conversation_data') and self.client.conversation_data:
+            messages = self.client.conversation_data.get('messages', {})
+            # Ensure messages is a dictionary, not a list
+            if isinstance(messages, dict):
+                return messages
+            else:
+                print(f"[DEBUG APIHandlers] Messages is not a dict: {type(messages)}")
+        
+        # Fallback to old format conversation_history
+        if hasattr(self.client, 'conversation_history') and self.client.conversation_history:
+            messages_dict = {}
+            for item in self.client.conversation_history:
+                if item.get('type') == 'message' and 'id' in item:
+                    messages_dict[item['id']] = item
+            return messages_dict
+        
+        # Return empty dict if no conversation data found
+        return {}
+    
     def run_async(self, coro):
         """Run an async coroutine in the event loop and return result
         
@@ -132,8 +158,8 @@ class APIHandlers:
         try:
             sibling_info = self.run_async(self.client.get_message_siblings(message_id))
             
-            # Get the actual message data
-            messages = self.client.conversation_data.get('messages', {})
+            # Get the actual message data - handle both old and new formats
+            messages = self._get_messages_dict()
             message = messages.get(message_id, {})
             
             print(f"[DEBUG APIHandlers] Message has {sibling_info['total']} siblings")

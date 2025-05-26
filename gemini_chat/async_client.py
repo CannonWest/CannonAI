@@ -135,6 +135,73 @@ class AsyncGeminiClient(BaseGeminiClient):
         
         branch = self.conversation_data.get("branches", {}).get(branch_id, {})
         return branch.get("last_message")
+    
+    def _convert_old_to_new_format(self) -> None:
+        """Convert old conversation_history format to new conversation_data format."""
+        if not hasattr(self, 'conversation_history') or not self.conversation_history:
+            return
+        
+        print(f"{Colors.CYAN}Converting old format to new format...{Colors.ENDC}")
+        
+        # Initialize new conversation structure
+        title = "Converted Conversation"
+        conversation_id = self.conversation_id or self.generate_conversation_id()
+        
+        # Extract metadata first
+        metadata_item = None
+        for item in self.conversation_history:
+            if item.get("type") == "metadata":
+                metadata_item = item
+                metadata = item.get("content", {})
+                title = metadata.get("title", title)
+                break
+        
+        # Create new format structure
+        self.conversation_data = self.create_metadata_structure(title, conversation_id)
+        
+        # Convert messages
+        messages = {}
+        prev_message_id = None
+        
+        for item in self.conversation_history:
+            if item.get("type") == "message":
+                content = item.get("content", {})
+                role = content.get("role")
+                text = content.get("text", "")
+                
+                if role in ["user", "assistant", "ai"]:
+                    # Convert ai role to assistant for consistency
+                    if role == "ai":
+                        role = "assistant"
+                    
+                    # Create new message structure
+                    message = self.create_message_structure(
+                        role=role,
+                        text=text,
+                        model=self.model,
+                        params=self.params if role == "assistant" else {},
+                        parent_id=prev_message_id,
+                        branch_id="main"
+                    )
+                    
+                    messages[message["id"]] = message
+                    
+                    # Update parent-child relationships
+                    if prev_message_id and prev_message_id in messages:
+                        messages[prev_message_id].setdefault("children", []).append(message["id"])
+                    
+                    prev_message_id = message["id"]
+        
+        # Add messages to conversation_data
+        self.conversation_data["messages"] = messages
+        
+        # Update branch info
+        if prev_message_id:
+            self.conversation_data["branches"]["main"]["last_message"] = prev_message_id
+            self.conversation_data["branches"]["main"]["message_count"] = len(messages)
+            self.conversation_data["metadata"]["active_leaf"] = prev_message_id
+        
+        print(f"{Colors.GREEN}Converted {len(messages)} messages to new format{Colors.ENDC}")
 
     async def start_new_conversation(self, title: Optional[str] = None, is_web_ui: bool = False) -> None:
         """Start a new conversation asynchronously.
@@ -781,12 +848,19 @@ class AsyncGeminiClient(BaseGeminiClient):
                     with open(file_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
 
-                    # Extract metadata
-                    metadata = {}
-                    for item in data.get("history", []):
-                        if item.get("type") == "metadata":
-                            metadata = item.get("content", {})
-                            break
+                    # Handle both old and new formats
+                    if "metadata" in data and "messages" in data:
+                        # New format
+                        metadata = data.get("metadata", {})
+                        message_count = len(data.get("messages", {}))
+                    else:
+                        # Old format
+                        metadata = {}
+                        for item in data.get("history", []):
+                            if item.get("type") == "metadata":
+                                metadata = item.get("content", {})
+                                break
+                        message_count = sum(1 for item in data.get("history", []) if item.get("type") == "message")
 
                     result.append({
                         "filename": file_path.name,
@@ -794,7 +868,7 @@ class AsyncGeminiClient(BaseGeminiClient):
                         "title": metadata.get("title", "Untitled"),
                         "model": metadata.get("model", "Unknown"),
                         "created_at": metadata.get("created_at", "Unknown"),
-                        "message_count": sum(1 for item in data.get("history", []) if item.get("type") == "message"),
+                        "message_count": message_count,
                         "conversation_id": data.get("conversation_id")
                     })
                 except Exception as e:
@@ -898,49 +972,96 @@ class AsyncGeminiClient(BaseGeminiClient):
                 data = await asyncio.to_thread(read_json_file)
 
                 self.conversation_id = data.get("conversation_id")
-                self.conversation_history = data.get("history", [])
-
-                for item in self.conversation_history:
-                    if item.get("type") == "metadata":
-                        metadata = item.get("content", {})
-                        self.model = metadata.get("model", self.model)
-                        self.conversation_name = metadata.get("title", "Untitled") # Update conversation_name
-                        if "params" in metadata:
-                            self.params = metadata["params"]
-                        break
+                
+                # Handle both old and new format conversations
+                if "messages" in data and "metadata" in data:
+                    # New format - direct assignment
+                    self.conversation_data = data
+                    metadata = data.get("metadata", {})
+                    self.model = metadata.get("model", self.model)
+                    self.conversation_name = metadata.get("title", "Untitled")
+                    self.active_branch = metadata.get("active_branch", "main")
+                    print(f"{Colors.CYAN}Loaded new format conversation{Colors.ENDC}")
+                else:
+                    # Old format - convert to new format
+                    self.conversation_history = data.get("history", [])
+                    self._convert_old_to_new_format()
+                    print(f"{Colors.CYAN}Converted old format conversation to new format{Colors.ENDC}")
+                    
+                    for item in self.conversation_history:
+                        if item.get("type") == "metadata":
+                            metadata = item.get("content", {})
+                            self.model = metadata.get("model", self.model)
+                            self.conversation_name = metadata.get("title", "Untitled") # Update conversation_name
+                            if "params" in metadata:
+                                self.params = metadata["params"]
+                            break
+                    
                 print(f"{Colors.GREEN}Loaded conversation: {selected_conv['title']}{Colors.ENDC}")
                 await self.display_conversation_history()
         except Exception as e:
             print(f"{Colors.FAIL}Error loading conversation data: {e}{Colors.ENDC}")
+            import traceback
+            traceback.print_exc()
 
     async def display_conversation_history(self) -> None:
         """Display the current conversation history asynchronously."""
-        if not self.conversation_history:
+        # Check if we have any conversation data to display
+        if hasattr(self, 'conversation_data') and self.conversation_data:
+            # New format - use conversation_data
+            messages = self.conversation_data.get("messages", {})
+            if not messages:
+                print(f"{Colors.WARNING}No conversation history to display.{Colors.ENDC}")
+                return
+
+            print(f"\n{Colors.HEADER}Conversation History:{Colors.ENDC}")
+            metadata = self.conversation_data.get("metadata", {})
+            title = metadata.get("title", "Untitled")
+            model_name = metadata.get("model", self.model)
+            print(f"{Colors.BOLD}Title: {title}{Colors.ENDC}")
+            print(f"{Colors.BOLD}Model: {model_name}{Colors.ENDC}\n")
+
+            # Get the active branch message chain
+            active_branch = metadata.get("active_branch", "main")
+            message_chain = self._build_message_chain(self.conversation_data, active_branch)
+            
+            for msg_id in message_chain:
+                msg = messages.get(msg_id, {})
+                if msg.get("type") in ["user", "assistant"]:
+                    role = msg["type"]
+                    text = msg.get("content", "")
+                    if role == "user":
+                        print(f"{Colors.BLUE}User: {Colors.ENDC}{text}")
+                    else:
+                        print(f"{Colors.GREEN}AI: {Colors.ENDC}{text}")
+                    print("")
+        
+        # Fallback to old format if it exists
+        elif hasattr(self, 'conversation_history') and self.conversation_history:
+            print(f"\n{Colors.HEADER}Conversation History:{Colors.ENDC}")
+            title = "Untitled"
+            current_model_display = self.model
+            for item in self.conversation_history:
+                if item["type"] == "metadata":
+                    metadata = item["content"]
+                    title = metadata.get("title", title)
+                    current_model_display = metadata.get("model", current_model_display)
+                    self.conversation_name = title
+                    break
+            print(f"{Colors.BOLD}Title: {title}{Colors.ENDC}")
+            print(f"{Colors.BOLD}Model: {current_model_display}{Colors.ENDC}\n")
+
+            for item in self.conversation_history:
+                if item["type"] == "message":
+                    role = item["content"]["role"]
+                    text = item["content"]["text"]
+                    if role == "user":
+                        print(f"{Colors.BLUE}User: {Colors.ENDC}{text}")
+                    else:
+                        print(f"{Colors.GREEN}AI: {Colors.ENDC}{text}")
+                    print("")
+        else:
             print(f"{Colors.WARNING}No conversation history to display.{Colors.ENDC}")
-            return
-
-        print(f"\n{Colors.HEADER}Conversation History:{Colors.ENDC}")
-        title = "Untitled"
-        current_model_display = self.model # Renamed to current_model_display
-        for item in self.conversation_history:
-            if item["type"] == "metadata":
-                metadata = item["content"]
-                title = metadata.get("title", title)
-                current_model_display = metadata.get("model", current_model_display)
-                self.conversation_name = title
-                break
-        print(f"{Colors.BOLD}Title: {title}{Colors.ENDC}")
-        print(f"{Colors.BOLD}Model: {current_model_display}{Colors.ENDC}\n")
-
-        for item in self.conversation_history:
-            if item["type"] == "message":
-                role = item["content"]["role"]
-                text = item["content"]["text"]
-                if role == "user":
-                    print(f"{Colors.BLUE}User: {Colors.ENDC}{text}")
-                else:
-                    print(f"{Colors.GREEN}AI: {Colors.ENDC}{text}")
-                print("")
 
     async def toggle_streaming(self) -> bool:
         """Toggle streaming mode asynchronously.
@@ -955,59 +1076,103 @@ class AsyncGeminiClient(BaseGeminiClient):
 
     # --- Methods for UI interaction ---
     def add_user_message(self, message: str) -> None:
-        """Add a user message to history (called by UI message handler)."""
+        """Add a user message to conversation (called by UI message handler)."""
+        print(f"{Colors.CYAN}[UI] Adding user message to conversation{Colors.ENDC}")
         self.current_user_message = message
-        user_message_struct = self.create_message_structure("user", message, self.model, self.params)
-        self.conversation_history.append(user_message_struct)
-        # print(f"{Colors.BLUE}User (UI): {Colors.ENDC}{message}") # Optional: server-side log for UI messages
+        
+        # Ensure we have a conversation structure
+        if not self.conversation_data:
+            print(f"{Colors.CYAN}[UI] No active conversation, starting new one{Colors.ENDC}")
+            self.conversation_id = self.generate_conversation_id()
+            self.conversation_data = self.create_metadata_structure("UI Conversation", self.conversation_id)
+            self.active_branch = "main"
+        
+        # Get the parent ID (last message in the active branch)
+        parent_id = self._get_last_message_id(self.active_branch)
+        
+        # Create and add user message to the conversation structure
+        user_message = self.create_message_structure(
+            role="user", 
+            text=message, 
+            model=self.model,
+            params={},  # No params for user messages
+            parent_id=parent_id,
+            branch_id=self.active_branch
+        )
+        self._add_message_to_conversation(user_message)
+        self.current_user_message_id = user_message["id"]
+        print(f"{Colors.BLUE}[UI] User message added with ID: {user_message['id'][:8]}...{Colors.ENDC}")
 
     def add_assistant_message(self, message: str, token_usage: Optional[Dict[str, Any]] = None) -> None:
-        """Add an assistant message to history (called by UI message handler after response)."""
+        """Add an assistant message to conversation (called by UI message handler after response)."""
+        print(f"{Colors.CYAN}[UI] Adding assistant message to conversation{Colors.ENDC}")
+        
         # Ensure message is not None before adding
         text_to_add = message if message is not None else ""
-        ai_message_struct = self.create_message_structure("ai", text_to_add, self.model, self.params, token_usage)
-        self.conversation_history.append(ai_message_struct)
-        # print(f"{Colors.GREEN}AI (UI): {Colors.ENDC}{text_to_add}") # Optional: server-side log
+        
+        # Use the current user message ID as parent
+        parent_id = self.current_user_message_id if self.current_user_message_id else self._get_last_message_id(self.active_branch)
+        
+        # Create and add assistant message to the conversation structure
+        ai_message = self.create_message_structure(
+            role="assistant",  # Using "assistant" for consistency
+            text=text_to_add, 
+            model=self.model,
+            params=self.params,
+            token_usage=token_usage,
+            parent_id=parent_id,
+            branch_id=self.active_branch
+        )
+        self._add_message_to_conversation(ai_message)
+        print(f"{Colors.GREEN}[UI] Assistant message added with ID: {ai_message['id'][:8]}...{Colors.ENDC}")
 
     async def get_response(self) -> str:
         """Get a non-streaming response for self.current_user_message (for UI)."""
+        print(f"{Colors.CYAN}[UI] Getting non-streaming response{Colors.ENDC}")
+        
         if not self.current_user_message:
             return "Error: No current user message to process."
         if not self.client:
             return "Error: Gemini client not initialized."
 
-        # current_user_message is already added to history by add_user_message()
+        # current_user_message is already added to conversation by add_user_message()
         # So, DO NOT add it again here.
 
         config = types.GenerateContentConfig(**self.params)
-        chat_history = self.build_chat_history(self.conversation_history) # History includes the latest user message
+        
+        # Build chat history from the new conversation_data structure
+        chat_history = self.build_chat_history(self.conversation_data, self.active_branch)
+        print(f"{Colors.CYAN}[UI] Built chat history with {len(chat_history)} messages{Colors.ENDC}")
 
         try:
             print(f"\r{Colors.CYAN}AI is thinking (non-streaming UI)...{Colors.ENDC}", end="", flush=True)
             api_response = await self.client.aio.models.generate_content(
-                model=self.model, contents=chat_history, config=config) # Use config parameter
+                model=self.model, contents=chat_history, config=config)
             print("\r" + " " * 50 + "\r", end="", flush=True)
 
             response_text = api_response.text
-            if response_text is None: # Ensure response_text is not None
+            if response_text is None:
                 response_text = ""
 
             token_usage = self.extract_token_usage(api_response)
-            # Add AI response to history (handled by add_assistant_message by caller)
-            # self.add_assistant_message(response_text, token_usage) # No, caller does this
+            print(f"{Colors.CYAN}[UI] Got response of length {len(response_text)}{Colors.ENDC}")
 
+            # Note: AI response will be added to conversation by caller via add_assistant_message()
             await self.save_conversation(quiet=True)
-            self.current_user_message = None # Clear after processing
+            self.current_user_message = None  # Clear after processing
             return response_text
         except Exception as e:
             error_msg = f"Error generating non-streaming response: {e}"
-            print(f"{Colors.FAIL}{error_msg}{Colors.ENDC}")
-            # self.add_assistant_message(error_msg) # Caller should handle adding error to history
+            print(f"{Colors.FAIL}[UI] {error_msg}{Colors.ENDC}")
+            import traceback
+            traceback.print_exc()
             self.current_user_message = None
-            return error_msg # Return error message to UI
+            return error_msg
 
     async def get_streaming_response(self) -> AsyncIterator[str]:
         """Get a streaming response for self.current_user_message (for UI)."""
+        print(f"{Colors.CYAN}[UI] Getting streaming response{Colors.ENDC}")
+        
         if not self.current_user_message:
             yield "Error: No current user message to process."
             return
@@ -1015,17 +1180,20 @@ class AsyncGeminiClient(BaseGeminiClient):
             yield "Error: Gemini client not initialized."
             return
 
-        # current_user_message is already added to history by add_user_message()
+        # current_user_message is already added to conversation by add_user_message()
         # So, DO NOT add it again here.
 
         config = types.GenerateContentConfig(**self.params)
-        chat_history = self.build_chat_history(self.conversation_history) # History includes the latest user message
+        
+        # Build chat history from the new conversation_data structure
+        chat_history = self.build_chat_history(self.conversation_data, self.active_branch)
+        print(f"{Colors.CYAN}[UI] Built chat history with {len(chat_history)} messages for streaming{Colors.ENDC}")
 
         complete_response_text = ""
         try:
             print(f"\r{Colors.CYAN}AI is thinking (streaming UI)...{Colors.ENDC}", end="", flush=True)
             stream_generator = await self.client.aio.models.generate_content_stream(
-                model=self.model, contents=chat_history, config=config) # Use config parameter
+                model=self.model, contents=chat_history, config=config)
             print("\r" + " " * 50 + "\r", end="", flush=True)
 
             async for chunk in stream_generator:
@@ -1033,26 +1201,49 @@ class AsyncGeminiClient(BaseGeminiClient):
                     chunk_text = chunk.text
                     complete_response_text += chunk_text
                     yield chunk_text
-            # Add the full AI response to history after streaming is complete
-            # (Handled by caller using add_assistant_message)
-            # self.add_assistant_message(complete_response_text) # No, caller does this
-
+                    
+            print(f"{Colors.CYAN}[UI] Streaming complete, total length: {len(complete_response_text)}{Colors.ENDC}")
+            
+            # Note: Full AI response will be added to conversation by caller via add_assistant_message()
             await self.save_conversation(quiet=True)
         except Exception as e:
             error_msg = f"Error generating streaming response: {e}"
-            print(f"{Colors.FAIL}{error_msg}{Colors.ENDC}")
-            yield error_msg # Yield error message to UI
-            # self.add_assistant_message(error_msg) # Caller should handle
+            print(f"{Colors.FAIL}[UI] {error_msg}{Colors.ENDC}")
+            import traceback
+            traceback.print_exc()
+            yield error_msg
         finally:
-            self.current_user_message = None # Clear after processing
+            self.current_user_message = None  # Clear after processing
 
     def get_conversation_history(self) -> List[Dict[str, Any]]:
         """Get history for UI (role and content)."""
         history = []
-        for item in self.conversation_history:
-            if item["type"] == "message":
-                history.append({
-                    'role': item["content"]["role"],
-                    'content': item["content"]["text"]
-                })
+        
+        # Handle new format first
+        if hasattr(self, 'conversation_data') and self.conversation_data:
+            # Use the active branch to get the correct message chain
+            active_branch = self.conversation_data.get("metadata", {}).get("active_branch", "main")
+            message_chain = self._build_message_chain(self.conversation_data, active_branch)
+            
+            messages = self.conversation_data.get("messages", {})
+            for msg_id in message_chain:
+                msg = messages.get(msg_id, {})
+                if msg.get("type") in ["user", "assistant"]:
+                    history.append({
+                        'role': msg["type"],
+                        'content': msg.get("content", ""),
+                        'id': msg_id,
+                        'model': msg.get("model"),
+                        'timestamp': msg.get("timestamp")
+                    })
+        
+        # Fallback to old format
+        elif hasattr(self, 'conversation_history') and self.conversation_history:
+            for item in self.conversation_history:
+                if item["type"] == "message":
+                    history.append({
+                        'role': item["content"]["role"],
+                        'content': item["content"]["text"]
+                    })
+        
         return history
