@@ -9,7 +9,7 @@ Based on the provided files, here's an updated version of your `gemini_chat/READ
 * Clarifying the GUI requirements installation.
 
 ```markdown
-# Gemini Chat
+# CannonAI
 
 A powerful, modular application for interacting with Google's Gemini AI models, supporting both command-line and web interfaces.
 
@@ -36,7 +36,7 @@ The application is organized with a modular architecture to minimize redundancy:
 
 ```
 CannonAI_GIT/
-├── gemini_chat/                  # Main application code
+├── gemini_chat/                  # Main application code (to be renamed to cannonai)
 │   ├── gemini_chat.py            # Single unified entry point
 │   ├── base_client.py            # Core shared functionality
 │   ├── sync_client.py            # Synchronous implementation
@@ -57,15 +57,15 @@ CannonAI_GIT/
 │   ├── requirements.txt          # Core and GUI dependencies
 │   ├── GUI_README.md             # Detailed documentation for the GUI
 │   └── tests/                    # Test suite (if present)
-├── gemini_chat_config/           # Configuration storage
-└── gemini_chat_conversations/    # Saved conversations (auto-created)
+├── gemini_chat_config/           # Configuration storage (to be renamed to cannonai_config)
+└── gemini_chat_conversations/    # Saved conversations (auto-created, to be renamed to cannonai_conversations)
 ```
 
 ## Installation
 
 1.  Clone this repository:
     ```bash
-    git clone [https://github.com/yourusername/CannonAI.git](https://github.com/yourusername/CannonAI.git)
+    git clone https://github.com/yourusername/CannonAI.git
     cd CannonAI
     ```
 
@@ -152,7 +152,7 @@ python gemini_chat/gemini_chat.py --gui
 
 When using the web UI mode:
 * A local web server will start (default: `http://127.0.0.1:8080`)
-* Your default web browser will automatically open to the Gemini Chat interface
+* Your default web browser will automatically open to the CannonAI interface
 * The same commands available in CLI mode are available through the web interface
 * The web interface provides a more visual experience with better formatting
 
@@ -203,7 +203,7 @@ The application uses a persistent configuration system that saves your settings 
 CannonAI_GIT/
 ├── gemini_chat/             # Main application code
 └── gemini_chat_config/      # Configuration storage
-    └── gemini_chat_config.json
+    └── gemini_chat_config.json  # (to be renamed to cannonai_config.json)
 ```
 
 Configuration options include:
@@ -298,7 +298,7 @@ make help
 
 ## Supported Models
 
-Gemini Chat supports multiple Gemini AI models. The client attempts to fetch available models from the API, and falls back to a default list if the API call fails or returns no usable models. This list includes:
+CannonAI supports multiple Gemini AI models. The client attempts to fetch available models from the API, and falls back to a default list if the API call fails or returns no usable models. This list includes:
 
 -   **`models/gemini-2.0-flash`** (Often referred to as Gemini 2.0 Flash) - Fast model, good for quick responses.
 -   **`models/gemini-2.0-pro`** (Often referred to as Gemini 2.0 Pro) - More advanced model with better reasoning capabilities.

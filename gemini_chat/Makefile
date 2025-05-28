@@ -1,4 +1,4 @@
-# Gemini Chat CLI Makefile
+# CannonAI CLI Makefile
 
 .PHONY: install test lint run run-async clean help
 
@@ -8,13 +8,13 @@
 # Project variables
 PYTHON := python
 PIP := pip
-PROJECT_NAME := gemini_chat
+PROJECT_NAME := cannonai
 TEST_DIR := tests
 VENV_DIR := venv
 
 # Help command
 help:
-	@echo "Gemini Chat CLI Makefile commands:"
+	@echo "CannonAI CLI Makefile commands:"
 	@echo ""
 	@echo "Usage:"
 	@echo "  make install    - Install dependencies"
@@ -42,11 +42,11 @@ lint:
 
 # Run in sync mode
 run:
-	$(PYTHON) run.py
+	$(PYTHON) $(PROJECT_NAME).py
 
 # Run in async mode
 run-async:
-	$(PYTHON) run.py --async
+	$(PYTHON) $(PROJECT_NAME).py --async
 
 # Clean up generated files
 clean:

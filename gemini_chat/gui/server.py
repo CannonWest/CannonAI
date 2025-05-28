@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Gemini Chat GUI Server - Flask implementation for the web interface
+CannonAI GUI Server - Flask implementation for the web interface
 
-This module provides the Flask server implementation for the Gemini Chat Web GUI.
+This module provides the Flask server implementation for the CannonAI Web GUI.
 It handles HTTP requests, Server-Sent Events for streaming, and serves the Bootstrap-based UI.
 """
 
@@ -37,14 +37,14 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("gemini_chat.gui.server")
+logger = logging.getLogger("cannonai.gui.server")
 
 # Create Flask app
 app = Flask(__name__, 
     template_folder='templates',
     static_folder='static'
 )
-app.secret_key = 'gemini-chat-gui-secret-key'  # Change this in production
+app.secret_key = 'cannonai-gui-secret-key'  # Change this in production
 CORS(app)
 
 # Global variables
@@ -405,7 +405,7 @@ def get_conversation_tree():
 def start_gui_server(config: Config, host: str = "127.0.0.1", port: int = 8080):
     """Start the Flask GUI server"""
     print("\n" + "=" * 60)
-    print("STARTING GEMINI CHAT GUI (Flask + Bootstrap)")
+    print("STARTING CANNONAI GUI (Flask + Bootstrap)")
     print("=" * 60 + "\n")
     
     # Initialize async components

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Gemini Chat CLI - Main Entry Point
+CannonAI CLI - Main Entry Point
 
-This is the single, unified entry point for the Gemini Chat CLI application.
+This is the single, unified entry point for the CannonAI CLI application.
 It handles command-line arguments, configuration, and launches the appropriate mode.
 """
 
@@ -27,10 +27,10 @@ from base_client import Colors
 
 
 def display_welcome_message():
-    """Display the welcome message for the Gemini Chat application."""
+    """Display the welcome message for the CannonAI application."""
     print(f"{Colors.HEADER}{Colors.BOLD}")
     print("╔═════════════════════════════════════════╗")
-    print("║         Gemini Chat Application         ║")
+    print("║           CannonAI Application          ║")
     print("║         ----------------------          ║")
     print("║  A command-line interface for Google's  ║")
     print("║            Gemini AI models             ║")
@@ -45,7 +45,7 @@ def parse_arguments():
         Parsed arguments namespace
     """
     parser = argparse.ArgumentParser(
-        description="Gemini Chat CLI - A powerful interface for Google's Gemini models"
+        description="CannonAI CLI - A powerful interface for Google's Gemini models"
     )
     
     # Main arguments

@@ -1,8 +1,8 @@
-# Gemini Chat GUI Documentation
+# CannonAI GUI Documentation
 
 ## Overview
 
-The Gemini Chat GUI provides a modern, web-based interface for interacting with Google's Gemini AI models. Built with Flask and Bootstrap, it offers a clean, responsive design with all the functionality of the CLI version.
+The CannonAI GUI provides a modern, web-based interface for interacting with Google's Gemini AI models. Built with Flask and Bootstrap, it offers a clean, responsive design with all the functionality of the CLI version.
 
 ## Quick Start
 
@@ -82,7 +82,7 @@ All CLI commands work in the GUI by typing them in the message input:
 ## User Interface Components
 
 ### Header Bar
-- **Application Title**: Shows "Gemini Chat" and current conversation name
+- **Application Title**: Shows "CannonAI" and current conversation name
 - **Model Selector**: Click to change the active model
 - **Settings Button**: Access generation parameters
 
@@ -251,4 +251,4 @@ If you encounter issues:
 
 ---
 
-Enjoy using the Gemini Chat GUI! For more information, see the main project documentation.
+Enjoy using the CannonAI GUI! For more information, see the main project documentation.

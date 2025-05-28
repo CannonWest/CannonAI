@@ -1,11 +1,11 @@
 /**
- * Gemini Chat GUI - Frontend JavaScript
+ * CannonAI GUI - Frontend JavaScript
  * Handles all UI interactions and communication with the Flask backend
  */
 
-class GeminiChatApp {
+class CannonAIApp {
     constructor() {
-        console.log("[DEBUG] Initializing GeminiChatApp");
+        console.log("[DEBUG] Initializing CannonAIApp");
         
         this.apiBase = window.location.origin;
         this.currentConversationId = null;
@@ -559,7 +559,7 @@ class GeminiChatApp {
         let iconClass, roleLabel;
         switch (role) {
             case 'user': iconClass = 'bi-person-circle'; roleLabel = 'You'; break;
-            case 'assistant': iconClass = 'bi-robot'; roleLabel = 'Gemini'; break;
+            case 'assistant': iconClass = 'bi-robot'; roleLabel = 'CannonAI'; break;
             default: iconClass = 'bi-info-circle'; roleLabel = 'System'; break;
         }
 
@@ -857,13 +857,13 @@ class GeminiChatApp {
             compactMode: false, codeTheme: 'github-dark', showLineNumbers: true
         };
         try {
-            const saved = localStorage.getItem('geminiChatAppSettings');
+            const saved = localStorage.getItem('cannonAIAppSettings');
             return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
         } catch (e) { return defaults; }
     }
 
     saveAppSettingsToStorage() { /* ... (no change to this function) ... */
-        try { localStorage.setItem('geminiChatAppSettings', JSON.stringify(this.appSettings)); return true; }
+        try { localStorage.setItem('cannonAIAppSettings', JSON.stringify(this.appSettings)); return true; }
         catch (e) { console.error("Error saving app settings:", e); return false; }
     }
 
@@ -943,7 +943,7 @@ class GeminiChatApp {
 
     resetAppSettings() { /* ... (no change to this function) ... */
         if (confirm('Reset all app settings to defaults?')) {
-            localStorage.removeItem('geminiChatAppSettings');
+            localStorage.removeItem('cannonAIAppSettings');
             this.appSettings = this.loadAppSettings();
             this.applyAppSettings();
             this.showAppSettingsModal();
@@ -1033,4 +1033,4 @@ class GeminiChatApp {
     }
 }
 
-const app = new GeminiChatApp();
+const app = new CannonAIApp();

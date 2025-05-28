@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Gemini Chat CLI Configuration - Unified configuration management.
+CannonAI CLI Configuration - Unified configuration management.
 
-This module provides a centralized configuration system for the Gemini Chat CLI application,
+This module provides a centralized configuration system for the CannonAI CLI application,
 handling API keys, model selection, and other application settings.
 """
 
@@ -20,11 +20,11 @@ except ImportError:
 
 
 class Config:
-    """Configuration manager for Gemini Chat CLI."""
+    """Configuration manager for CannonAI CLI."""
     
     # Default settings
     DEFAULT_MODEL = "gemini-2.0-flash"
-    DEFAULT_CONFIG_FILE = "gemini_chat_config.json"
+    DEFAULT_CONFIG_FILE = "cannonai_config.json"
     
     def __init__(self, config_file: Optional[Union[str, Path]] = None, override_api_key: Optional[str] = None, quiet: bool = False):
         """Initialize the configuration manager.
@@ -42,7 +42,7 @@ class Config:
         self.config = {
             "api_key": "",
             "default_model": self.DEFAULT_MODEL,
-            "conversations_dir": str(project_root / "gemini_chat_conversations"),
+            "conversations_dir": str(project_root / "cannonai_conversations"),
             "generation_params": {
                 "temperature": 0.7,
                 "max_output_tokens": 800,
@@ -67,7 +67,7 @@ class Config:
         Returns:
             Path to the default configuration file
         """
-        # Always use the gemini_chat_config directory relative to the project
+        # Always use the cannonai_config directory relative to the project
         try:
             # Get the current file path and determine the project structure
             current_file = Path(__file__).resolve()
@@ -76,14 +76,14 @@ class Config:
             # The parent should be the repository root
             parent_dir = current_dir.parent
             
-            # Set config directory adjacent to gemini_chat
-            config_dir = parent_dir / "gemini_chat_config"
+            # Set config directory adjacent to gemini_chat (to be renamed to cannonai)
+            config_dir = parent_dir / "cannonai_config"
             config_dir.mkdir(parents=True, exist_ok=True)
             return config_dir / self.DEFAULT_CONFIG_FILE
         except Exception as e:
             # If we can't determine the project structure, use the current directory
             print(f"Error finding project structure: {e}. Using current directory.")
-            config_dir = Path.cwd() / "gemini_chat_config"
+            config_dir = Path.cwd() / "cannonai_config"
             config_dir.mkdir(parents=True, exist_ok=True)
             return config_dir / self.DEFAULT_CONFIG_FILE
     
@@ -195,7 +195,7 @@ class Config:
             True if successful, False otherwise
         """
         try:
-            print("\n=== Gemini Chat CLI Configuration Wizard ===\n")
+            print("\n=== CannonAI CLI Configuration Wizard ===\n")
             
             # Show available configuration options
             self._display_available_configs()
@@ -229,7 +229,7 @@ class Config:
         print(f"{header_color}2. Default Model:{reset} {value_color}{current_model}{reset}")
         
         # Conversations directory
-        current_dir = self.get("conversations_dir", str(Path.home() / "gemini_chat_conversations"))
+        current_dir = self.get("conversations_dir", str(Path.home() / "cannonai_conversations"))
         print(f"{header_color}3. Conversations Directory:{reset} {value_color}{current_dir}{reset}")
         
         # Generation parameters
@@ -317,7 +317,7 @@ class Config:
             
             # Conversations directory
             elif setting_num == 3:
-                current_dir = self.get("conversations_dir", str(Path.home() / "gemini_chat_conversations"))
+                current_dir = self.get("conversations_dir", str(Path.home() / "cannonai_conversations"))
                 print(f"\nConversations Directory [{current_dir}]: ", end="")
                 dir_input = input()
                 if dir_input:
