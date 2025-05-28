@@ -12,9 +12,9 @@ import logging
 from typing import Dict, Any, Optional, AsyncGenerator, Tuple
 from datetime import datetime
 
-from async_client import AsyncGeminiClient
-from command_handler import CommandHandler
-from base_client import Colors
+from async_client import AsyncGeminiClient  # Assuming this is in the parent directory
+from command_handler import CommandHandler  # Assuming this is in the parent directory
+from base_client import Colors  # Assuming this is in the parent directory
 
 # Set up logging
 logger = logging.getLogger("gemini_chat.gui.api_handlers")
@@ -24,17 +24,9 @@ class APIHandlers:
     """Handles API business logic for the GUI server"""
 
     def __init__(self, client: AsyncGeminiClient, command_handler: CommandHandler, event_loop: asyncio.AbstractEventLoop):
-        """Initialize API handlers
-
-        Args:
-            client: The AsyncGeminiClient instance
-            command_handler: The CommandHandler instance
-            event_loop: The asyncio event loop running in a separate thread
-        """
         self.client = client
         self.command_handler = command_handler
         self.event_loop = event_loop
-
         print("[DEBUG APIHandlers] Initialized with client and command handler")
 
     def _get_messages_dict(self) -> Dict[str, Any]:
@@ -85,8 +77,11 @@ class APIHandlers:
         conv_data = self.client.conversation_data if hasattr(self.client, 'conversation_data') else {}
         metadata = conv_data.get("metadata", {})
         history_for_status = []
+        current_messages_tree = {}
+
         if self.client.conversation_id and conv_data:
             history_for_status = self.client.get_conversation_history()
+            current_messages_tree = conv_data.get("messages", {})
 
         status = {
             'connected': True,
@@ -95,10 +90,10 @@ class APIHandlers:
             'conversation_id': self.client.conversation_id,
             'conversation_name': metadata.get("title", getattr(self.client, 'conversation_name', 'New Conversation')),
             'params': metadata.get("params", self.client.params).copy(),
-            'history': history_for_status
+            'history': history_for_status,
+            'full_message_tree': current_messages_tree  # Send full message tree
         }
-
-        # print(f"[DEBUG APIHandlers] Status: conversation_id={status['conversation_id']}, history_len={len(status['history'])}")
+        # print(f"[DEBUG APIHandlers] Status: conversation_id={status['conversation_id']}, history_len={len(status['history'])}, tree_size={len(status['full_message_tree'])}")
         return status
 
     def get_models(self) -> Dict[str, Any]:
@@ -127,21 +122,24 @@ class APIHandlers:
             Dictionary with new message data or error
         """
         print(f"[DEBUG APIHandlers] Retrying message: {message_id}")
-
         try:
             retry_result = self.run_async(self.client.retry_message(message_id))
             self.run_async(self.client.save_conversation(quiet=True))
-
             print(f"[DEBUG APIHandlers] Retry successful, new message ID: {retry_result['message']['id']}")
-            print(f"[DEBUG APIHandlers] Siblings: {retry_result['total_siblings']} total, current index: {retry_result['sibling_index']}")
+
+            # After retry, the client's active branch has changed. Send the new state.
+            current_history = self.client.get_conversation_history()  # History of the new active branch
+            current_full_tree = self.client.conversation_data.get("messages", {})
 
             return {
                 'success': True,
-                'message': retry_result['message'],
+                'message': retry_result['message'],  # The new assistant message object
                 'sibling_index': retry_result['sibling_index'],
                 'total_siblings': retry_result['total_siblings'],
-                'conversation_name': self.client.conversation_data.get("metadata", {}).get("title"),
+                'history': current_history,  # Send history of the new active branch
                 'conversation_id': self.client.conversation_id,
+                'conversation_name': self.client.conversation_data.get("metadata", {}).get("title"),
+                'full_message_tree': current_full_tree  # Send the updated full tree
             }
         except Exception as e:
             logger.error(f"Failed to retry message: {e}", exc_info=True)
@@ -187,14 +185,13 @@ class APIHandlers:
             Dictionary with new active message, history, and conversation info or error
         """
         print(f"[DEBUG APIHandlers] Navigating {direction} from message: {message_id}")
-
         try:
             nav_result = self.run_async(self.client.switch_to_sibling(message_id, direction))
-
             print(f"[DEBUG APIHandlers] Navigated to message: {nav_result['message']['id']}")
             print(f"[DEBUG APIHandlers] Now at sibling index {nav_result['sibling_index']} of {nav_result['total_siblings']}")
 
-            current_history = self.client.get_conversation_history()
+            current_history = self.client.get_conversation_history()  # History of the new active branch
+            current_full_tree = self.client.conversation_data.get("messages", {})
             self.run_async(self.client.save_conversation(quiet=True))
 
             return {
@@ -204,7 +201,8 @@ class APIHandlers:
                 'total_siblings': nav_result['total_siblings'],
                 'history': current_history,
                 'conversation_id': self.client.conversation_id,
-                'conversation_name': self.client.conversation_data.get("metadata", {}).get("title")
+                'conversation_name': self.client.conversation_data.get("metadata", {}).get("title"),
+                'full_message_tree': current_full_tree  # Send the updated full tree
             }
         except Exception as e:
             logger.error(f"Failed to navigate sibling: {e}", exc_info=True)
@@ -261,10 +259,11 @@ class APIHandlers:
                 'success': True,
                 'conversation_id': self.client.conversation_id,
                 'conversation_name': metadata.get("title", self.client.conversation_name),
-                'history': [],
+                'history': [],  # Active branch history is empty for new
                 'model': metadata.get("model", self.client.model),
                 'params': metadata.get("params", self.client.params).copy(),
-                'streaming': self.client.use_streaming  # Assuming this is a global client setting
+                'streaming': self.client.use_streaming,
+                'full_message_tree': self.client.conversation_data.get("messages", {})  # Will be empty
             }
             print(f"[DEBUG APIHandlers] New conversation created: {result['conversation_name']}")
             return result
@@ -287,8 +286,9 @@ class APIHandlers:
                 self.run_async(self.client.save_conversation(quiet=True))
 
             self.run_async(self.client.load_conversation(conversation_name))
-            history = self.client.get_conversation_history()
+            history = self.client.get_conversation_history()  # Active branch history
             metadata = self.client.conversation_data.get("metadata", {})
+            full_tree = self.client.conversation_data.get("messages", {})
 
             result = {
                 'success': True,
@@ -297,9 +297,10 @@ class APIHandlers:
                 'history': history,
                 'model': metadata.get("model", self.client.model),
                 'params': metadata.get("params", self.client.params).copy(),
-                'streaming': metadata.get("streaming_preference", self.client.use_streaming)
+                'streaming': metadata.get("streaming_preference", self.client.use_streaming),
+                'full_message_tree': full_tree
             }
-            print(f"[DEBUG APIHandlers] Conversation loaded with {len(history)} messages")
+            print(f"[DEBUG APIHandlers] Conversation loaded with {len(history)} active messages, {len(full_tree)} total messages in tree.")
             return result
         except Exception as e:
             logger.error(f"Failed to load conversation: {e}", exc_info=True)
@@ -330,42 +331,34 @@ class APIHandlers:
             Dictionary with response or error
         """
         print(f"[DEBUG APIHandlers] Handling /api/send for message: '{message[:50]}...'")
-
         try:
             if not self.client.conversation_id:
                 print("[DEBUG APIHandlers] No active conversation, starting new one implicitly for /api/send")
                 self.run_async(self.client.start_new_conversation(is_web_ui=True))
 
-            # Add user message to client's internal state. This sets self.client.current_user_message_id.
             self.client.add_user_message(message)
-
-            # Capture the user message ID BEFORE it's cleared by add_assistant_message (which is called within get_response or add_assistant_message)
             user_message_id_for_parenting = self.client.current_user_message_id
-
             response_text_content, token_usage_info = self.run_async(self.client.get_response())
 
             if response_text_content is None and token_usage_info is None:
                 raise Exception("Client get_response failed to return valid data.")
 
-            # Add assistant message to client's internal state.
-            # This call will use the (now potentially cleared) self.client.current_user_message_id for its own parenting logic,
-            # but we have already captured the correct one in user_message_id_for_parenting for the API response.
             self.client.add_assistant_message(response_text_content, token_usage_info)
-
             assistant_message_id = self.client._get_last_message_id(self.client.active_branch)
 
             print(f"[DEBUG APIHandlers] Response Text: '{response_text_content[:100] if response_text_content else ''}...', Token Usage: {token_usage_info}")
             print(f"[DEBUG APIHandlers] Message IDs - User (Parent): {user_message_id_for_parenting}, Assistant: {assistant_message_id}")
-
             self.run_async(self.client.save_conversation(quiet=True))
 
             return {
                 'response': response_text_content,
                 'conversation_id': self.client.conversation_id,
                 'message_id': assistant_message_id,
-                'parent_id': user_message_id_for_parenting,  # Use the captured ID
+                'parent_id': user_message_id_for_parenting,
                 'model': self.client.conversation_data.get("metadata", {}).get("model", self.client.model),
                 'token_usage': token_usage_info
+                # full_message_tree is not strictly needed here as send_message only adds to current branch
+                # The client optimistically updates its tree. Status updates will sync the full tree.
             }
         except Exception as e:
             logger.error(f"Failed to send message via /api/send: {e}", exc_info=True)
@@ -381,7 +374,6 @@ class APIHandlers:
             SSE-formatted response chunks
         """
         print(f"[DEBUG APIHandlers] Streaming message: '{message[:50]}...'")
-
         try:
             if not self.client.conversation_id:
                 print("[DEBUG APIHandlers] No active conversation, starting new one implicitly for /api/stream")
@@ -456,18 +448,42 @@ class APIHandlers:
                 logger.error(f"Error saving conversation during streaming error handling: {save_e}")
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
+    # Other methods (get_conversation_tree, save_conversation, update_settings, execute_command)
+    # generally don't need to send full_message_tree unless they change the tree structure
+    # or the client specifically needs a full refresh after them.
+    # For update_settings, the client just needs confirmation and the new settings values.
+    # For execute_command, if it results in a state change like loading a new conversation,
+    # that specific command's logic (e.g., self.load_conversation) will handle sending the tree.
+
+    def get_conversation_tree(self) -> Dict[str, Any]:
+        print("[DEBUG APIHandlers] Getting conversation tree")
+        try:
+            tree = self.run_async(self.client.get_conversation_tree())  # This already returns the full tree structure
+            print(f"[DEBUG APIHandlers] Tree has {len(tree.get('nodes', []))} nodes and {len(tree.get('edges', []))} edges")
+            return {'success': True, 'tree': tree}  # 'tree' contains nodes, edges, metadata
+        except Exception as e:
+            logger.error(f"Failed to get conversation tree: {e}", exc_info=True)
+            return {'error': str(e)}
+
+    def save_conversation(self) -> Dict[str, Any]:
+        print("[DEBUG APIHandlers] Saving current conversation")
+        try:
+            self.run_async(self.client.save_conversation())
+            print("[DEBUG APIHandlers] Conversation saved successfully")
+            return {'success': True}
+        except Exception as e:
+            logger.error(f"Failed to save conversation: {e}", exc_info=True)
+            return {'error': str(e)}
+
     def update_settings(self, model: Optional[str] = None,
                         streaming: Optional[bool] = None,
                         params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Update client settings."""
         print(f"[DEBUG APIHandlers] Updating settings - Model: {model}, Streaming: {streaming}, Params: {params}")
         try:
             if model is not None:
                 self.client.model = model
                 if self.client.conversation_data and "metadata" in self.client.conversation_data:
                     self.client.conversation_data["metadata"]["model"] = model
-                print(f"[DEBUG APIHandlers] Updated client model to: {self.client.model}")
-
             if streaming is not None:
                 self.client.use_streaming = streaming
                 if self.client.conversation_data and "metadata" in self.client.conversation_data:
@@ -480,7 +496,7 @@ class APIHandlers:
                     self.client.conversation_data["metadata"].setdefault("params", {}).update(params)
                 print(f"[DEBUG APIHandlers] Updated client params: {self.client.params}")
 
-            if self.client.conversation_id:
+            if self.client.conversation_id:  # Save changes if they affect current conversation
                 self.run_async(self.client.save_conversation(quiet=True))
 
             return {
@@ -496,20 +512,34 @@ class APIHandlers:
     def execute_command(self, command: str) -> Dict[str, Any]:
         """Execute a command."""
         print(f"[DEBUG APIHandlers] Executing command: '{command}'")
-
         try:
             parts = command.lower().split(maxsplit=1)
-            cmd_name = parts[0]
+            cmd_name = parts[0];
             cmd_args = parts[1] if len(parts) > 1 else ""
 
-            if cmd_name == '/new':
-                return self.new_conversation(title=cmd_args)
-            elif cmd_name == '/load':
-                if cmd_args:
-                    return self.load_conversation(cmd_args)
-                else:
-                    return {'error': 'Please specify a conversation name or number to load.'}
-            # ... (other command handlers) ...
+            # Commands that change conversation context should return full state
+            if cmd_name == '/new': return self.new_conversation(title=cmd_args)
+            if cmd_name == '/load': return self.load_conversation(cmd_args) if cmd_args else {'error': 'Specify conv name/num.'}
+
+            # Commands that might update settings
+            if cmd_name == '/model' and cmd_args: return self.update_settings(model=cmd_args)
+            if cmd_name == '/stream': return self.update_settings(streaming=not self.client.use_streaming)
+
+            # Other commands (mostly informational or simple actions)
+            if cmd_name == '/save': return self.save_conversation()
+            if cmd_name == '/list':
+                convos = self.get_conversations()
+                return {'success': True, 'message': 'Conversations list refreshed.', 'conversations': convos.get('conversations')}
+            if cmd_name == '/model' and not cmd_args: return self.get_models()
+            if cmd_name == '/params':  # For GUI, this usually opens a modal; here, just return current
+                return {'success': True, 'params': self.client.params.copy(),
+                        'message': 'Current generation parameters displayed in settings.'}
+
+            # Fallback for less critical commands or those handled by CommandHandler directly
+            if hasattr(self.command_handler, 'async_handle_command'):
+                # Assuming command_handler might return simple messages or status
+                handler_result = self.run_async(self.command_handler.async_handle_command(command))
+                return {'success': True, 'message': f"Command '{command}' processed.", 'handler_output': handler_result}
             else:
                 # Fallback for commands not directly handled by specific API endpoints
                 if hasattr(self.command_handler, 'async_handle_command'):
@@ -548,3 +578,4 @@ class APIHandlers:
         except Exception as e:
             logger.error(f"Failed to execute command '{command}': {e}", exc_info=True)
             return {'error': str(e)}
+
