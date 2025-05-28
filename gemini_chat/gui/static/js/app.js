@@ -53,9 +53,8 @@ class GeminiChatApp {
     }
 
     async loadInitialData() {
-        await this.loadStatus(); // This might populate messageTree if server sends full data initially
+        await this.loadStatus();
         await this.loadConversations();
-        // `loadStatus` now handles displaying initial history if available from server
     }
 
     setupEventListeners() {
@@ -63,7 +62,8 @@ class GeminiChatApp {
         const messageInput = document.getElementById('messageInput');
         messageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault(); this.sendMessage();
+                e.preventDefault();
+                this.sendMessage();
             }
         });
         document.getElementById('temperature')?.addEventListener('input', (e) => {
@@ -73,7 +73,8 @@ class GeminiChatApp {
             document.getElementById('topPValue').textContent = e.target.value;
         });
         document.getElementById('fontSize')?.addEventListener('input', (e) => {
-            document.getElementById('fontSizeValue').textContent = e.target.value; this.updatePreview();
+            document.getElementById('fontSizeValue').textContent = e.target.value;
+            this.updatePreview();
         });
         document.querySelectorAll('input[name="theme"]')?.forEach(radio => {
             radio.addEventListener('change', () => this.updatePreview());
@@ -85,6 +86,35 @@ class GeminiChatApp {
         });
     }
 
+    // Helper function to ensure all parent-child links are correct in this.messageTree
+    _rebuildMessageTreeRelationships() {
+        if (Object.keys(this.messageTree).length === 0) return;
+        console.log("[DEBUG SIBLING] Rebuilding messageTree parent-child relationships internally.");
+
+        // First, ensure all nodes have a 'children' array.
+        for (const msgId in this.messageTree) {
+            if (!this.messageTree[msgId].children || !Array.isArray(this.messageTree[msgId].children)) {
+                this.messageTree[msgId].children = [];
+            }
+        }
+        // Now, iterate again to populate children arrays based on parent_id
+        for (const msgId in this.messageTree) {
+            const messageNode = this.messageTree[msgId];
+            if (messageNode.parent_id && this.messageTree[messageNode.parent_id]) {
+                const parentNode = this.messageTree[messageNode.parent_id];
+                // Ensure parentNode.children is an array before pushing
+                if (!Array.isArray(parentNode.children)) {
+                    parentNode.children = [];
+                }
+                if (!parentNode.children.includes(msgId)) {
+                    parentNode.children.push(msgId);
+                }
+            }
+        }
+        console.log("[DEBUG SIBLING] Finished rebuilding messageTree relationships.");
+    }
+
+
     async loadStatus() {
         console.log("[DEBUG] Loading client status");
         try {
@@ -93,41 +123,39 @@ class GeminiChatApp {
 
             this.updateConnectionStatus(data.connected);
             if (data.connected) {
-                console.log("[DEBUG] Client connected, status data:", data);
+                console.log("[DEBUG] Client connected, status data received.");
                 this.updateModelDisplay(data.model);
                 this.streamingEnabled = data.streaming;
                 this.updateStreamingStatusDisplay(data.streaming);
 
-                if (data.conversation_id && this.currentConversationId !== data.conversation_id) {
-                    // If the conversation ID from status is different, it implies a server-side change or initial load.
-                    // We should treat this as loading a new conversation context.
-                    this.messageTree = {}; // Reset message tree for the new context
-                    this.currentConversationId = data.conversation_id;
-                } else if (!data.conversation_id) {
-                    this.messageTree = {}; // No active conversation, clear tree
-                    this.currentConversationId = null;
+                const serverConversationId = data.conversation_id;
+                this.currentConversationId = serverConversationId;
+
+                if (serverConversationId && data.full_message_tree) {
+                    this.messageTree = data.full_message_tree;
+                    this._rebuildMessageTreeRelationships(); // Ensure parent-child links are correct
+                    console.log("[DEBUG] Populated and rebuilt messageTree from full_message_tree on status. Size:", Object.keys(this.messageTree).length);
+                } else if (!serverConversationId) {
+                    this.messageTree = {};
+                    console.log("[DEBUG] No active server conversation, cleared messageTree.");
                 }
-                // If conversation_id is the same, messageTree persists.
 
                 document.getElementById('conversationName').textContent = data.conversation_name || 'New Conversation';
                 if (data.params) this.updateSettingsForm(data.params);
 
-                if (data.conversation_id && data.history && Array.isArray(data.history)) {
-                    console.log("[DEBUG] Initial history received with status, displaying.");
-                    this.rebuildChatFromHistory(data.history); // This will populate messageTree if needed
+                if (data.history && Array.isArray(data.history)) {
+                    console.log("[DEBUG] History received with status, rebuilding display. History length:", data.history.length);
+                    this.rebuildChatFromHistory(data.history);
                 } else {
-                    this.clearChat(); // Clears display and messageElements
+                    this.clearChatDisplay();
                 }
             } else {
                 console.warn("[WARN] Client not connected according to status API.");
-                this.clearChat();
-                this.messageTree = {}; // No connection, clear tree
+                this.clearChatDisplay(); this.messageTree = {}; this.currentConversationId = null;
             }
         } catch (error) {
             console.error("[ERROR] Failed to load status:", error);
-            this.updateConnectionStatus(false);
-            this.clearChat();
-            this.messageTree = {}; // Error, clear tree
+            this.updateConnectionStatus(false); this.clearChatDisplay(); this.messageTree = {}; this.currentConversationId = null;
         }
     }
 
@@ -169,7 +197,6 @@ class GeminiChatApp {
         const messageInput = document.getElementById('messageInput');
         const messageContent = messageInput.value.trim();
         if (!messageContent) return;
-
         console.log(`[DEBUG] Sending message: ${messageContent.substring(0, 50)}...`);
 
         if (messageContent.startsWith('/')) {
@@ -178,13 +205,10 @@ class GeminiChatApp {
             return;
         }
 
-        // Create a temporary ID for the user message for optimistic UI update
         const tempUserMessageId = `msg-user-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+        const parentIdForNewMessage = this.getLastMessageIdFromActiveBranchDOM();
 
-        // Add user message to DOM and Tree.
-        // `addMessageToDOM` will use tempUserMessageId if no ID is provided by server yet.
-        // It will also update `this.messageTree`.
-        this.addMessageToDOM('user', messageContent, tempUserMessageId, { parent_id: this.getLastMessageIdFromActiveBranch() });
+        this.addMessageToDOM('user', messageContent, tempUserMessageId, { parent_id: parentIdForNewMessage });
         messageInput.value = '';
         this.showThinking(true);
 
@@ -201,30 +225,31 @@ class GeminiChatApp {
                 this.addMessageToDOM('system', `Error: ${data.error}`);
             } else {
                 console.log('[DEBUG] Got successful response from /api/send:', data);
-                // Server returns the actual ID for the user message (data.parent_id)
-                // and the new assistant message (data.message_id)
 
-                // Update the user message in the tree with its actual server-assigned ID if different
                 if (this.messageTree[tempUserMessageId] && data.parent_id && tempUserMessageId !== data.parent_id) {
                     console.log(`[DEBUG] Updating temp user message ID ${tempUserMessageId} to server ID ${data.parent_id}`);
-                    this.messageTree[data.parent_id] = this.messageTree[tempUserMessageId];
-                    this.messageTree[data.parent_id].id = data.parent_id;
+                    const tempNode = this.messageTree[tempUserMessageId];
                     delete this.messageTree[tempUserMessageId];
-                    // Update DOM element ID if necessary
+                    tempNode.id = data.parent_id;
+                    this.messageTree[data.parent_id] = tempNode;
                     const tempUserMsgEl = document.getElementById(tempUserMessageId);
-                    if (tempUserMsgEl) tempUserMsgEl.id = data.parent_id;
-                    this.messageElements[data.parent_id] = this.messageElements[tempUserMessageId];
-                    delete this.messageElements[tempUserMessageId];
+                    if (tempUserMsgEl) {
+                        tempUserMsgEl.id = data.parent_id;
+                        this.messageElements[data.parent_id] = tempUserMsgEl;
+                        delete this.messageElements[tempUserMessageId];
+                    }
+                } else if (data.parent_id && !this.messageTree[data.parent_id] && this.messageTree[tempUserMessageId]) {
+                     this.messageTree[data.parent_id] = this.messageTree[tempUserMessageId];
+                     this.messageTree[data.parent_id].id = data.parent_id;
+                     if (tempUserMessageId !== data.parent_id) delete this.messageTree[tempUserMessageId];
                 }
-
 
                 this.addMessageToDOM('assistant', data.response, data.message_id, {
                     model: data.model,
-                    parent_id: data.parent_id, // This is the user message's actual ID
+                    parent_id: data.parent_id,
                     token_usage: data.token_usage
                 });
-                this.currentConversationId = data.conversation_id; // Update current conversation ID
-                // updateSiblingIndicators is called within addMessageToDOM for the parent
+                if (data.conversation_id) this.currentConversationId = data.conversation_id;
             }
         } catch (error) {
             console.error("[ERROR] Failed to send message via /api/send:", error);
@@ -235,29 +260,20 @@ class GeminiChatApp {
         }
     }
 
-    getLastMessageIdFromActiveBranch() {
-        // Helper to find the last message ID in the current view (active branch)
-        // This relies on messageTree being somewhat populated for the active branch.
-        let lastId = null;
-        let maxTimestamp = 0;
-        // This is a simplified way; a more robust way would be to trace parent_ids from a known active_leaf
-        // For now, this assumes messages in messageTree for the active branch are somewhat ordered by add
-        // Or, better, if server provides active_leaf_id with status.
-        // For optimistic UI, this is a best guess for the parent.
-        // The server will confirm the actual parent_id.
+    getLastMessageIdFromActiveBranchDOM() {
         const chatMessagesContainer = document.getElementById('chatMessages');
-        const messageElements = chatMessagesContainer.querySelectorAll('.message');
-        if (messageElements.length > 0) {
-            lastId = messageElements[messageElements.length - 1].id;
+        const messageElementsInDOM = chatMessagesContainer.querySelectorAll('.message');
+        if (messageElementsInDOM.length > 0) {
+            return messageElementsInDOM[messageElementsInDOM.length - 1].id;
         }
-        return lastId;
+        return null;
     }
-
 
     async handleCommand(command) {
         console.log(`[DEBUG] Handling command: ${command}`);
         if (command === '/help') {
-            this.showHelp(); return;
+            this.showHelp();
+            return;
         }
         try {
             const response = await fetch(`${this.apiBase}/api/command`, {
@@ -266,28 +282,36 @@ class GeminiChatApp {
                 body: JSON.stringify({ command })
             });
             const data = await response.json();
-            if (data.error) this.showAlert(data.error, 'danger');
-            else if (data.message) this.addMessageToDOM('system', data.message);
+            if (data.error) {
+                this.showAlert(data.error, 'danger');
+            } else if (data.message && !data.success) { // Simple message from command
+                 this.addMessageToDOM('system', data.message);
+            }
 
-            if (command.startsWith('/new') || command.startsWith('/load')) {
-                if (data.success) {
-                    this.currentConversationId = data.conversation_id;
-                    document.getElementById('conversationName').textContent = data.conversation_name;
+            if (data.success) { // Command resulted in a state change
+                if (data.conversation_id) this.currentConversationId = data.conversation_id;
+                if (data.conversation_name) document.getElementById('conversationName').textContent = data.conversation_name;
 
-                    // For /new or /load, reset messageTree and rebuild from returned history
-                    this.messageTree = {};
-                    if (data.history && Array.isArray(data.history)) {
-                        this.rebuildChatFromHistory(data.history);
-                    } else {
-                        this.clearChat(); // Clears display and messageElements
-                    }
-                    if(data.model) this.updateModelDisplay(data.model);
-                    if(data.params) this.updateSettingsForm(data.params);
-                    if(data.streaming !== undefined) this.updateStreamingStatusDisplay(data.streaming);
+                if (data.full_message_tree) { // If server sends the full tree, update it
+                    this.messageTree = data.full_message_tree;
+                    this._rebuildMessageTreeRelationships(); // Crucial after updating tree
+                    console.log("[DEBUG] Updated and rebuilt messageTree from command response. Size:", Object.keys(this.messageTree).length);
                 }
-                await this.loadConversations(); // Refresh sidebar
-            } else if (command.startsWith('/model') || command.startsWith('/stream') || command.startsWith('/params')) {
-                 await this.loadStatus(); // Reload status to get updated model/params/streaming
+
+                if (data.history && Array.isArray(data.history)) {
+                    this.rebuildChatFromHistory(data.history);
+                } else if (command.startsWith('/new')) { // For /new, history is empty, clear display
+                    this.clearChatDisplay();
+                }
+
+                if(data.model) this.updateModelDisplay(data.model);
+                if(data.params) this.updateSettingsForm(data.params);
+                if(data.streaming !== undefined) this.updateStreamingStatusDisplay(data.streaming);
+                if(data.message && data.success) this.showAlert(data.message, 'info'); // Success message from command
+
+                if (command.startsWith('/new') || command.startsWith('/load') || command.startsWith('/list')) {
+                    await this.loadConversations(); // Refresh sidebar
+                }
             }
         } catch (error) {
             console.error("[ERROR] Command failed:", error);
@@ -334,16 +358,15 @@ class GeminiChatApp {
     }
 
     rebuildChatFromHistory(history) {
-        console.log("[DEBUG] Rebuilding chat display from history array:", history);
-        // Clear only the DOM elements and their cache
+        console.log("[DEBUG] Rebuilding chat display from history array. History length:", history.length);
+        // Note: this.messageTree should already be populated and relationships rebuilt by the calling function (loadStatus, loadConversationByName, etc.)
+
         const chatMessages = document.getElementById('chatMessages');
         chatMessages.innerHTML = '';
         this.messageElements = {};
 
         if (!Array.isArray(history)) {
             console.error("[ERROR] rebuildChatFromHistory received non-array history:", history);
-            // If messageTree is also empty (e.g. initial load error), show empty state.
-            // Otherwise, messageTree might have data from a previous valid state.
             if (Object.keys(this.messageTree).length === 0) {
                  chatMessages.innerHTML = `<div class="text-center text-muted py-5"><i class="bi bi-chat-dots display-1"></i><p>Start a new conversation or load an existing one.</p></div>`;
             }
@@ -351,27 +374,25 @@ class GeminiChatApp {
         }
 
         if (history.length === 0 ) {
-            // If history is empty, but messageTree might not be (e.g. after /new),
-            // show empty state only if messageTree is also truly empty.
-             if (Object.keys(this.messageTree).length === 0) {
+            if (Object.keys(this.messageTree).length === 0) { // Only show empty state if tree is also empty
                 chatMessages.innerHTML = `<div class="text-center text-muted py-5"><i class="bi bi-chat-dots display-1"></i><p>Start a new conversation or load an existing one.</p></div>`;
-             }
+            }
         }
 
-        history.forEach(msg => { // msg from server history should contain parent_id
+        history.forEach(msgDataFromActiveBranch => {
             this.addMessageToDOM(
-                msg.role,
-                msg.content,
-                msg.id,
+                msgDataFromActiveBranch.role,
+                msgDataFromActiveBranch.content,
+                msgDataFromActiveBranch.id,
                 {
-                    model: msg.model,
-                    timestamp: msg.timestamp,
-                    parent_id: msg.parent_id, // This is crucial for linking in messageTree
+                    model: msgDataFromActiveBranch.model,
+                    timestamp: msgDataFromActiveBranch.timestamp,
+                    parent_id: msgDataFromActiveBranch.parent_id,
                 }
             );
         });
 
-        console.log("[DEBUG] Message tree after history rebuild (should be additive or updated):", JSON.parse(JSON.stringify(this.messageTree)));
+        console.log("[DEBUG] Finished DOM rebuild from history. Calling updateAllSiblingIndicators.");
         this.updateAllSiblingIndicators();
     }
 
@@ -387,10 +408,18 @@ class GeminiChatApp {
                 this.showAlert(data.error, 'danger');
                 return;
             }
-            // After retry, the server has set the new message and its branch as active.
-            // The client needs to fetch the history for this new active state.
-            // The 'navigateSibling' call with 'none' does exactly this.
-            await this.navigateSibling(data.message.id, 'none'); // Navigate to the new message's branch
+
+            this.currentConversationId = data.conversation_id;
+            if (data.conversation_name) document.getElementById('conversationName').textContent = data.conversation_name;
+
+            if (data.full_message_tree) {
+                this.messageTree = data.full_message_tree;
+                this._rebuildMessageTreeRelationships();
+                console.log("[DEBUG] Updated and rebuilt messageTree from retry response. Size:", Object.keys(this.messageTree).length);
+            }
+            if (data.history && Array.isArray(data.history)) {
+                this.rebuildChatFromHistory(data.history);
+            }
             this.showAlert('Generated new response', 'success');
 
         } catch (error) {
@@ -419,15 +448,17 @@ class GeminiChatApp {
             }
 
             this.currentConversationId = data.conversation_id;
-            document.getElementById('conversationName').textContent = data.conversation_name || 'Conversation';
+            if(data.conversation_name) document.getElementById('conversationName').textContent = data.conversation_name;
 
-            // The server now returns the history for the *newly activated branch*.
-            // Rebuild the chat display based on this new history.
-            // `addMessageToDOM` within `rebuildChatFromHistory` will update `messageTree`.
-            if (data.history && Array.isArray(data.history)) { // data.history could be empty if navigating to an empty branch start
+            if (data.full_message_tree) {
+                this.messageTree = data.full_message_tree;
+                this._rebuildMessageTreeRelationships();
+                console.log("[DEBUG] Updated and rebuilt messageTree from navigate response. Size:", Object.keys(this.messageTree).length);
+            }
+            if (data.history && Array.isArray(data.history)) {
                 this.rebuildChatFromHistory(data.history);
             } else {
-                this.clearChat(); // Clears display and messageElements
+                this.clearChatDisplay();
                 this.showAlert('Navigation resulted in empty history or no history returned.', 'warning');
             }
 
@@ -444,16 +475,16 @@ class GeminiChatApp {
 
     updateSiblingIndicators(parentId) {
         if (!parentId || !this.messageTree[parentId] || !Array.isArray(this.messageTree[parentId].children)) {
-            // console.warn(`[WARN] Cannot update sibling indicators: parent ${parentId} or its children not in messageTree.`);
+            // console.warn(`[DEBUG SIBLING] updateSiblingIndicators: Cannot update for parent ${parentId}. Parent or children not found/valid in messageTree.`);
             return;
         }
 
-        const siblings = this.messageTree[parentId].children; // These are IDs of ALL known children from messageTree
-        // console.log(`[DEBUG] Updating sibling indicators for parent ${parentId}. Found ${siblings.length} siblings in messageTree:`, siblings);
+        const siblings = this.messageTree[parentId].children;
+        // console.log(`[DEBUG SIBLING] updateSiblingIndicators for parent ${parentId}: Found ${siblings.length} children in messageTree:`, JSON.parse(JSON.stringify(siblings)));
 
         siblings.forEach((siblingId, index) => {
-            const element = this.messageElements[siblingId]; // Check if this sibling is currently in the DOM
-            if (element) { // Only update DOM for visible elements
+            const element = this.messageElements[siblingId];
+            if (element) {
                 let indicatorSpan = element.querySelector('.branch-indicator');
                 let indicatorTextEl = element.querySelector('.branch-indicator-text');
 
@@ -465,7 +496,6 @@ class GeminiChatApp {
                         indicatorTextEl = document.createElement('span');
                         indicatorTextEl.className = 'branch-indicator-text';
                         indicatorSpan.appendChild(indicatorTextEl);
-
                         const modelBadge = header.querySelector('.badge.bg-secondary');
                         if (modelBadge) modelBadge.insertAdjacentElement('afterend', indicatorSpan);
                         else header.querySelector('strong')?.insertAdjacentElement('afterend', indicatorSpan);
@@ -485,20 +515,17 @@ class GeminiChatApp {
                 const nextBtn = element.querySelector('.btn-next-sibling');
                 if (prevBtn && nextBtn) {
                     const showNav = siblings.length > 1;
+                    // console.log(`[DEBUG SIBLING] Sibling ${siblingId} (parent ${parentId}) index ${index}/${siblings.length-1}. ShowNav: ${showNav}`);
                     prevBtn.style.display = showNav ? 'inline-block' : 'none';
                     nextBtn.style.display = showNav ? 'inline-block' : 'none';
                     prevBtn.disabled = (index === 0);
                     nextBtn.disabled = (index === siblings.length - 1);
                 }
-            } else {
-                // console.log(`[DEBUG] Sibling ${siblingId} of parent ${parentId} not currently in DOM, skipping its indicator update.`);
             }
         });
     }
 
     updateAllSiblingIndicators() {
-        // console.log('[DEBUG] Updating all sibling indicators for currently displayed messages.');
-        // Iterate over parents of currently displayed messages
         const displayedParentIds = new Set();
         Object.values(this.messageElements).forEach(domElement => {
             const messageNode = this.messageTree[domElement.id];
@@ -506,6 +533,7 @@ class GeminiChatApp {
                 displayedParentIds.add(messageNode.parent_id);
             }
         });
+        // console.log("[DEBUG SIBLING] Updating indicators for parents of displayed messages:", Array.from(displayedParentIds));
         displayedParentIds.forEach(pid => this.updateSiblingIndicators(pid));
     }
 
@@ -513,43 +541,38 @@ class GeminiChatApp {
         const uniqueMessageId = messageId || `msg-${role}-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
         const contentString = (typeof content === 'string') ? content : JSON.stringify(content);
 
-        // --- Update Master Message Tree ---
-        if (!this.messageTree[uniqueMessageId]) {
+        let existingNode = this.messageTree[uniqueMessageId];
+
+        if (!existingNode) {
             this.messageTree[uniqueMessageId] = {
                 id: uniqueMessageId, role, content: contentString,
-                parent_id: metadata.parent_id || null, children: [], // Initialize children
-                model: metadata.model, timestamp: metadata.timestamp || new Date().toISOString(),
-                // branch_id: metadata.branch_id // If server sends it, store it
+                parent_id: metadata.parent_id || null,
+                children: [],
+                model: metadata.model,
+                timestamp: metadata.timestamp || new Date().toISOString(),
             };
-        } else { // Message already in tree, update it
-            this.messageTree[uniqueMessageId].content = contentString; // Update content
+        } else {
+            this.messageTree[uniqueMessageId].content = contentString;
             this.messageTree[uniqueMessageId].timestamp = metadata.timestamp || this.messageTree[uniqueMessageId].timestamp || new Date().toISOString();
             if(metadata.model) this.messageTree[uniqueMessageId].model = metadata.model;
-            // IMPORTANT: Do not overwrite parent_id or children if they already exist and are valid,
-            // unless explicitly intended (e.g. server correcting parent_id for a temp user message).
             if(metadata.parent_id && this.messageTree[uniqueMessageId].parent_id !== metadata.parent_id) {
-                 // This case needs careful handling if a message's parent changes.
-                 // For now, assume parent_id is set on creation.
-                 this.messageTree[uniqueMessageId].parent_id = metadata.parent_id;
+                this.messageTree[uniqueMessageId].parent_id = metadata.parent_id;
             }
-             if (!Array.isArray(this.messageTree[uniqueMessageId].children)) {
+            if (!Array.isArray(this.messageTree[uniqueMessageId].children)) {
                 this.messageTree[uniqueMessageId].children = [];
             }
         }
 
-        // Link to parent in messageTree
         if (metadata.parent_id && this.messageTree[metadata.parent_id]) {
-            const parentNode = this.messageTree[metadata.parent_id];
-            if (!Array.isArray(parentNode.children)) { // Ensure parent has a children array
-                parentNode.children = [];
+            const parentNodeInTree = this.messageTree[metadata.parent_id];
+            if (!Array.isArray(parentNodeInTree.children)) {
+                parentNodeInTree.children = [];
             }
-            if (!parentNode.children.includes(uniqueMessageId)) {
-                parentNode.children.push(uniqueMessageId);
+            if (!parentNodeInTree.children.includes(uniqueMessageId)) {
+                parentNodeInTree.children.push(uniqueMessageId);
             }
         }
-        // --- End of Master Message Tree Update ---
 
-        // --- DOM Manipulation Part (for currently displayed messages) ---
         const chatMessages = document.getElementById('chatMessages');
         const emptyState = chatMessages.querySelector('.text-center.text-muted.py-5');
         if (emptyState) emptyState.remove();
@@ -570,7 +593,7 @@ class GeminiChatApp {
             default: icon = 'bi-info-circle'; roleLabel = 'System'; bgClass = 'bg-warning bg-opacity-25'; break;
         }
 
-        const messageTimestamp = this.messageTree[uniqueMessageId]?.timestamp || new Date().toISOString(); // Fallback if not in tree yet
+        const messageTimestamp = this.messageTree[uniqueMessageId]?.timestamp || new Date().toISOString();
         const displayTime = new Date(messageTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit'});
 
         let headerHTML = `<strong>${roleLabel}</strong>`;
@@ -631,12 +654,12 @@ class GeminiChatApp {
                 block.innerHTML = numbered;
                 block.classList.add('line-numbers-active');
             } else {
-                 block.classList.remove('line-numbers-active'); // Ensure class is removed if setting is off
+                 block.classList.remove('line-numbers-active');
             }
         });
     }
 
-    clearChat() { // Now only clears display and DOM element cache
+    clearChatDisplay() {
         const chatMessages = document.getElementById('chatMessages');
         chatMessages.innerHTML = `<div class="text-center text-muted py-5"><i class="bi bi-chat-dots display-1"></i><p>Start a new conversation or load an existing one.</p></div>`;
         this.messageElements = {};
@@ -694,27 +717,18 @@ class GeminiChatApp {
         const title = document.getElementById('conversationTitle').value.trim();
         try {
             const response = await fetch(`${this.apiBase}/api/conversation/new`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title })
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title })
             });
             const data = await response.json();
             if (data.success) {
                 this.currentConversationId = data.conversation_id;
                 document.getElementById('conversationName').textContent = data.conversation_name;
-
-                this.messageTree = {}; // RESET messageTree for a truly new conversation
-                // Optionally, initialize messageTree with metadata if needed for other parts:
-                // this.messageTree = { metadata: { id: data.conversation_id, title: data.conversation_name, ... } };
-
-
-                this.rebuildChatFromHistory(data.history || []); // history will be empty for new
-
-                this.updateModelDisplay(data.model);
-                this.updateSettingsForm(data.params);
-                this.updateStreamingStatusDisplay(data.streaming);
-                this.showAlert('New conversation started', 'success');
-                this.modals.newConversation.hide();
+                this.messageTree = data.full_message_tree || {};
+                this._rebuildMessageTreeRelationships();
+                console.log("[DEBUG] Populated and rebuilt messageTree from createNewConversation. Size:", Object.keys(this.messageTree).length);
+                this.rebuildChatFromHistory(data.history || []);
+                this.updateModelDisplay(data.model); this.updateSettingsForm(data.params); this.updateStreamingStatusDisplay(data.streaming);
+                this.showAlert('New conversation started', 'success'); this.modals.newConversation.hide();
                 await this.loadConversations();
             } else { this.showAlert(data.error || 'Failed to create conversation', 'danger'); }
         } catch (error) { this.showAlert('Failed to create new conversation', 'danger'); }
@@ -724,23 +738,16 @@ class GeminiChatApp {
         this.showThinking(true);
         try {
             const response = await fetch(`${this.apiBase}/api/conversation/load`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ conversation_name: conversationNameOrFilename })
             });
             const data = await response.json();
             if (data.success) {
                 this.currentConversationId = data.conversation_id;
                 document.getElementById('conversationName').textContent = data.conversation_name;
-
-                // For a loaded conversation, messageTree should be reset and then populated
-                // ideally from a full tree structure sent by the server.
-                // Since server currently sends only active branch history, we reset and rebuild from that.
-                this.messageTree = {};
-                // If server sent data.full_conversation_tree.messages, you would do:
-                // this.messageTree = data.full_conversation_tree.messages;
-                // this.messageTree.metadata = data.full_conversation_tree.metadata; // etc.
-
+                this.messageTree = data.full_message_tree || {};
+                this._rebuildMessageTreeRelationships();
+                console.log("[DEBUG] Populated and rebuilt messageTree from loadConversationByName. Size:", Object.keys(this.messageTree).length);
                 this.rebuildChatFromHistory(data.history || []);
                 if(data.model) this.updateModelDisplay(data.model);
                 if(data.params) this.updateSettingsForm(data.params);
@@ -808,7 +815,7 @@ class GeminiChatApp {
             if (data.success) {
                 this.streamingEnabled = data.streaming;
                 this.updateStreamingStatusDisplay(data.streaming);
-                this.updateSettingsForm(data.params); // Update form with potentially validated/adjusted params from server
+                this.updateSettingsForm(data.params);
                 this.showAlert('Settings saved', 'success');
                 this.modals.settings.hide();
             } else { this.showAlert(data.error || 'Failed to save settings', 'danger');}
@@ -863,10 +870,12 @@ class GeminiChatApp {
             return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
         } catch (e) { return defaults; }
     }
+
     saveAppSettingsToStorage() {
         try { localStorage.setItem('geminiChatAppSettings', JSON.stringify(this.appSettings)); return true; }
         catch (e) { console.error("Error saving app settings:", e); return false; }
     }
+
     applyAppSettings() {
         this.applyTheme(this.appSettings.theme);
         document.documentElement.style.setProperty('--chat-font-size', `${this.appSettings.fontSize}px`);
@@ -876,8 +885,9 @@ class GeminiChatApp {
         document.body.classList.toggle('disable-animations', !this.appSettings.enableAnimations);
         document.body.classList.toggle('compact-mode', this.appSettings.compactMode);
         this.updateCodeThemeLink(this.appSettings.codeTheme);
-        this.reRenderAllMessagesVisuals(); // Apply to existing messages
+        this.reRenderAllMessagesVisuals();
     }
+
     applyTheme(themeName) {
         document.body.classList.remove('theme-light', 'theme-dark');
         let effectiveTheme = themeName;
@@ -886,15 +896,15 @@ class GeminiChatApp {
             effectiveTheme = prefersDark ? 'dark' : 'light';
         }
         document.body.classList.add(`theme-${effectiveTheme}`);
-         // Update code highlighting theme based on main theme if a sensible default exists
         if (effectiveTheme === 'dark' && (this.appSettings.codeTheme === 'github' || this.appSettings.codeTheme === 'default')) {
             this.updateCodeThemeLink('github-dark');
         } else if (effectiveTheme === 'light' && (this.appSettings.codeTheme === 'github-dark' || this.appSettings.codeTheme === 'default')) {
             this.updateCodeThemeLink('github');
         } else {
-             this.updateCodeThemeLink(this.appSettings.codeTheme); // Keep user's explicit choice
+             this.updateCodeThemeLink(this.appSettings.codeTheme);
         }
     }
+
     updateCodeThemeLink(themeName) {
         let link = document.querySelector('link[id="highlightjs-theme"]');
         if (!link) {
@@ -904,8 +914,9 @@ class GeminiChatApp {
             document.head.appendChild(link);
         }
         link.href = `https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/${themeName}.min.css`;
-        this.appSettings.codeTheme = themeName; // Store the actually applied theme
+        this.appSettings.codeTheme = themeName;
     }
+
     showAppSettings() {
         document.getElementById(`theme${this.appSettings.theme.charAt(0).toUpperCase() + this.appSettings.theme.slice(1)}`).checked = true;
         document.getElementById('fontSize').value = this.appSettings.fontSize;
@@ -920,6 +931,7 @@ class GeminiChatApp {
         this.updatePreview();
         this.modals.appSettings.show();
     }
+
     saveAppSettings() {
         this.appSettings = {
             theme: document.querySelector('input[name="theme"]:checked').value,
@@ -940,15 +952,17 @@ class GeminiChatApp {
             this.showAlert('Failed to save app settings', 'danger');
         }
     }
+
     resetAppSettings() {
         if (confirm('Reset all app settings to defaults?')) {
             localStorage.removeItem('geminiChatAppSettings');
-            this.appSettings = this.loadAppSettings(); // Load defaults
+            this.appSettings = this.loadAppSettings();
             this.applyAppSettings();
-            this.showAppSettings(); // Refresh modal with defaults
+            this.showAppSettings();
             this.showAlert('App settings reset to defaults', 'info');
         }
     }
+
     updatePreview() {
         const preview = document.getElementById('settingsPreview');
         preview.style.fontSize = `${document.getElementById('fontSize').value}px`;
@@ -963,16 +977,12 @@ class GeminiChatApp {
         }
         preview.className = `preview-area border rounded p-3 ${previewThemeClass}`;
 
-        // Update code block preview theme
         const codeBlock = preview.querySelector('pre code');
-        const codeThemeSelect = document.getElementById('codeTheme').value;
-        // This is tricky as we can't easily load new CSS just for the preview block.
-        // For simplicity, we'll just note that the theme would apply.
-        // A more complex solution would involve an iframe or dynamically changing the main highlight.js theme.
         if (codeBlock) {
-            hljs.highlightElement(codeBlock); // Re-highlight with current global theme
+            hljs.highlightElement(codeBlock);
         }
     }
+
     reRenderAllMessagesVisuals() {
         document.querySelectorAll('.message').forEach(messageEl => {
             const avatarEl = messageEl.querySelector('.message-icon');
@@ -981,7 +991,7 @@ class GeminiChatApp {
             const headerTimeEl = messageEl.querySelector('.message-header .text-muted.ms-auto');
             if(headerTimeEl) headerTimeEl.style.display = this.appSettings.showTimestamps ? 'inline' : 'none';
 
-            this.applyCodeHighlighting(messageEl); // Re-apply line numbers if needed
+            this.applyCodeHighlighting(messageEl);
         });
         document.body.classList.toggle('compact-mode', this.appSettings.compactMode);
         document.body.classList.toggle('disable-animations', !this.appSettings.enableAnimations);
@@ -995,14 +1005,12 @@ class GeminiChatApp {
         alertDiv.innerHTML = `${message}<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>`;
         alertContainer.appendChild(alertDiv);
 
-        // Ensure bootstrap alert is initialized for the new element
         const bsAlert = new bootstrap.Alert(alertDiv);
 
         setTimeout(() => {
-            // Check if the alert still exists before trying to close
             if (bootstrap.Alert.getInstance(alertDiv)) {
                  bsAlert.close();
-            } else if (alertDiv.parentElement) { // Fallback if instance not found but element exists
+            } else if (alertDiv.parentElement) {
                 alertDiv.remove();
             }
         }, 5000);
