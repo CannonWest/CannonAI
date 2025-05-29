@@ -1,0 +1,11 @@
+{
+  "api_key": "<your-key-here>",
+  "default_model": "gemini-2.0-flash",
+  "conversations_dir": "<your-dir-here>",
+  "generation_params": {
+    "temperature": 0.9,
+    "max_output_tokens": 50000,
+    "top_p": 0.9,
+    "top_k": 40
+  }
+}
