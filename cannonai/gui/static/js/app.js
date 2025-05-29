@@ -21,6 +21,9 @@ class CannonAIApp {
         this.mainContentRightSidebarOpenClasses = ['col-md-6', 'col-lg-8']; // When both sidebars are conceptually open (lg needs to sum to 12 with left and right)
         // Adjusting for a col-lg-2 left and col-lg-2 right, main would be col-lg-8
         // For md: col-md-3 left, col-md-3 right, main col-md-6
+        
+        // The right sidebar starts open by default now
+        this.rightSidebarOpen = true;
 
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => this.init());
@@ -35,6 +38,15 @@ class CannonAIApp {
         this.modals.newConversation = new bootstrap.Modal(document.getElementById('newConversationModal'));
         this.modals.modelSelector = new bootstrap.Modal(document.getElementById('modelSelectorModal'));
         this.modals.appSettings = new bootstrap.Modal(document.getElementById('appSettingsModal'));
+
+        // Since the right sidebar is now open by default, ensure main content has correct classes
+        const mainContent = document.getElementById('mainContent');
+        if (this.rightSidebarOpen) {
+            console.log("[DEBUG] Right sidebar is open by default, adjusting main content classes");
+            // Classes are already set correctly in HTML, but ensure consistency
+            mainContent.classList.remove(...this.mainContentDefaultClasses);
+            mainContent.classList.add(...this.mainContentRightSidebarOpenClasses);
+        }
 
         this.applyAppSettings();
 
@@ -776,12 +788,17 @@ class CannonAIApp {
         const mainContent = document.getElementById('mainContent');
         const isOpen = !sidebar.classList.contains('d-none');
 
+        console.log("[DEBUG] Toggling model settings sidebar. Currently open:", isOpen);
+        
         sidebar.classList.toggle('d-none');
+        this.rightSidebarOpen = !isOpen;
 
         if (isOpen) { // Sidebar is now closing
+            console.log("[DEBUG] Closing right sidebar, expanding main content");
             mainContent.classList.remove(...this.mainContentRightSidebarOpenClasses);
             mainContent.classList.add(...this.mainContentDefaultClasses);
         } else { // Sidebar is now opening
+            console.log("[DEBUG] Opening right sidebar, adjusting main content");
             mainContent.classList.remove(...this.mainContentDefaultClasses);
             mainContent.classList.add(...this.mainContentRightSidebarOpenClasses);
         }
