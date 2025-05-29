@@ -1,7 +1,7 @@
 """
-Gemini Chat CLI - Command Handler Module
+CannonAI CLI - Command Handler Module
 
-This module provides command handling functionality for the Gemini Chat CLI
+This module provides command handling functionality for the CannonAI CLI
 application, supporting both synchronous and asynchronous clients.
 """
 

@@ -17,7 +17,7 @@ from command_handler import CommandHandler  # Assuming this is in the parent dir
 from base_client import Colors  # Assuming this is in the parent directory
 
 # Set up logging
-logger = logging.getLogger("gemini_chat.gui.api_handlers")
+logger = logging.getLogger("cannonai.gui.api_handlers")
 
 
 class APIHandlers:

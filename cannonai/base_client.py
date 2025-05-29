@@ -76,7 +76,7 @@ class BaseGeminiClient:
             current_dir = current_file.parent
             
             # Check if we're in the correct project structure
-            if current_dir.name == "gemini_chat":
+            if current_dir.name == "cannonai":
                 # "gemini_chat" is the current directory
                 # The parent should be "CannonAI" or the repository root
                 parent_dir = current_dir.parent

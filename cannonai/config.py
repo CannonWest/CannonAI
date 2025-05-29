@@ -76,7 +76,7 @@ class Config:
             # The parent should be the repository root
             parent_dir = current_dir.parent
             
-            # Set config directory adjacent to gemini_chat (to be renamed to cannonai)
+            # Set config directory adjacent to cannonai
             config_dir = parent_dir / "cannonai_config"
             config_dir.mkdir(parents=True, exist_ok=True)
             return config_dir / self.DEFAULT_CONFIG_FILE

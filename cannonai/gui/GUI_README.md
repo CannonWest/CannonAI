@@ -25,16 +25,16 @@ You need a Google Gemini API key. Set it up using one of these methods:
 export GEMINI_API_KEY='your-api-key-here'
 
 # Option 2: Configuration wizard
-python gemini_chat/gemini_chat.py --setup
+python cannonai/cannonai.py --setup
 
 # Option 3: Command-line argument
-python gemini_chat/gemini_chat.py --gui --api-key 'your-api-key-here'
+python cannonai/cannonai.py --gui --api-key 'your-api-key-here'
 ```
 
 ### 3. Launch the GUI
 
 ```bash
-python gemini_chat/gemini_chat.py --gui
+python cannonai/cannonai.py --gui
 ```
 
 The GUI will automatically open in your default web browser at `http://127.0.0.1:8080`.

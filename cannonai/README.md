@@ -91,11 +91,11 @@ CannonAI_GIT/
         ```
     * Run the configuration wizard:
         ```bash
-        python gemini_chat/gemini_chat.py --setup
+        python cannonai/cannonai.py --setup
         ```
     * Pass as a command-line argument:
         ```bash
-        python gemini_chat/gemini_chat.py --api-key 'your_api_key_here'
+        python cannonai/cannonai.py --api-key 'your_api_key_here'
         ```
 
 ## Usage
