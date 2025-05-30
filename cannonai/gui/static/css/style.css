@@ -148,7 +148,6 @@ body {
     padding: 0.5rem 0.85rem; /* Reduced padding for tighter bubble */
     border-radius: 1.1rem;
     word-wrap: break-word;
-    white-space: pre-wrap;
     line-height: 1.4; /* Adjust line height */
     width: fit-content;
     min-width: 30px;

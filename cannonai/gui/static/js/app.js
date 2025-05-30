@@ -665,11 +665,6 @@ class CannonAIApp {
         document.getElementById('thinkingIndicator').classList.toggle('d-none', !show);
     }
 
-    updateConnectionStatus(connected = true) { /* ... (no change to this function) ... */
-        const statusEl = document.getElementById('connectionStatus');
-        statusEl.innerHTML = `<i class="bi bi-circle-fill ${connected ? 'text-success pulsate-connection' : 'text-danger'}"></i> ${connected ? 'Connected' : 'Disconnected'}`;
-    }
-
     updateModelDisplay(model) { /* ... (no change to this function) ... */
         document.getElementById('currentModel').textContent = model ? model.split('/').pop() : 'N/A';
     }
