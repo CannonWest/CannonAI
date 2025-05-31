@@ -24,29 +24,29 @@ class Config:
     """Configuration manager for CannonAI CLI."""
 
     DEFAULT_CONFIG_FILE = "cannonai_config.json"
-    DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"  # Fallback if not in provider_models
+    DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+    SUPPORTED_PROVIDERS = ["gemini", "claude", "openai"]  # Define supported providers
 
     def __init__(self, config_file: Optional[Union[str, Path]] = None, override_api_key_dict: Optional[Dict[str, str]] = None, quiet: bool = False):
         """Initialize the configuration manager.
 
         Args:
             config_file: Path to the configuration file. If None, uses default.
-            override_api_key_dict: Dictionary of provider_name: api_key to override config/env.
+            override_api_key_dict: Dictionary of provider_name: api_key to override config/env, primarily for CLI.
         """
         self.config_file = Path(config_file) if config_file else self._get_default_config_path()
         project_root = Path(__file__).resolve().parent.parent
 
+        # Initialize default structure for api_keys if not present in loaded config
+        default_api_keys = {provider: "" for provider in self.SUPPORTED_PROVIDERS}
+
         self.config = {
-            "api_keys": {
-                "gemini": "",
-                "claude": "",
-                "openai": ""
-            },
+            "api_keys": default_api_keys,  # Ensures all supported providers have an entry
             "default_provider": "gemini",
             "provider_models": {
                 "gemini": self.DEFAULT_GEMINI_MODEL,
-                "claude": "claude-3-haiku-20240307",  # Example
-                "openai": "gpt-3.5-turbo"  # Example
+                "claude": "claude-3-haiku-20240307",
+                "openai": "gpt-3.5-turbo"
             },
             "conversations_dir": str(project_root / "cannonai_conversations"),
             "generation_params": {
@@ -77,10 +77,20 @@ class Config:
 
                 # Deep merge for nested dicts like api_keys, provider_models, generation_params
                 for key, value in loaded_config.items():
-                    if isinstance(value, dict) and isinstance(self.config.get(key), dict):
+                    if key == "api_keys" and isinstance(value, dict):
+                        # Ensure all SUPPORTED_PROVIDERS have an entry, using loaded if available
+                        current_api_keys = self.config["api_keys"].copy()
+                        current_api_keys.update(value)
+                        self.config["api_keys"] = current_api_keys
+                    elif isinstance(value, dict) and isinstance(self.config.get(key), dict):
                         self.config[key].update(value)
                     else:
                         self.config[key] = value
+
+                # Ensure api_keys in self.config has all supported providers after loading
+                for provider in self.SUPPORTED_PROVIDERS:
+                    if provider not in self.config["api_keys"]:
+                        self.config["api_keys"][provider] = ""
 
                 if not self.quiet:
                     msg = f"Configuration loaded from {self.config_file}"
@@ -88,14 +98,18 @@ class Config:
             except Exception as e:
                 msg = f"Error loading configuration: {e}"
                 print(f"{Fore.RED}{msg}{Style.RESET_ALL}" if colorama_available else msg)
+        else:
+            # If config file doesn't exist, ensure the default api_keys structure is set
+            self.config["api_keys"] = {provider: "" for provider in self.SUPPORTED_PROVIDERS}
         return self.config
 
     def save_config(self) -> bool:
         try:
             with open(self.config_file, 'w') as f:
                 json.dump(self.config, f, indent=2)
-            msg = f"Configuration saved to {self.config_file}"
-            print(f"{Fore.GREEN}{msg}{Style.RESET_ALL}" if colorama_available else msg)
+            if not self.quiet:  # Added quiet check for saving as well
+                msg = f"Configuration saved to {self.config_file}"
+                print(f"{Fore.GREEN}{msg}{Style.RESET_ALL}" if colorama_available else msg)
             return True
         except Exception as e:
             msg = f"Error saving configuration: {e}"
@@ -107,112 +121,125 @@ class Config:
 
     def set(self, key: str, value: Any) -> None:
         self.config[key] = value
+        # Consider if set should automatically save, or if save_config is called explicitly.
+        # For API key setting via GUI, explicit save after all changes is better.
 
     def get_api_key(self, provider_name: str) -> Optional[str]:
-        # Check override first
-        if provider_name in self.override_api_key_dict:
-            return self.override_api_key_dict[provider_name]
+        provider_name_lower = provider_name.lower()
+        # 1. Check override_api_key_dict (primarily for CLI --api-key flag)
+        if provider_name_lower in self.override_api_key_dict:
+            key = self.override_api_key_dict[provider_name_lower]
+            if key: return key
 
-        # Then check environment variable (e.g., GEMINI_API_KEY, OPENAI_API_KEY)
-        env_var_name = f"{provider_name.upper()}_API_KEY"
-        api_key = os.environ.get(env_var_name)
-        if api_key:
-            return api_key
+        # 2. Then check environment variable (e.g., GEMINI_API_KEY, OPENAI_API_KEY)
+        env_var_name = f"{provider_name_lower.upper()}_API_KEY"
+        api_key_env = os.environ.get(env_var_name)
+        if api_key_env:
+            return api_key_env
 
-        # Fallback to config file
-        return self.config.get("api_keys", {}).get(provider_name)
+        # 3. Fallback to config file
+        return self.config.get("api_keys", {}).get(provider_name_lower)
 
     def set_api_key(self, provider_name: str, api_key: str) -> None:
+        """Sets the API key for a specific provider in the configuration."""
+        provider_name_lower = provider_name.lower()
         if "api_keys" not in self.config:
-            self.config["api_keys"] = {}
-        self.config["api_keys"][provider_name] = api_key
-        self.save_config()
+            self.config["api_keys"] = {provider: "" for provider in self.SUPPORTED_PROVIDERS}
+
+        if provider_name_lower in self.SUPPORTED_PROVIDERS:
+            self.config["api_keys"][provider_name_lower] = api_key
+        else:
+            print(f"{Fore.WARNING}Attempted to set API key for unsupported provider: {provider_name}{Style.RESET_ALL}" if colorama_available else f"Warning: Attempted to set API key for unsupported provider: {provider_name}")
+        # self.save_config() # Let the caller decide when to save, e.g., after multiple changes.
+
+    def get_all_api_keys_status(self) -> Dict[str, bool]:
+        """Returns a dictionary indicating if an API key is set for each provider."""
+        status = {}
+        for provider in self.SUPPORTED_PROVIDERS:
+            status[f"{provider}_set"] = bool(self.get_api_key(provider))
+        return status
 
     def get_default_model_for_provider(self, provider_name: str) -> Optional[str]:
-        return self.config.get("provider_models", {}).get(provider_name)
+        return self.config.get("provider_models", {}).get(provider_name.lower())
 
     def setup_wizard(self) -> bool:
         try:
             print("\n=== CannonAI CLI Configuration Wizard ===\n")
-            self._display_available_configs()
+            self._display_available_configs_for_wizard()  # Use a more specific display for wizard
             return self._interactive_config_edit()
         except Exception as e:
             msg = f"Error in setup wizard: {e}"
             print(f"{Fore.RED}{msg}{Style.RESET_ALL}" if colorama_available else msg)
             return False
 
-    def _display_available_configs(self) -> None:
+    def _display_available_configs_for_wizard(self) -> None:  # Renamed for clarity
         header_color = Fore.CYAN if colorama_available else ""
         value_color = Fore.GREEN if colorama_available else ""
         reset = Style.RESET_ALL if colorama_available else ""
+        idx = 1  # Initialize index for wizard options
 
-        print(f"{header_color}=== Current Configuration ==={reset}\n")
-
-        print(f"{header_color}API Keys (Provider Specific):{reset}")
-        idx = 1
-        providers_for_keys = ["gemini", "claude", "openai"]  # Can be dynamic later
-        for provider_name in providers_for_keys:
-            current_api_key = self.get_api_key(provider_name) or ""
-            api_key_display = current_api_key[:4] + "..." + current_api_key[-4:] if current_api_key else "Not set"
+        print(f"{header_color}--- API Keys ---{reset}")
+        for provider_name in self.SUPPORTED_PROVIDERS:
+            current_api_key = self.config.get("api_keys", {}).get(provider_name, "")  # Get from internal config directly for wizard
+            api_key_display = f"{current_api_key[:4]}...{current_api_key[-4:]}" if len(current_api_key) > 7 else "Not set"
             print(f"{header_color}{idx}. {provider_name.capitalize()} API Key:{reset} {value_color}{api_key_display}{reset}")
             idx += 1
 
+        self._wizard_indices = {"api_keys_start": 1, "api_keys_end": idx - 1}
+
+        print(f"\n{header_color}--- Default Provider & Models ---{reset}")
         default_provider = self.get("default_provider", "gemini")
-        print(f"\n{header_color}{idx}. Default Provider:{reset} {value_color}{default_provider}{reset}")
-        current_idx_offset = idx
+        print(f"{header_color}{idx}. Default Provider:{reset} {value_color}{default_provider}{reset}")
+        self._wizard_indices["default_provider"] = idx
         idx += 1
 
-        print(f"\n{header_color}Default Models (Per Provider):{reset}")
-        for provider_name_model in self.get("provider_models", {}):
-            current_model = self.get_default_model_for_provider(provider_name_model)
-            print(f"{header_color}{idx}. Default Model for {provider_name_model.capitalize()}:{reset} {value_color}{current_model}{reset}")
-            idx += 1
+        provider_models_start_idx = idx
+        for provider_name_model in self.config.get("provider_models", {}):
+            # Ensure we only show models for supported providers if there's a mismatch
+            if provider_name_model in self.SUPPORTED_PROVIDERS:
+                current_model = self.get_default_model_for_provider(provider_name_model)
+                print(f"{header_color}{idx}. Default Model for {provider_name_model.capitalize()}:{reset} {value_color}{current_model}{reset}")
+                idx += 1
+        self._wizard_indices["provider_models_start"] = provider_models_start_idx
+        self._wizard_indices["provider_models_end"] = idx - 1
 
-        print(f"\n{header_color}General Settings:{reset}")
+        print(f"\n{header_color}--- General Settings ---{reset}")
         current_dir = self.get("conversations_dir", str(Path.home() / "cannonai_conversations"))
         print(f"{header_color}{idx}. Conversations Directory:{reset} {value_color}{current_dir}{reset}")
-        gen_params_start_idx = idx + 1
+        self._wizard_indices["conversations_dir"] = idx
         idx += 1
 
+        gen_params_start_idx = idx
         current_params = self.get("generation_params", {})
         print(f"\n{header_color}Global Generation Parameters:{reset}")
         print(f"{header_color}{idx}. Temperature:{reset} {value_color}{current_params.get('temperature', 0.7)}{reset}")
+        self._wizard_indices["temperature"] = idx
         idx += 1
         print(f"{header_color}{idx}. Max Output Tokens:{reset} {value_color}{current_params.get('max_output_tokens', 800)}{reset}")
+        self._wizard_indices["max_output_tokens"] = idx
         idx += 1
         print(f"{header_color}{idx}. Top-p:{reset} {value_color}{current_params.get('top_p', 0.95)}{reset}")
+        self._wizard_indices["top_p"] = idx
         idx += 1
         print(f"{header_color}{idx}. Top-k:{reset} {value_color}{current_params.get('top_k', 40)}{reset}")
-        streaming_idx = idx + 1
+        self._wizard_indices["top_k"] = idx
         idx += 1
 
         current_streaming = self.get("use_streaming", False)
         print(f"\n{header_color}{idx}. Streaming Mode by Default:{reset} {value_color}{'Enabled' if current_streaming else 'Disabled'}{reset}")
+        self._wizard_indices["streaming"] = idx
+        idx += 1  # For next potential item
 
-        print(f"\n{header_color}Config File:{reset} {value_color}{self.config_file}{reset}")
-
-        # Store indices for _interactive_config_edit
-        self._wizard_indices = {
-            "api_keys_start": 1,
-            "api_keys_end": len(providers_for_keys),
-            "default_provider": current_idx_offset,
-            "provider_models_start": current_idx_offset + 1,
-            "provider_models_end": current_idx_offset + len(self.get("provider_models", {})),
-            "conversations_dir": gen_params_start_idx - 1,  # was idx before gen_params
-            "gen_params_start": gen_params_start_idx,
-            "gen_params_end": streaming_idx - 1,  # was idx before streaming
-            "streaming": streaming_idx
-        }
+        print(f"\n{header_color}Config File Path:{reset} {value_color}{self.config_file}{reset}")
+        self._wizard_indices["_max_option"] = idx - 1
 
     def _interactive_config_edit(self) -> bool:
-        providers_for_keys = ["gemini", "claude", "openai"]  # Match _display_available_configs
-
         while True:
-            print(f"\nEnter the number of the setting to modify (1-{self._wizard_indices['streaming']}), 's' to save, or 'q' to quit: ", end="")
-            choice = input().lower()
+            print(f"\nEnter the number of the setting to modify (1-{self._wizard_indices['_max_option']}), 's' to save and exit, or 'q' to quit: ", end="")
+            choice = input().lower().strip()
 
             if choice == 'q':
-                print("Exiting without saving.")
+                print("Exiting wizard without saving changes made in this session.")
                 return False
             elif choice == 's':
                 self.save_config()
@@ -221,20 +248,28 @@ class Config:
 
             try:
                 choice_num = int(choice)
-                if 1 <= choice_num <= self._wizard_indices['api_keys_end']:  # API Keys
+                # API Keys
+                if self._wizard_indices['api_keys_start'] <= choice_num <= self._wizard_indices['api_keys_end']:
                     provider_index = choice_num - self._wizard_indices['api_keys_start']
-                    provider_name = providers_for_keys[provider_index]
-                    current_val = self.get_api_key(provider_name) or "Not set"
-                    new_val = input(f"{provider_name.capitalize()} API Key [{current_val[:4]}...{current_val[-4:] if len(current_val) > 7 else ''}]: ").strip()
-                    if new_val: self.config["api_keys"][provider_name] = new_val
+                    provider_name = self.SUPPORTED_PROVIDERS[provider_index]
+                    current_val_display = f"{self.config['api_keys'].get(provider_name, '')[:4]}..." if self.config['api_keys'].get(provider_name) else "Not set"
+                    new_val = input(f"Enter new {provider_name.capitalize()} API Key [{current_val_display}]: ").strip()
+                    if new_val:  # Only update if user provides a new value
+                        self.config["api_keys"][provider_name] = new_val
 
+                # Default Provider
                 elif choice_num == self._wizard_indices['default_provider']:
                     current_val = self.get("default_provider")
-                    new_val = input(f"Default Provider [{current_val}]: ").strip()
-                    if new_val: self.config["default_provider"] = new_val
+                    new_val = input(f"Default Provider ({', '.join(self.SUPPORTED_PROVIDERS)}) [{current_val}]: ").strip().lower()
+                    if new_val in self.SUPPORTED_PROVIDERS:
+                        self.config["default_provider"] = new_val
+                    elif new_val:
+                        print(f"Invalid provider. Please choose from {', '.join(self.SUPPORTED_PROVIDERS)}.")
 
+                # Default Models per Provider
                 elif self._wizard_indices['provider_models_start'] <= choice_num <= self._wizard_indices['provider_models_end']:
-                    provider_models_list = list(self.get("provider_models", {}).keys())
+                    # This mapping needs to be robust if providers list changes
+                    provider_models_list = [p for p in self.config.get("provider_models", {}).keys() if p in self.SUPPORTED_PROVIDERS]
                     provider_name_idx = choice_num - self._wizard_indices['provider_models_start']
                     if 0 <= provider_name_idx < len(provider_models_list):
                         provider_name_model = provider_models_list[provider_name_idx]
@@ -244,26 +279,34 @@ class Config:
                     else:
                         print("Invalid selection for provider model.")
 
+                # Conversations Directory
                 elif choice_num == self._wizard_indices['conversations_dir']:
                     current_val = self.get("conversations_dir")
                     new_val = input(f"Conversations Directory [{current_val}]: ").strip()
                     if new_val: self.config["conversations_dir"] = new_val
 
-                elif self._wizard_indices['gen_params_start'] <= choice_num <= self._wizard_indices['gen_params_end']:
-                    gen_params_keys = ["temperature", "max_output_tokens", "top_p", "top_k"]
-                    param_idx = choice_num - self._wizard_indices['gen_params_start']
-                    param_key = gen_params_keys[param_idx]
-                    current_val = self.config["generation_params"].get(param_key)
-                    new_val_str = input(f"{param_key.replace('_', ' ').capitalize()} [{current_val}]: ").strip()
-                    if new_val_str:
-                        try:
-                            self.config["generation_params"][param_key] = float(new_val_str) if '.' in new_val_str else int(new_val_str)
-                        except ValueError:
-                            print(f"Invalid value for {param_key}.")
+                # Generation Parameters
+                elif choice_num == self._wizard_indices.get("temperature"):
+                    current_val = self.config["generation_params"].get('temperature')
+                    new_val_str = input(f"Temperature [{current_val}]: ").strip()
+                    if new_val_str: self.config["generation_params"]['temperature'] = float(new_val_str)
+                elif choice_num == self._wizard_indices.get("max_output_tokens"):
+                    current_val = self.config["generation_params"].get('max_output_tokens')
+                    new_val_str = input(f"Max Output Tokens [{current_val}]: ").strip()
+                    if new_val_str: self.config["generation_params"]['max_output_tokens'] = int(new_val_str)
+                elif choice_num == self._wizard_indices.get("top_p"):
+                    current_val = self.config["generation_params"].get('top_p')
+                    new_val_str = input(f"Top-p [{current_val}]: ").strip()
+                    if new_val_str: self.config["generation_params"]['top_p'] = float(new_val_str)
+                elif choice_num == self._wizard_indices.get("top_k"):
+                    current_val = self.config["generation_params"].get('top_k')
+                    new_val_str = input(f"Top-k [{current_val}]: ").strip()
+                    if new_val_str: self.config["generation_params"]['top_k'] = int(new_val_str)
 
+                # Streaming Mode
                 elif choice_num == self._wizard_indices['streaming']:
                     current_val = self.get("use_streaming")
-                    new_val_str = input(f"Enable Streaming by Default [{'yes' if current_val else 'no'}]: ").strip().lower()
+                    new_val_str = input(f"Enable Streaming by Default ({'yes' if current_val else 'no'}) [current: {'yes' if current_val else 'no'}]: ").strip().lower()
                     if new_val_str in ("y", "yes", "true", "1"):
                         self.config["use_streaming"] = True
                     elif new_val_str in ("n", "no", "false", "0"):
@@ -272,9 +315,11 @@ class Config:
                 else:
                     print("Invalid choice.")
             except ValueError:
-                print("Invalid input. Please enter a number.")
+                print("Invalid input. Please enter a number for numeric values.")
+            except Exception as e:
+                print(f"An error occurred: {e}")
 
-            self._display_available_configs()  # Show updated config
+            self._display_available_configs_for_wizard()  # Show updated config
 
 
 default_config = Config()

@@ -1,11 +1,21 @@
 {
-  "api_key": "<your-key-here>",
-  "default_model": "gemini-2.0-flash",
-  "conversations_dir": "<your-dir-here>",
+  "api_keys": {
+    "gemini": "YOUR_GEMINI_API_KEY_HERE",
+    "claude": "YOUR_CLAUDE_API_KEY_HERE",
+    "openai": "YOUR_OPENAI_API_KEY_HERE"
+  },
+  "default_provider": "gemini",
+  "provider_models": {
+    "gemini": "gemini-2.0-flash",
+    "claude": "claude-3-haiku-20240307",
+    "openai": "gpt-3.5-turbo"
+  },
+  "conversations_dir": "C:\\Path\\To\\Your\\cannonai_conversations",
   "generation_params": {
-    "temperature": 0.9,
-    "max_output_tokens": 50000,
-    "top_p": 0.9,
+    "temperature": 0.7,
+    "max_output_tokens": 800,
+    "top_p": 0.95,
     "top_k": 40
-  }
+  },
+  "use_streaming": false
 }
