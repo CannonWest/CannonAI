@@ -62,7 +62,8 @@ class GeminiProvider(BaseAIProvider):
         api_models = []
         try:
             # Use the .aio attribute for asynchronous operations with the client
-            models_response_pager = self._client.aio.models.list()  # This returns an AsyncPager
+            # AWAIT the call to list() to get the AsyncPager
+            models_response_pager = await self._client.aio.models.list()  # MODIFIED LINE
             async for model_obj in models_response_pager:  # Iterate over the AsyncPager
                 if hasattr(model_obj, 'supported_generation_methods') and \
                         'generateContent' in model_obj.supported_generation_methods:
@@ -83,6 +84,8 @@ class GeminiProvider(BaseAIProvider):
             # This specific error message for Pager might indicate an issue with the library version or usage
             if "object Pager can't be used in 'await' expression" in str(te) or \
                     "'async for' requires an object with __aiter__ method, got Pager" in str(te):
+                # This part of the error handling might now be less relevant if the primary issue is fixed,
+                # but it's good to keep for other potential Pager issues.
                 logger.error(f"Encountered Pager iteration issue in list_models: {te}. This typically means the async pager was not used correctly or the library version has unexpected behavior.", exc_info=True)
                 return self._get_fallback_models()
             else:  # Re-raise other TypeErrors
@@ -143,7 +146,7 @@ class GeminiProvider(BaseAIProvider):
             api_response = await self._client.aio.models.generate_content(
                 model=model_name,
                 contents=gemini_contents,
-                generation_config=generation_config_obj,
+                config=generation_config_obj,
                 # safety_settings=... if you have them
                 # tools=... if you have them
                 # tool_config=... if you have them
@@ -164,7 +167,7 @@ class GeminiProvider(BaseAIProvider):
             stream_gen = self._client.aio.models.generate_content_stream(
                 model=model_name,
                 contents=gemini_contents,
-                generation_config=generation_config_obj,
+                config=generation_config_obj,
                 # safety_settings=...
                 # tools=...
                 # tool_config=...
