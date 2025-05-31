@@ -464,3 +464,61 @@ body.compact-mode .message-actions { margin-top: 0.1rem; }
 .theme-dark .preview-area .message-content { background-color: #3a3a3a; border-color: #4d4d4d; }
 
 .chat-input-container textarea { overflow-y: hidden; }
+
+/* Add to style.css */
+.conversation-list-item .conversation-actions-menu .three-dots-btn {
+    opacity: 0; /* Hidden by default */
+    transition: opacity 0.15s ease-in-out;
+    background-color: transparent;
+    border: none;
+    color: var(--bs-secondary-color); /* Use Bootstrap's secondary color */
+}
+
+.conversation-list-item:hover .conversation-actions-menu .three-dots-btn,
+.conversation-list-item .conversation-actions-menu .three-dots-btn:focus, /* Show when focused for accessibility */
+.conversation-list-item .conversation-actions-menu .three-dots-btn.active { /* Show when dropdown is active */
+    opacity: 1;
+}
+
+.conversation-list-item .conversation-actions-menu .three-dots-btn:hover {
+    color: var(--bs-body-color);
+}
+
+.conversation-list-item .conversation-actions-menu .conversation-item-dropdown {
+    display: none; /* Hidden by default, JS will toggle */
+    /* Standard Bootstrap dropdown styling will mostly apply */
+    /* May need to adjust position if it's not appearing correctly */
+    position: absolute !important;
+    right: 0;
+    top: 100%; /* Position below the button */
+    z-index: 1050;
+    box-shadow: 0 .125rem .25rem rgba(0,0,0,.075);
+    border: 1px solid rgba(0,0,0,.15);
+    border-radius: .25rem;
+    background-color: var(--bs-body-bg); /* Use Bootstrap's body background */
+}
+
+.conversation-list-item .conversation-actions-menu .conversation-item-dropdown.show {
+    display: block;
+}
+
+/* Ensure dropdown items are styled correctly, especially for dark theme */
+.theme-dark .conversation-actions-menu .conversation-item-dropdown {
+    background-color: var(--bs-dark-bg-subtle, #343a40); /* Dark background for dropdown */
+    border-color: var(--bs-border-color-translucent, #495057);
+}
+.theme-dark .conversation-actions-menu .conversation-item-dropdown .dropdown-item {
+    color: var(--bs-light-text-emphasis, #f8f9fa); /* Light text for items */
+}
+.theme-dark .conversation-actions-menu .conversation-item-dropdown .dropdown-item:hover,
+.theme-dark .conversation-actions-menu .conversation-item-dropdown .dropdown-item:focus {
+    background-color: var(--bs-dark-tertiary-bg, #495057); /* Darker hover for items */
+}
+.theme-dark .conversation-actions-menu .conversation-item-dropdown .dropdown-item.text-danger {
+    color: var(--bs-danger-text-emphasis, #dc3545) !important; /* Ensure text-danger overrides */
+}
+.theme-dark .conversation-actions-menu .conversation-item-dropdown .dropdown-item.text-danger:hover,
+.theme-dark .conversation-actions-menu .conversation-item-dropdown .dropdown-item.text-danger:focus {
+    background-color: rgba(var(--bs-danger-rgb), 0.25); /* Darker hover for danger item */
+    color: var(--bs-danger-text-emphasis, #dc3545) !important;
+}

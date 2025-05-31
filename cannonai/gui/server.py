@@ -302,6 +302,47 @@ def stream_message():
         }
     )
 
+@app.route('/api/conversation/duplicate/<conversation_id>', methods=['POST'])
+def duplicate_conversation_route(conversation_id: str):
+    if not api_handlers:
+        return jsonify({'error': 'API handlers not initialized'}), 500
+
+    data = request.get_json()
+    new_title = data.get('new_title')
+    if not new_title:
+        return jsonify({'error': 'New title not provided for duplication'}), 400
+
+    result = api_handlers.duplicate_conversation(conversation_id, new_title)
+    if 'error' in result:
+        return jsonify(result), result.get('status_code', 500)
+    return jsonify(result)
+
+
+@app.route('/api/conversation/rename/<conversation_id>', methods=['POST'])
+def rename_conversation_route(conversation_id: str):
+    if not api_handlers:
+        return jsonify({'error': 'API handlers not initialized'}), 500
+
+    data = request.get_json()
+    new_title = data.get('new_title')
+    if not new_title:
+        return jsonify({'error': 'New title not provided for renaming'}), 400
+
+    result = api_handlers.rename_conversation(conversation_id, new_title)
+    if 'error' in result:
+        return jsonify(result), result.get('status_code', 500)
+    return jsonify(result)
+
+
+@app.route('/api/conversation/delete/<conversation_id>', methods=['DELETE'])
+def delete_conversation_route(conversation_id: str):
+    if not api_handlers:
+        return jsonify({'error': 'API handlers not initialized'}), 500
+
+    result = api_handlers.delete_conversation(conversation_id)
+    if 'error' in result:
+        return jsonify(result), result.get('status_code', 500)
+    return jsonify(result)
 
 @app.route('/api/settings', methods=['POST'])
 def update_settings():
