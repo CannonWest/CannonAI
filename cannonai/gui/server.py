@@ -30,6 +30,7 @@ from base_client import Colors
 # from gui.api_handlers import APIHandlers # Keep this, but handle type hint below
 from client_manager import ClientManager
 from providers import ProviderError
+from gui import api_handlers as gui_api_handlers_module # Import the module itself
 
 # Set up logging
 logging.basicConfig(
@@ -105,11 +106,11 @@ async def initialize_gui_client_async(app_config: Config, cli_args: Optional[Any
         gui_api_handlers = APIHandlers(gui_chat_client, gui_command_handler, gui_event_loop)
 
         # Pass config to api_handlers if it's designed to use it
-        # (e.g., if APIHandlers has a main_config attribute or method to set it)
         if hasattr(gui_api_handlers, 'main_config'):
             gui_api_handlers.main_config = app_config
-        elif hasattr(gui.api_handlers, 'main_config'):  # Check module level if it's a global
-            gui.api_handlers.main_config = app_config
+        # Corrected part: Check the imported module for 'main_config'
+        elif hasattr(gui_api_handlers_module, 'main_config'):
+            gui_api_handlers_module.main_config = app_config
 
         logger.info(f"GUI AI Client initialized successfully with provider: {gui_chat_client.provider.provider_name}, model: {gui_chat_client.current_model_name}")
 
@@ -172,6 +173,28 @@ def ensure_api_handlers_ready():
     if request.endpoint and 'static' not in request.endpoint:
         if gui_api_handlers is None:
             logger.warning(f"Accessing {request.endpoint} but gui_api_handlers is None.")
+            # Attempt to re-initialize if it's None and we have the config
+            # This is a fallback, ideally it should be initialized correctly from the start
+            if main_config_for_gui and gui_event_loop and gui_event_loop.is_running():
+                logger.info("Attempting to re-initialize gui_api_handlers due to being None.")
+                # This is a simplified re-init call, might need more context (cli_args)
+                # For now, just ensuring it's not None if possible
+                try:
+                    # Create a dummy cli_args if not available globally here
+                    class DummyArgs: pass
+                    dummy_cli_args = DummyArgs()
+                    # Populate with essential defaults if possible
+                    dummy_cli_args.provider = None
+                    dummy_cli_args.model = None
+                    dummy_cli_args.conversations_dir = None
+                    dummy_cli_args.effective_gen_params = main_config_for_gui.get("generation_params", {}).copy()
+                    dummy_cli_args.effective_use_streaming = main_config_for_gui.get("use_streaming", False)
+
+                    asyncio.run_coroutine_threadsafe(initialize_gui_client_async(main_config_for_gui, dummy_cli_args), gui_event_loop).result(timeout=5)
+                    if gui_api_handlers is None:
+                        logger.error("Re-initialization attempt failed to set gui_api_handlers.")
+                except Exception as e:
+                    logger.error(f"Error during fallback re-initialization of gui_api_handlers: {e}")
 
 
 @flask_app.route('/api/status')
@@ -288,6 +311,18 @@ def stream_message_api_route():
     return Response(stream_with_context(generate_sse_from_async_gen()), mimetype='text/event-stream')
 
 
+@flask_app.route('/api/conversations')
+def get_conversations_route():
+    if not gui_api_handlers:
+        return jsonify({'error': 'GUI API handlers not initialized', 'conversations': []}), 503 # Return 503 if not ready
+    result = gui_api_handlers.get_conversations()
+    if 'error' in result:
+        # If get_conversations itself returns an error (e.g., directory not found),
+        # use its status code or default to 500.
+        return jsonify(result), result.get('status_code', 500)
+    return jsonify(result)
+
+
 @flask_app.route('/api/conversation/duplicate/<conversation_id>', methods=['POST'])
 def duplicate_conversation_api_route(conversation_id: str):
     if not gui_api_handlers: return jsonify({'error': 'GUI API handlers not initialized'}), 503
@@ -398,12 +433,23 @@ def start_gui_server(app_config: Config, host: str = "127.0.0.1", port: int = 80
     initialize_async_components_for_gui(app_config, cli_args)
 
     import time
-    time.sleep(1.5)
+    # Wait a bit for async components to potentially initialize
+    # Check if gui_api_handlers is initialized after the async call
+    # This loop is a bit of a hack; ideally, initialize_async_components_for_gui would signal completion.
+    max_wait_time = 10  # seconds
+    wait_interval = 0.5 # seconds
+    elapsed_time = 0
+    while gui_api_handlers is None and elapsed_time < max_wait_time:
+        logger.info(f"Waiting for gui_api_handlers to be initialized... ({elapsed_time:.1f}s)")
+        time.sleep(wait_interval)
+        elapsed_time += wait_interval
 
-    if gui_chat_client is None or (gui_chat_client.provider and not gui_chat_client.provider.is_initialized):
-        logger.error("GUI AI Client failed to initialize properly. Flask server might not function correctly.")
+    if gui_api_handlers is None:
+         logger.error("GUI API Handlers did not initialize in time. Flask server might not function correctly.")
+    elif gui_chat_client is None or (gui_chat_client.provider and not gui_chat_client.provider.is_initialized):
+        logger.error("GUI AI Client or its provider failed to initialize properly. Flask server might not function correctly.")
     else:
-        logger.info("GUI AI Client appears initialized. Starting Flask server.")
+        logger.info("GUI AI Client and API Handlers appear initialized. Starting Flask server.")
 
     if not (os.environ.get("WERKZEUG_RUN_MAIN") == "true"):
         try:

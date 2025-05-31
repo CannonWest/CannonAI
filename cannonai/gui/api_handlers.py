@@ -139,29 +139,25 @@ class APIHandlers:
 
             if provider and provider != self.client.provider.provider_name:
                 logger.warning(f"Provider change requested to '{provider}'. This requires client re-initialization by the server. Updating config default for next startup.")
-                if main_config_for_gui:
-                    main_config_for_gui.set("default_provider", provider)
-                    # To change model for the new provider, we'd also need to set it in config.
-                    # For now, just changing default provider. Model for new provider will be its default from config.
-                    new_provider_default_model = main_config_for_gui.get_default_model_for_provider(provider)
+                # Accessing main_config_for_gui from server.py context
+                from gui.server import main_config_for_gui as server_main_config
+                if server_main_config:
+                    server_main_config.set("default_provider", provider)
+                    new_provider_default_model = server_main_config.get_default_model_for_provider(provider)
                     if new_provider_default_model:
-                        main_config_for_gui.set("provider_models", {**main_config_for_gui.get("provider_models", {}), provider: new_provider_default_model})
-
-                    main_config_for_gui.save_config()
-                    # The actual switch needs a server restart or a more dynamic client manager interaction.
-                    # For now, return current state but acknowledge request.
+                        server_main_config.set("provider_models", {**server_main_config.get("provider_models", {}), provider: new_provider_default_model})
+                    server_main_config.save_config()
                     return {
-                        'success': False,  # Indicate switch didn't happen live
+                        'success': False,
                         'message': f"Default provider changed to {provider}. Restart GUI for changes to take full effect.",
                         'provider_name': self.client.provider.provider_name,
                         'model': self.client.current_model_name,
-                        # ... other current settings
                     }
                 else:
                     logger.error("main_config_for_gui not available in APIHandlers to update default provider.")
 
+
             if model is not None and model != self.client.current_model_name:
-                # Validate if model is compatible with current provider
                 if self.client.provider.validate_model(model):
                     self.client.provider.config.model = model
                     if self.client.conversation_data and "metadata" in self.client.conversation_data:
@@ -233,8 +229,7 @@ class APIHandlers:
         if not self.client: return {'error': 'Client not initialized', 'status_code': 503}
         try:
             self.run_async(self.client.load_conversation(conversation_identifier))
-            # After loading, client's provider/model might have been updated by load_conversation logic
-            active_history = self.client.get_conversation_history()  # This is sync
+            active_history = self.client.get_conversation_history()
             metadata = self.client.conversation_data.get("metadata", {})
             full_tree = self.client.conversation_data.get("messages", {})
             return {
@@ -268,36 +263,21 @@ class APIHandlers:
             return {'error': str(e), 'status_code': 500}
 
     def _find_conv_file(self, conv_id_or_name: str) -> Optional[Path]:
-        """Helper to find conversation file path. (Synchronous part)"""
-        if not self.client or not self.client.conversations_dir: return None
-        # This is a simplified version. AsyncClient has a more robust _find_conversation_file_by_id_or_filename
-        # that reads metadata. For APIHandlers, we might need to call that via run_async if exact matching is needed.
-        # For now, assume conv_id_or_name might be a direct filename or requires listing.
-        # This is a placeholder, ideally use client's method.
-        files = list(self.client.conversations_dir.glob("*.json"))
-        for f_path in files:
-            if conv_id_or_name in f_path.name:  # Simple check
-                return f_path
-            try:  # Try reading ID from file
-                with open(f_path, 'r') as f_content:
-                    data = json.load(f_content)
-                    if data.get("conversation_id") == conv_id_or_name:
-                        return f_path
-            except:
-                continue
-        return None
+        if not self.client or not self.client.base_directory: return None # Use base_directory
+        return self.run_async(asyncio.to_thread(self.client._find_conversation_file_by_id_or_filename, self.client.base_directory, conv_id_or_name))
+
 
     def duplicate_conversation(self, conversation_id_to_duplicate: str, new_title: str) -> Dict[str, Any]:
         if not self.client: return {'error': 'Client not initialized', 'status_code': 503}
         logger.info(f"APIHandlers: Duplicating conversation ID/File: {conversation_id_to_duplicate} to new title: '{new_title}'")
         try:
-            original_filepath = self.run_async(asyncio.to_thread(self.client._find_conversation_file_by_id_or_filename, conversation_id_to_duplicate))
+            original_filepath = self._find_conv_file(conversation_id_to_duplicate) # Uses corrected _find_conv_file
             if not original_filepath or not original_filepath.exists():
                 return {'error': 'Original conversation file not found', 'status_code': 404}
 
             with open(original_filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            new_conv_id_str = self.client.generate_conversation_id()  # Sync method from base
+            new_conv_id_str = self.client.generate_conversation_id()
             data['conversation_id'] = new_conv_id_str
             if 'metadata' not in data: data['metadata'] = {}
             data['metadata']['title'] = new_title
@@ -307,8 +287,8 @@ class APIHandlers:
             data['metadata']['provider'] = data['metadata'].get('provider', self.client.provider.provider_name if self.client.provider else "unknown")
             data['metadata']['model'] = data['metadata'].get('model', self.client.current_model_name if self.client.provider else "unknown")
 
-            new_filename_str = self.client.format_filename(new_title, new_conv_id_str)  # Sync method from base
-            new_filepath = self.client.conversations_dir / new_filename_str
+            new_filename_str = self.client.format_filename(new_title, new_conv_id_str)
+            new_filepath = self.client.base_directory / new_filename_str # Use base_directory
             with open(new_filepath, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -321,7 +301,7 @@ class APIHandlers:
         if not self.client: return {'error': 'Client not initialized', 'status_code': 503}
         logger.info(f"APIHandlers: Renaming conversation ID/File: {conversation_id_or_filename_to_rename} to new title: '{new_title}'")
         try:
-            original_filepath = self.run_async(asyncio.to_thread(self.client._find_conversation_file_by_id_or_filename, conversation_id_or_filename_to_rename))
+            original_filepath = self._find_conv_file(conversation_id_or_filename_to_rename) # Uses corrected _find_conv_file
             if not original_filepath or not original_filepath.exists():
                 return {'error': 'Conversation file not found for renaming', 'status_code': 404}
 
@@ -336,10 +316,10 @@ class APIHandlers:
 
             with open(original_filepath, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
-            new_filename_str = self.client.format_filename(new_title, actual_conversation_id)  # Sync
-            new_filepath = self.client.conversations_dir / new_filename_str
+            new_filename_str = self.client.format_filename(new_title, actual_conversation_id)
+            new_filepath = self.client.base_directory / new_filename_str # Use base_directory
             if original_filepath != new_filepath:
-                os.rename(original_filepath, new_filepath)  # This is sync
+                os.rename(original_filepath, new_filepath)
 
             return {'success': True, 'conversation_id': actual_conversation_id, 'new_title': new_title, 'new_filename': new_filename_str}
         except Exception as e:
@@ -350,7 +330,7 @@ class APIHandlers:
         if not self.client: return {'error': 'Client not initialized', 'status_code': 503}
         logger.info(f"APIHandlers: Deleting conversation ID/File: {conversation_id_or_filename_to_delete}")
         try:
-            filepath_to_delete = self.run_async(asyncio.to_thread(self.client._find_conversation_file_by_id_or_filename, conversation_id_or_filename_to_delete))
+            filepath_to_delete = self._find_conv_file(conversation_id_or_filename_to_delete) # Uses corrected _find_conv_file
             if not filepath_to_delete or not filepath_to_delete.exists():
                 return {'error': 'Conversation file not found for deletion', 'status_code': 404}
 
@@ -362,7 +342,7 @@ class APIHandlers:
             except Exception:
                 pass
 
-            os.remove(filepath_to_delete)  # Sync
+            os.remove(filepath_to_delete)
 
             return {'success': True, 'deleted_conversation_id': actual_conv_id}
         except Exception as e:
@@ -375,18 +355,27 @@ class APIHandlers:
         logger.debug(f"APIHandlers: Handling non-streaming send for: '{message_content[:50]}...'")
         if not self.client or not self.client.provider: return {'error': 'Client or provider not initialized', 'status_code': 503}
         try:
-            # client.add_user_message is sync, called by Flask route before this.
-            # client.get_response is async.
             response_text, token_usage_dict = self.run_async(self.client.get_response())
 
-            if response_text is None and token_usage_dict is None:
-                raise Exception("AI client's get_response failed to return valid data.")
+            if response_text is None and token_usage_dict is None: # Check if provider failed
+                 # If get_response itself raised an error that was caught by run_async,
+                 # run_async would re-raise it, and this part might not be reached.
+                 # This check is more for if get_response returns (None, None) explicitly.
+                logger.error("AI client's get_response returned None for text and token_usage.")
+                # Attempt to get a more specific error if available from the client or provider state
+                error_detail = "Provider returned no data or an error occurred during generation."
+                # Example: if self.client.provider.last_error: error_detail = self.client.provider.last_error
+                return {'error': error_detail, 'status_code': 500}
 
-            # client.add_assistant_message is sync, called after getting response.
+
             self.client.add_assistant_message(response_text, token_usage_dict)
 
-            assistant_message_id = self.client._get_last_message_id(self.client.active_branch)  # Sync
-            user_message_id_for_parenting = self.client.conversation_data["messages"][assistant_message_id]["parent_id"]  # Sync
+            # Corrected call to _get_last_message_id
+            assistant_message_id = self.client._get_last_message_id(
+                self.client.conversation_data, # Pass the conversation_data dict
+                self.client.active_branch
+            )
+            user_message_id_for_parenting = self.client.conversation_data["messages"][assistant_message_id]["parent_id"]
 
             self.run_async(self.client.save_conversation(quiet=True))
 
@@ -404,17 +393,15 @@ class APIHandlers:
             return {'error': str(e), 'status_code': 500}
 
     async def stream_message(self, message_content: str) -> AsyncGenerator[Dict[str, Any], None]:
-        # message_content is passed but client.add_user_message should have already been called by the Flask route
         logger.debug(f"APIHandlers: Initiating stream for message (content already added): '{message_content[:50]}...'")
         if not self.client or not self.client.provider:
             yield {"error": "Client or provider not initialized in APIHandlers."};
             return
         try:
-            # AsyncClient.get_streaming_response is the actual async generator
             async for data_event in self.client.get_streaming_response():
-                yield data_event  # No need to format as SSE here, just yield the dicts
+                yield data_event
                 if data_event.get("error") or data_event.get("done"):
-                    break  # Stop this generator if provider stream signals error or completion
+                    break
             logger.debug("APIHandlers: Streaming finished.")
         except Exception as e:
             logger.error(f"Streaming error in APIHandlers.stream_message: {e}", exc_info=True)
@@ -425,7 +412,7 @@ class APIHandlers:
         if not self.client: return {'error': 'Client not initialized', 'status_code': 503}
         try:
             retry_result_dict = self.run_async(self.client.retry_message(assistant_message_id_to_retry))
-            current_active_history = self.client.get_conversation_history()  # Sync
+            current_active_history = self.client.get_conversation_history()
             current_full_tree = self.client.conversation_data.get("messages", {})
             return {
                 'success': True, 'message': retry_result_dict['message'],
@@ -444,7 +431,7 @@ class APIHandlers:
         if not self.client: return {'error': 'Client not initialized', 'status_code': 503}
         try:
             nav_result_dict = self.run_async(self.client.switch_to_sibling(message_id, direction))
-            current_active_history = self.client.get_conversation_history()  # Sync
+            current_active_history = self.client.get_conversation_history()
             current_full_tree = self.client.conversation_data.get("messages", {})
             return {
                 'success': True, 'message': nav_result_dict['message'],
@@ -504,17 +491,12 @@ class APIHandlers:
                 convos = self.get_conversations()
                 return {'success': True, 'message': 'Conversations list refreshed.', 'conversations': convos.get('conversations')}
             if cmd_name == '/model':
-                if cmd_args:  # Request to change model
+                if cmd_args:
                     return self.update_settings(model=cmd_args)
-                else:  # Request to list models
+                else:
                     return self.get_models()
             if cmd_name == '/stream':
                 return self.update_settings(streaming=not self.client.use_streaming if self.client else False)
-
-            # For other commands, could use command_handler if it's designed for structured output
-            # For now, only specific mapped commands are fully supported for rich JSON response.
-            # handler_result = self.run_async(self.command_handler.async_handle_command(command_str))
-            # return {'success': True, 'message': f"Command '{command_str}' processed.", 'handler_output': str(handler_result), **self.get_status()}
 
             logger.warning(f"Command '{cmd_name}' not directly mapped in APIHandlers.execute_command for rich response.")
             return {'error': f"Command '{cmd_name}' not directly supported via this API endpoint for structured response.", 'status_code': 400}

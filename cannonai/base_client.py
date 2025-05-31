@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Union
 
+import asyncio
+
 # Use colorama for cross-platform terminal colors
 try:
     from colorama import init, Fore, Back, Style
