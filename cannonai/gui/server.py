@@ -34,7 +34,7 @@ from gui import api_handlers as gui_api_handlers_module # Import the module itse
 
 # Set up logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("cannonai.gui.server")

@@ -14,7 +14,7 @@ from .base_provider import BaseAIProvider, ProviderConfig, ProviderError
 
 try:
     from google import genai
-    from google.genai import types  # For GenerationConfig, Content, Part, etc.
+    from google.genai import types  # For GenerationConfig, Content, Part, GenerateContentConfig
 except ImportError:
     logging.error("Failed to import google-genai. Please install with: pip install google-genai", exc_info=True)
     raise
@@ -61,7 +61,6 @@ class GeminiProvider(BaseAIProvider):
         """
         Retrieves a list of available Gemini models from the API that support 'generateContent'.
         If the API call fails or returns no models, it falls back to a default list.
-        Uses the `config` parameter in the `list` call as per new documentation.
         """
         if not self._client:
             raise ProviderError("Gemini client not initialized in provider.")
@@ -78,9 +77,14 @@ class GeminiProvider(BaseAIProvider):
                 models_seen_count += 1
                 model_name = getattr(model_obj, 'name', 'Unknown Name')
                 supported_methods = getattr(model_obj, 'supported_generation_methods', [])
-                logger.debug(f"API returned model: Name='{model_name}', SupportedMethods={supported_methods}")
+                # logger.debug(f"API returned model: Name='{model_name}', SupportedMethods={supported_methods}")
 
-                if 'generateContent' in supported_methods:
+                is_known_generative_by_name = any(keyword in model_name.lower() for keyword in ["flash", "pro", "ultra"])
+
+                if 'generateContent' in supported_methods or (is_known_generative_by_name and not supported_methods):
+                    if is_known_generative_by_name and not supported_methods:
+                        logger.warning(f"Model '{model_name}' has empty SupportedMethods, but assuming 'generateContent' based on name.")
+
                     model_info = {
                         'name': model_obj.name,
                         'display_name': model_obj.display_name or model_obj.name,
@@ -90,14 +94,11 @@ class GeminiProvider(BaseAIProvider):
                         'supported_methods': list(supported_methods)
                     }
                     api_models.append(model_info)
-                    logger.debug(f"Added model to list: {model_obj.name}")
-                else:
-                    logger.debug(f"Skipped model (does not support 'generateContent'): {model_name}")
 
             logger.info(f"Total models processed from API: {models_seen_count}. Models matching criteria: {len(api_models)}.")
 
             if not api_models:
-                logger.warning("No models returned from Gemini API with current config that support 'generateContent', using default fallback list.")
+                logger.warning("No models returned from Gemini API with current config that support 'generateContent' (or heuristically identified), using default fallback list.")
                 return self._get_fallback_models()
 
             return api_models
@@ -144,25 +145,36 @@ class GeminiProvider(BaseAIProvider):
             raise ProviderError("GeminiProvider not initialized.")
 
         normalized_messages = self._convert_messages_to_gemini_format(messages)
+
+        # This creates a dictionary of parameters like temperature, top_p, etc.
         generation_params_dict = self._build_generation_config(params)
-        generation_config_obj = types.GenerationConfig(**generation_params_dict)
+
+        # Construct the GenerateContentConfig by unpacking the generation_params_dict
+        # This passes temperature, top_p, etc., as direct keyword arguments.
+        try:
+            request_config = types.GenerateContentConfig(**generation_params_dict)
+        except Exception as e:
+            logger.error(f"Error creating GenerateContentConfig with params: {generation_params_dict}. Error: {e}", exc_info=True)
+            # Fallback to a default config if creation fails, or re-raise
+            # For now, let's re-raise to make the issue visible
+            raise ProviderError(f"Failed to create GenerateContentConfig: {e}")
 
         model_name_to_use = self._normalize_model_name(self.config.model)
 
         if stream:
-            return self._stream_gemini_response(model_name_to_use, normalized_messages, generation_config_obj)
+            return self._stream_gemini_response(model_name_to_use, normalized_messages, request_config)
         else:
-            return await self._generate_gemini_response_non_stream(model_name_to_use, normalized_messages, generation_config_obj)
+            return await self._generate_gemini_response_non_stream(model_name_to_use, normalized_messages, request_config)
 
     async def _generate_gemini_response_non_stream(
-            self, model_name: str, gemini_contents: List[types.Content], generation_config_obj: types.GenerationConfig
+            self, model_name: str, gemini_contents: List[types.Content], request_config_obj: types.GenerateContentConfig
     ) -> Tuple[str, Dict[str, Any]]:
         """Handles non-streaming response generation from the Gemini API."""
         try:
             api_response = await self._client.aio.models.generate_content(
                 model=model_name,
                 contents=gemini_contents,
-                config=generation_config_obj,
+                config=request_config_obj,
             )
             response_text = api_response.text or ""
             token_usage = self.extract_token_usage(api_response)
@@ -172,14 +184,14 @@ class GeminiProvider(BaseAIProvider):
             raise ProviderError(f"Gemini non-streaming generation error: {e}")
 
     async def _stream_gemini_response(
-            self, model_name: str, gemini_contents: List[types.Content], generation_config_obj: types.GenerationConfig
+            self, model_name: str, gemini_contents: List[types.Content], request_config_obj: types.GenerateContentConfig
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Handles streaming response generation from the Gemini API."""
         try:
             stream_gen = self._client.aio.models.generate_content_stream(
                 model=model_name,
                 contents=gemini_contents,
-                config=generation_config_obj,
+                config=request_config_obj,
             )
             full_response_text = ""
             final_token_usage = {}
@@ -206,12 +218,20 @@ class GeminiProvider(BaseAIProvider):
         return gemini_messages
 
     def _build_generation_config(self, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Merges provided parameters with defaults to create a valid GenerationConfig dictionary."""
+        """
+        Builds a dictionary of parameters suitable for direct unpacking into types.GenerateContentConfig
+        (e.g., temperature, top_p).
+        """
         merged_params = self.get_default_params()
         if params:
             merged_params.update(params)
 
-        valid_keys = ['temperature', 'top_p', 'top_k', 'candidate_count', 'max_output_tokens', 'stop_sequences']
+        # These keys are expected as direct attributes of types.GenerateContentConfig
+        valid_keys = ['temperature', 'top_p', 'top_k', 'max_output_tokens', 'stop_sequences', 'candidate_count']
+
+        # Ensure candidate_count is included if present in merged_params, as it's a valid field for GenerateContentConfig
+        # The previous removal was based on a misinterpretation of the "extra_forbidden" error.
+        # The error was about *how* the generation_config (sub-object) was being passed, not necessarily its contents.
 
         return {k: v for k, v in merged_params.items() if k in valid_keys and v is not None}
 
@@ -223,13 +243,15 @@ class GeminiProvider(BaseAIProvider):
             model_name.startswith("publishers/")
 
     def get_default_params(self) -> Dict[str, Any]:
-        """Returns the default generation parameters for Gemini models."""
+        """
+        Returns the default parameters that can be directly unpacked into types.GenerateContentConfig.
+        """
         return {
             "temperature": 0.7,
             "max_output_tokens": 800,
             "top_p": 0.95,
             "top_k": 40,
-            "candidate_count": 1,
+            "candidate_count": 1,  # This is a valid field for GenerateContentConfig
         }
 
     def extract_token_usage(self, response_or_chunk: Any) -> Dict[str, Any]:

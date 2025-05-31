@@ -67,6 +67,9 @@ def parse_arguments():
                         help='Directory to store conversations. Overrides config.')
     parser.add_argument('--gui', action='store_true',
                         help='Launch with GUI interface. CLI --api-key is ignored in GUI mode.')
+    parser.add_argument('--quiet', action='store_true',
+                        help='Suppress non-essential output messages (like "Config loaded").')
+
 
     # Configuration options
     config_group = parser.add_argument_group('Configuration')
@@ -97,20 +100,26 @@ def main():
     args = parse_arguments()
 
     override_api_key_dict = {}
+    # Determine quiet mode for Config initialization.
+    # If --setup is passed, Config should be quiet to avoid "Config loaded" before wizard.
+    # If --quiet is passed, Config should also be quiet.
+    config_init_quiet = args.setup or args.quiet
+
     if args.gui:
-        print(f"{Colors.INFO}GUI mode enabled. CLI --api-key will be ignored. API keys should be managed via GUI settings or config file.{Colors.ENDC}")
+        if not args.quiet: # Only print if not globally quiet
+            print(f"{Colors.CYAN}GUI mode enabled. CLI --api-key will be ignored. API keys should be managed via GUI settings or config file.{Colors.ENDC}")
         # No override_api_key_dict for GUI mode.
     elif args.api_key:
         # For CLI mode, determine the target provider for the --api-key
         # Load a temporary config to find the default provider if args.provider is not set
-        temp_config_for_provider_check = Config(args.config, quiet=True) # quiet=True to avoid "Config loaded" message twice
+        temp_config_for_provider_check = Config(args.config, quiet=True) # Always quiet for this temp instance
         active_provider_for_cli_key = args.provider or temp_config_for_provider_check.get("default_provider", "gemini")
         override_api_key_dict = {active_provider_for_cli_key.lower(): args.api_key}
-        print(f"{Colors.INFO}[Main] CLI --api-key provided. It will be used for provider: {active_provider_for_cli_key}{Colors.ENDC}")
+        if not args.quiet: # Only print if not globally quiet
+            print(f"{Colors.CYAN}[Main] CLI --api-key provided. It will be used for provider: {active_provider_for_cli_key}{Colors.ENDC}")
 
     # Initialize main config
-    # Pass quiet=False (or default) for the main config instance to show "Config loaded" message if not setting up.
-    config = Config(args.config, override_api_key_dict=override_api_key_dict, quiet=args.setup)
+    config = Config(args.config, override_api_key_dict=override_api_key_dict, quiet=config_init_quiet)
 
 
     if args.setup:
@@ -118,8 +127,7 @@ def main():
         sys.exit(0)
 
     display_welcome_message()
-    if not args.quiet: # Check if quiet was set on main config instance
-         print(f"Configuration loaded from: {config.config_file}") # Manually print if not done by Config init
+    # The "Config loaded from..." message is now handled by Config class itself based on its quiet flag.
 
     # Determine effective generation parameters by layering: config -> CLI args
     effective_gen_params = config.get("generation_params", {}).copy()
@@ -131,7 +139,8 @@ def main():
     effective_use_streaming = args.use_streaming_arg if args.use_streaming_arg is not None else config.get("use_streaming", False)
 
     if args.gui:
-        print(f"{Colors.BLUE}Starting GUI mode (Flask + Bootstrap)...{Colors.ENDC}")
+        if not args.quiet:
+            print(f"{Colors.BLUE}Starting GUI mode (Flask + Bootstrap)...{Colors.ENDC}")
         try:
             from gui.server import start_gui_server
             start_gui_server(config,
@@ -148,7 +157,8 @@ def main():
         return
 
     # --- CLI Mode ---
-    print(f"{Colors.CYAN}Starting CLI mode...{Colors.ENDC}")
+    if not args.quiet:
+        print(f"{Colors.CYAN}Starting CLI mode...{Colors.ENDC}")
 
     try:
         client = ClientManager.create_client(
