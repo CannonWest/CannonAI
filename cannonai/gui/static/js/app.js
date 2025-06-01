@@ -10,6 +10,7 @@ class CannonAIApp {
         this.apiBase = window.location.origin;
         this.currentConversationId = null;
         this.streamingEnabled = false; // Server's master streaming setting
+        this.currentSystemInstruction = "You are a helpful assistant."; // Default
 
         this.modals = {};
         this.appSettings = this.loadAppSettings();
@@ -86,7 +87,7 @@ class CannonAIApp {
     }
 
     async loadInitialData() {
-        await this.loadStatus(); // Loads current conversation, model, params, etc.
+        await this.loadStatus(); // Loads current conversation, model, params, system instruction, etc.
         await this.loadConversations(); // Loads the list of all conversations
     }
 
@@ -113,6 +114,14 @@ class CannonAIApp {
                 document.getElementById('topPValueDisplay').textContent = e.target.value;
             });
         }
+        // System Instruction input listener (optional, for immediate feedback if needed)
+        // const systemInstructionInput = document.getElementById('systemInstructionInput');
+        // if (systemInstructionInput) {
+        //     systemInstructionInput.addEventListener('input', (e) => {
+        //         // Potentially update a display or app state if needed on input
+        //     });
+        // }
+
 
         // App settings modal listeners
         document.getElementById('fontSize')?.addEventListener('input', (e) => {
@@ -204,7 +213,10 @@ class CannonAIApp {
                 this.updateModelDisplay(data.model);
                 this.streamingEnabled = data.streaming; // Server's master setting
                 this.updateStreamingStatusDisplay(data.streaming);
-                this.updateModelSettingsSidebarForm(data.params, data.streaming); // Update sidebar form
+                this.currentSystemInstruction = data.system_instruction || "You are a helpful assistant.";
+                this.updateModelSettingsSidebarForm(data.params, data.streaming, this.currentSystemInstruction); // Update sidebar form
+                this.updateSystemInstructionStatusDisplay(this.currentSystemInstruction);
+
 
                 const serverConversationId = data.conversation_id;
                 this.currentConversationId = serverConversationId;
@@ -227,7 +239,8 @@ class CannonAIApp {
                 this.clearChatDisplay();
                 this.messageTree = {};
                 this.currentConversationId = null;
-                this.updateModelSettingsSidebarForm({}, false); // Reset sidebar form
+                this.updateModelSettingsSidebarForm({}, false, this.currentSystemInstruction); // Reset sidebar form
+                this.updateSystemInstructionStatusDisplay(this.currentSystemInstruction);
             }
         } catch (error) {
             console.error("[ERROR] Failed to load status:", error);
@@ -235,7 +248,8 @@ class CannonAIApp {
             this.clearChatDisplay();
             this.messageTree = {};
             this.currentConversationId = null;
-            this.updateModelSettingsSidebarForm({}, false);
+            this.updateModelSettingsSidebarForm({}, false, this.currentSystemInstruction);
+            this.updateSystemInstructionStatusDisplay(this.currentSystemInstruction);
         }
     }
 
@@ -303,28 +317,12 @@ class CannonAIApp {
         try {
             if (clientRequestsStreaming) {
                 // Handle SSE streaming
-                // EventSource doesn't directly support POST body, this is a conceptual representation
-                // The actual POST for SSE needs to be initiated differently or backend needs to handle GET with query params
-                // For simplicity, assuming backend /api/stream can be initiated and then sends SSE
-                // A more robust SSE POST would involve an initial fetch then SSE connection.
-                // Let's assume the backend /api/stream is set up to take the message via a different mechanism
-                // or the initial POST to /api/stream sets up the stream.
-                // For now, we'll make a POST to send the message, then listen on a conceptual stream.
-                // This part needs careful backend alignment.
-                // A common pattern: POST to initiate, get a stream ID, then EventSource to that ID.
-                // Or, if Flask-SSE is used, the POST itself might trigger the stream.
-
-                // Simplification: POST to send, then expect backend to handle streaming logic.
-                // This is a common point of confusion. True SSE with POST body is tricky.
-                // Let's assume the backend's /api/stream handles the message from the POST body
-                // and then starts sending SSE events on that same response.
-
                 let fullResponseText = "";
 
                 const response = await fetch(endpoint, { // Initial POST to send the message
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: messageContent })
+                    body: JSON.stringify({ message: messageContent }) // System instruction is handled server-side per conversation
                 });
 
                 if (!response.ok || !response.body) {
@@ -420,7 +418,7 @@ class CannonAIApp {
                 const response = await fetch(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: messageContent })
+                    body: JSON.stringify({ message: messageContent }) // System instruction handled server-side
                 });
                 const data = await response.json();
                 this.showThinking(false);
@@ -538,7 +536,12 @@ class CannonAIApp {
                 }
 
                 if (data.model) this.updateModelDisplay(data.model);
-                if (data.params) this.updateModelSettingsSidebarForm(data.params, data.streaming !== undefined ? data.streaming : this.streamingEnabled);
+                if (data.system_instruction !== undefined) {
+                    this.currentSystemInstruction = data.system_instruction;
+                    this.updateSystemInstructionStatusDisplay(this.currentSystemInstruction);
+                }
+                if (data.params) this.updateModelSettingsSidebarForm(data.params, data.streaming !== undefined ? data.streaming : this.streamingEnabled, this.currentSystemInstruction);
+
 
                 if (data.streaming !== undefined) { // Server's master streaming setting
                     this.streamingEnabled = data.streaming;
@@ -664,6 +667,12 @@ class CannonAIApp {
 
             this.currentConversationId = data.conversation_id;
             if (data.conversation_name) document.getElementById('conversationName').textContent = data.conversation_name;
+            if (data.system_instruction !== undefined) {
+                 this.currentSystemInstruction = data.system_instruction;
+                 this.updateSystemInstructionStatusDisplay(this.currentSystemInstruction);
+                 this.updateModelSettingsSidebarForm(data.params || this.appSettings.params, data.streaming !== undefined ? data.streaming : this.streamingEnabled, this.currentSystemInstruction);
+            }
+
 
             if (data.full_message_tree) { // Server should send the updated tree
                 this.messageTree = data.full_message_tree;
@@ -694,6 +703,11 @@ class CannonAIApp {
 
             this.currentConversationId = data.conversation_id;
             if (data.conversation_name) document.getElementById('conversationName').textContent = data.conversation_name;
+            if (data.system_instruction !== undefined) {
+                 this.currentSystemInstruction = data.system_instruction;
+                 this.updateSystemInstructionStatusDisplay(this.currentSystemInstruction);
+                 this.updateModelSettingsSidebarForm(data.params || this.appSettings.params, data.streaming !== undefined ? data.streaming : this.streamingEnabled, this.currentSystemInstruction);
+            }
 
             if (data.full_message_tree) { // Server sends updated tree
                 this.messageTree = data.full_message_tree;
@@ -962,9 +976,24 @@ class CannonAIApp {
         document.getElementById('streamingMode').textContent = enabled ? 'ON' : 'OFF';
     }
 
-    updateModelSettingsSidebarForm(params, streamingStatus) {
+    updateSystemInstructionStatusDisplay(instruction) {
+        const displayEl = document.getElementById('systemInstructionDisplay');
+        if (displayEl) {
+            const shortInstruction = instruction && instruction.length > 20 ? instruction.substring(0, 20) + "..." : (instruction || "Default");
+            displayEl.textContent = shortInstruction;
+            const parentStatusEl = document.getElementById('systemInstructionStatus');
+            if(parentStatusEl) parentStatusEl.title = instruction || "Default System Instruction";
+        }
+    }
+
+
+    updateModelSettingsSidebarForm(params, streamingStatus, systemInstruction) {
         // Updates the form in the right sidebar with current generation parameters
         if (!params) params = {}; // Default to empty object if no params provided
+
+        const systemInstructionInput = document.getElementById('systemInstructionInput');
+        if (systemInstructionInput) systemInstructionInput.value = systemInstruction || "You are a helpful assistant.";
+
 
         const tempSlider = document.getElementById('temperatureInput');
         if (tempSlider) {
@@ -999,6 +1028,8 @@ class CannonAIApp {
             await this.handleCommand(`/new ${title}`);
             this.modals.newConversation.hide();
             // loadConversations will be called by handleCommand if successful
+            // Also, ensure system instruction is reset/updated for the new conversation display
+            // This should be handled by the response from /new command via handleCommand -> loadStatus
         } catch (error) {
             this.showAlert('Failed to create new conversation', 'danger');
         }
@@ -1007,7 +1038,7 @@ class CannonAIApp {
     async loadConversationByName(conversationNameOrFilename) {
         // Use the /command endpoint for /load
         await this.handleCommand(`/load ${conversationNameOrFilename}`);
-        // UI updates (chat display, tree, etc.) are handled by handleCommand's response processing
+        // UI updates (chat display, tree, system instruction etc.) are handled by handleCommand's response processing
     }
 
     async saveConversation() {
@@ -1050,28 +1081,31 @@ class CannonAIApp {
     }
 
     async saveModelSettingsFromSidebar() {
+        const systemInstruction = document.getElementById('systemInstructionInput').value;
         const params = {
             temperature: parseFloat(document.getElementById('temperatureInput').value),
             max_output_tokens: parseInt(document.getElementById('maxTokensInput').value),
             top_p: parseFloat(document.getElementById('topPInput').value),
             top_k: parseInt(document.getElementById('topKInput').value)
+            // system_instruction is now handled separately in the payload
         };
-        // This toggle reflects user's *request* for streaming for the *next* message.
-        // The server's master streaming setting is separate.
-        // We send this to /api/settings to update the server's default.
         const streaming = document.getElementById('streamingToggleRightSidebar').checked;
         try {
             const response = await fetch(`${this.apiBase}/api/settings`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ params, streaming }) // Send both params and streaming preference
+                body: JSON.stringify({ params, streaming, system_instruction: systemInstruction })
             });
             const data = await response.json();
             if (data.success) {
-                this.streamingEnabled = data.streaming; // Update client's view of server's master setting
-                this.updateStreamingStatusDisplay(data.streaming); // Update status bar
-                this.updateModelSettingsSidebarForm(data.params, data.streaming); // Re-sync form
-                this.showAlert('Generation parameters and streaming preference applied', 'success');
+                this.streamingEnabled = data.streaming;
+                this.updateStreamingStatusDisplay(data.streaming);
+                if (data.system_instruction !== undefined) {
+                    this.currentSystemInstruction = data.system_instruction;
+                    this.updateSystemInstructionStatusDisplay(this.currentSystemInstruction);
+                }
+                this.updateModelSettingsSidebarForm(data.params, data.streaming, this.currentSystemInstruction);
+                this.showAlert('Settings applied for current conversation', 'success');
             } else { this.showAlert(data.error || 'Failed to apply settings', 'danger'); }
         } catch (error) { this.showAlert('Failed to apply settings', 'danger'); }
     }
@@ -1096,7 +1130,7 @@ class CannonAIApp {
             <li><code>/save</code> - Save the current conversation.</li>
             <li><code>/list</code> - Refresh and show saved conversations in sidebar.</li>
             <li><code>/model [model_name]</code> - Change AI model. Lists models if no name.</li>
-            <li><code>/params</code> - Generation parameters are in the right sidebar (toggle with Params button).</li>
+            <li><code>/params</code> - Generation parameters & System Instruction are in the right sidebar (toggle with Params button).</li>
             <li><code>/stream</code> - Toggle server's default response streaming preference.</li>
             <li><code>/help</code> - Show this help message.</li>
         </ul>`;
@@ -1115,6 +1149,8 @@ class CannonAIApp {
             compactMode: false,
             codeTheme: 'github-dark',
             showLineNumbers: true
+            // Global default system instruction is handled by backend config.
+            // Client-side appSettings don't store this.
         };
         try {
             const saved = localStorage.getItem('cannonAIAppSettings');
@@ -1366,8 +1402,11 @@ class CannonAIApp {
                 if (this.currentConversationId === data.conversation_id) { // data.conversation_id should be the original ID
                     document.getElementById('conversationName').textContent = data.new_title;
                     // Also update in the messageTree if it's the current one
-                    if (this.messageTree && this.messageTree.metadata) {
+                    if (this.messageTree && this.messageTree.metadata) { // Assuming metadata is at root of messageTree
                         this.messageTree.metadata.title = data.new_title;
+                    } else if (this.currentConversationId && this.messageTree[this.currentConversationId] && this.messageTree[this.currentConversationId].metadata) {
+                         // If messageTree is keyed by convId and then has metadata
+                        this.messageTree[this.currentConversationId].metadata.title = data.new_title;
                     }
                 }
             } else {
@@ -1405,6 +1444,10 @@ class CannonAIApp {
                     this.clearChatDisplay();
                     document.getElementById('conversationName').textContent = 'New Conversation';
                     this.messageTree = {}; // Clear the message tree
+                    // Reset system instruction to default for a "new" state
+                    this.currentSystemInstruction = "You are a helpful assistant."; // Or fetch global default
+                    this.updateSystemInstructionStatusDisplay(this.currentSystemInstruction);
+                    this.updateModelSettingsSidebarForm(this.appSettings.params || {}, this.streamingEnabled, this.currentSystemInstruction);
                 }
             } else {
                 this.showAlert(data.error || 'Failed to delete conversation', 'danger');

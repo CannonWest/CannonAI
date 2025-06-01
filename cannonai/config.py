@@ -26,6 +26,7 @@ class Config:
     DEFAULT_CONFIG_FILE = "cannonai_config.json"
     DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
     SUPPORTED_PROVIDERS = ["gemini", "claude", "openai"]  # Define supported providers
+    DEFAULT_SYSTEM_INSTRUCTION = "You are a helpful assistant."
 
     def __init__(self, config_file: Optional[Union[str, Path]] = None, override_api_key_dict: Optional[Dict[str, str]] = None, quiet: bool = False):
         """Initialize the configuration manager.
@@ -33,6 +34,7 @@ class Config:
         Args:
             config_file: Path to the configuration file. If None, uses default.
             override_api_key_dict: Dictionary of provider_name: api_key to override config/env, primarily for CLI.
+            quiet: Suppress informational messages during load/save.
         """
         self.config_file = Path(config_file) if config_file else self._get_default_config_path()
         project_root = Path(__file__).resolve().parent.parent
@@ -54,8 +56,10 @@ class Config:
                 "max_output_tokens": 800,
                 "top_p": 0.95,
                 "top_k": 40
+                # System instruction will be a top-level config item or per-conversation
             },
-            "use_streaming": False
+            "use_streaming": False,
+            "default_system_instruction": self.DEFAULT_SYSTEM_INSTRUCTION,  # New field
         }
         self.quiet = quiet
         self.override_api_key_dict = override_api_key_dict or {}
@@ -87,6 +91,10 @@ class Config:
                     else:
                         self.config[key] = value
 
+                # Ensure default_system_instruction is present
+                if "default_system_instruction" not in self.config:
+                    self.config["default_system_instruction"] = self.DEFAULT_SYSTEM_INSTRUCTION
+
                 # Ensure api_keys in self.config has all supported providers after loading
                 for provider in self.SUPPORTED_PROVIDERS:
                     if provider not in self.config["api_keys"]:
@@ -101,6 +109,7 @@ class Config:
         else:
             # If config file doesn't exist, ensure the default api_keys structure is set
             self.config["api_keys"] = {provider: "" for provider in self.SUPPORTED_PROVIDERS}
+            self.config["default_system_instruction"] = self.DEFAULT_SYSTEM_INSTRUCTION
         return self.config
 
     def save_config(self) -> bool:
@@ -203,6 +212,12 @@ class Config:
         self._wizard_indices["provider_models_start"] = provider_models_start_idx
         self._wizard_indices["provider_models_end"] = idx - 1
 
+        print(f"\n{header_color}--- Default System Instruction ---{reset}")
+        current_system_instruction = self.get("default_system_instruction", self.DEFAULT_SYSTEM_INSTRUCTION)
+        print(f"{header_color}{idx}. Default System Instruction:{reset} {value_color}{current_system_instruction[:60]}{'...' if len(current_system_instruction) > 60 else ''}{reset}")
+        self._wizard_indices["default_system_instruction"] = idx
+        idx += 1
+
         print(f"\n{header_color}--- General Settings ---{reset}")
         current_dir = self.get("conversations_dir", str(Path.home() / "cannonai_conversations"))
         print(f"{header_color}{idx}. Conversations Directory:{reset} {value_color}{current_dir}{reset}")
@@ -278,6 +293,15 @@ class Config:
                         if new_val: self.config["provider_models"][provider_name_model] = new_val
                     else:
                         print("Invalid selection for provider model.")
+
+                # Default System Instruction
+                elif choice_num == self._wizard_indices['default_system_instruction']:
+                    current_val = self.get("default_system_instruction", self.DEFAULT_SYSTEM_INSTRUCTION)
+                    print(f"Current Default System Instruction: {current_val}")
+                    new_val = input(f"Enter new Default System Instruction (leave blank to keep current): ").strip()
+                    if new_val:
+                        self.config["default_system_instruction"] = new_val
+
 
                 # Conversations Directory
                 elif choice_num == self._wizard_indices['conversations_dir']:

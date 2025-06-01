@@ -111,6 +111,12 @@
                     <div class="p-3">
                         <form id="modelSettingsForm">
                             <div class="mb-3">
+                                <label for="systemInstructionInput" class="form-label">System Instruction</label>
+                                <textarea class="form-control form-control-sm" id="systemInstructionInput" rows="3" placeholder="e.g., You are a helpful assistant."></textarea>
+                                <small class="form-text text-muted d-block mt-0">Defines the AI's role or persona for the current conversation.</small>
+                            </div>
+
+                            <div class="mb-3">
                                 <label for="temperatureInput" class="form-label">
                                     Temperature: <span id="temperatureValueDisplay">0.7</span>
                                 </label>
@@ -163,6 +169,10 @@
         <span class="mx-2">|</span>
         <span id="streamingStatus">
             <i class="bi bi-broadcast"></i> Streaming: <span id="streamingMode">OFF</span>
+        </span>
+         <span class="mx-2">|</span>
+        <span id="systemInstructionStatus" class="text-truncate" style="max-width: 200px;" title="Current System Instruction">
+            <i class="bi bi-card-text"></i> Sys: <span id="systemInstructionDisplay">Default</span>
         </span>
     </div>
 

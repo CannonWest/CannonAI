@@ -13,12 +13,13 @@ import uuid  # For potential direct ID generation if not fully handled by base
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple, AsyncIterator
+from typing import Dict, List, Any, Optional, Tuple, AsyncIterator, AsyncGenerator
 
 from tabulate import tabulate
 
 from base_client import BaseClientFeatures, Colors  # Updated base class
 from providers.base_provider import BaseAIProvider, ProviderError
+from config import Config  # For default system instruction
 
 
 class AsyncClient(BaseClientFeatures):  # Inherit from the new base
@@ -28,19 +29,20 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
     """
     VERSION = "2.2.0"  # Match BaseClientFeatures version or increment
 
-    def __init__(self, provider: BaseAIProvider, conversations_dir: Optional[Path] = None):
+    def __init__(self, provider: BaseAIProvider, conversations_dir: Optional[Path] = None, global_config: Optional[Config] = None):
         """
         Initialize the asynchronous AI client.
 
         Args:
             provider: An instance of a class that implements BaseAIProvider.
             conversations_dir: Directory to store conversations. Uses default if None.
-                               This argument directly maps to base_directory in BaseClientFeatures.
+            global_config: Optional global Config object to fetch default system instruction.
         """
         # Initialize base class (handles conversations_dir via base_directory)
         super().__init__(conversations_dir=conversations_dir)
 
         self.provider = provider
+        self.global_config = global_config if global_config else Config()  # Load default config if none passed
 
         # Conversation related state
         self.conversation_id: Optional[str] = None
@@ -50,6 +52,7 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
         # Client-level settings
         self.params: Dict[str, Any] = self.provider.get_default_params().copy()
         self.use_streaming: bool = False
+        self.system_instruction: str = self.global_config.get("default_system_instruction", Config.DEFAULT_SYSTEM_INSTRUCTION)
 
         self.current_user_message_id: Optional[str] = None
         self.is_web_ui: bool = False
@@ -78,6 +81,11 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
             if success:
                 print(f"{Colors.GREEN}Successfully initialized {self.provider.provider_name} provider.{Colors.ENDC}")
                 self.params = self.provider.get_default_params().copy()
+                # Initialize system_instruction from provider defaults if available, else global
+                provider_defaults = self.provider.get_default_params()
+                self.system_instruction = provider_defaults.get("system_instruction",
+                                                                self.global_config.get("default_system_instruction", Config.DEFAULT_SYSTEM_INSTRUCTION))
+
             else:
                 print(f"{Colors.FAIL}Failed to initialize {self.provider.provider_name} provider.{Colors.ENDC}")
             return success
@@ -103,16 +111,19 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
         self.conversation_name = title
         self.conversation_data = self.create_metadata_structure(title, self.conversation_id)
 
+        # Set conversation-specific system instruction from the client's current (global default)
+        self.conversation_data["metadata"]["system_instruction"] = self.system_instruction
         self.conversation_data["metadata"]["provider"] = self.provider.provider_name
         self.conversation_data["metadata"]["model"] = self.current_model_name
         self.conversation_data["metadata"]["params"] = self.params.copy()
         self.active_branch = "main"
 
         print(f"{Colors.GREEN}Started new conversation: {title} (Provider: {self.provider.provider_name}, Model: {self.current_model_name}), ID: {self.conversation_id[:8]}...{Colors.ENDC}")
+        print(f"{Colors.CYAN}System Instruction for this conversation: '{self.conversation_data['metadata']['system_instruction'][:60]}...'")
         await self.save_conversation()
 
     async def save_conversation(self, quiet: bool = False) -> None:
-        """Saves the current conversation data, ensuring provider/model metadata is current."""
+        """Saves the current conversation data, ensuring provider/model/system_instruction metadata is current."""
         if not self.conversation_id or not self.conversation_data:
             if not quiet: print(f"{Colors.WARNING}No active conversation to save.{Colors.ENDC}")
             return
@@ -121,6 +132,8 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
             self.conversation_data["metadata"]["provider"] = self.provider.provider_name
             self.conversation_data["metadata"]["model"] = self.current_model_name
             self.conversation_data["metadata"]["params"] = self.params.copy()
+            # Ensure system_instruction is saved with the conversation
+            self.conversation_data["metadata"]["system_instruction"] = self.system_instruction
 
         await super().save_conversation_data(
             conversation_data=self.conversation_data,
@@ -168,9 +181,11 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
                 if 0 <= sel_num < len(all_convs_info):
                     selected_conv_info = all_convs_info[sel_num]
                 else:
-                    print(f"{Colors.FAIL}Invalid selection number.{Colors.ENDC}"); return
+                    print(f"{Colors.FAIL}Invalid selection number.{Colors.ENDC}");
+                    return
             except ValueError:
-                print(f"{Colors.FAIL}Invalid input. Please enter a number.{Colors.ENDC}"); return
+                print(f"{Colors.FAIL}Invalid input. Please enter a number.{Colors.ENDC}");
+                return
 
         if not selected_conv_info or not selected_conv_info.get("path"):
             print(f"{Colors.FAIL}Could not identify conversation file to load.{Colors.ENDC}")
@@ -187,6 +202,10 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
         loaded_provider = metadata.get("provider")
         loaded_model = metadata.get("model")
         loaded_params = metadata.get("params")
+        # Load system instruction for the conversation, fallback to global default
+        self.system_instruction = metadata.get("system_instruction",
+                                               self.global_config.get("default_system_instruction", Config.DEFAULT_SYSTEM_INSTRUCTION))
+        self.conversation_data["metadata"]["system_instruction"] = self.system_instruction  # Ensure it's in current conv_data
 
         self.conversation_name = metadata.get("title", "Untitled")
         self.active_branch = metadata.get("active_branch", "main")
@@ -207,6 +226,7 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
             self.conversation_data["metadata"]["params"] = self.params.copy()
             print(f"{Colors.CYAN}Loaded generation parameters from conversation.{Colors.ENDC}")
 
+        print(f"{Colors.CYAN}System Instruction for this conversation: '{self.system_instruction[:60]}...'")
         print(f"{Colors.GREEN}Conversation '{self.conversation_name}' loaded (ID: {self.conversation_id[:8]}...). Active branch: '{self.active_branch}'.{Colors.ENDC}")
         await self.display_conversation_history()
 
@@ -228,7 +248,7 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
             self._add_message_to_conversation(self.conversation_data, user_msg_obj)
             user_msg_id = user_msg_obj["id"]
 
-            history_for_provider = self._build_history_for_provider()
+            history_for_provider = self._build_history_for_provider()  # This now includes system prompt
             current_params = self.conversation_data.get("metadata", {}).get("params", self.params).copy()
             response_text = ""
             token_usage = {}
@@ -238,11 +258,13 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
                 print("\r" + " " * (len(self.provider.provider_name) + 30) + "\r", end="", flush=True)
                 print(f"{Colors.GREEN}AI: {Colors.ENDC}", end="", flush=True)
 
-                stream_generator = await self.provider.generate_response(history_for_provider, current_params, stream=True)
+                # The generator from generate_response already includes system prompt handling
+                stream_generator: AsyncGenerator[Dict[str, Any], None] = await self.provider.generate_response(history_for_provider, current_params, stream=True)  # type: ignore
                 async for chunk_data in stream_generator:
                     if chunk_data.get("error"):
                         response_text = f"Error: {chunk_data['error']}"
-                        print(f"\n{Colors.FAIL}{response_text}{Colors.ENDC}"); break
+                        print(f"\n{Colors.FAIL}{response_text}{Colors.ENDC}");
+                        break
                     if chunk_data.get("chunk"):
                         print(chunk_data["chunk"], end="", flush=True)
                         response_text += chunk_data["chunk"]
@@ -252,7 +274,8 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
                 print()
             else:
                 print(f"\r{Colors.CYAN}{self.provider.provider_name} is thinking...{Colors.ENDC}", end="", flush=True)
-                raw_response_text, metadata = await self.provider.generate_response(history_for_provider, current_params, stream=False)
+                # The tuple from generate_response already includes system prompt handling
+                raw_response_text, metadata = await self.provider.generate_response(history_for_provider, current_params, stream=False)  # type: ignore
                 print("\r" + " " * (len(self.provider.provider_name) + 20) + "\r", end="", flush=True)
                 response_text = raw_response_text or ""
                 token_usage = metadata.get("token_usage", {})
@@ -282,20 +305,40 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
             return None
 
     def _build_history_for_provider(self) -> List[Dict[str, str]]:
-        if not self.conversation_data or "messages" not in self.conversation_data:
-            return []
-        message_chain_ids = self._build_message_chain(self.conversation_data, self.active_branch)
-        provider_history = []
-        messages_dict = self.conversation_data.get("messages", {})
-        for msg_id in message_chain_ids:
-            msg = messages_dict.get(msg_id, {})
-            if msg.get("type") in ["user", "assistant"]:
-                provider_history.append({"role": msg["type"], "content": msg.get("content", "")})
+        """
+        Builds the message history to be sent to the AI provider.
+        Prepends the system instruction (if any) as the first user message,
+        followed by a standard model acknowledgment. These are NOT saved to the
+        conversation_data.messages but are used for the API call context.
+        """
+        provider_history: List[Dict[str, str]] = []
+
+        # Get system instruction for the current conversation
+        current_system_instruction = self.conversation_data.get("metadata", {}).get("system_instruction")
+
+        if current_system_instruction and current_system_instruction.strip():
+            provider_history.append({"role": "user", "content": current_system_instruction})
+            provider_history.append({"role": "model", "content": "Understood."})  # Standard, non-LLM generated ack
+
+        # Append actual conversation messages
+        if self.conversation_data and "messages" in self.conversation_data:
+            message_chain_ids = self._build_message_chain(self.conversation_data, self.active_branch)
+            messages_dict = self.conversation_data.get("messages", {})
+            for msg_id in message_chain_ids:
+                msg = messages_dict.get(msg_id, {})
+                if msg.get("type") in ["user", "assistant"]:
+                    # Make sure content is a string, even if it's None or empty
+                    content_text = msg.get("content", "")
+                    if content_text is None: content_text = ""
+                    provider_history.append({"role": msg["type"], "content": content_text})
+
+        # Normalize messages for the specific provider (e.g., role mapping)
         return self.provider.normalize_messages(provider_history)
 
     async def get_available_models(self) -> List[Dict[str, Any]]:
         if not self.provider.is_initialized:
-            print(f"{Colors.FAIL}Provider '{self.provider.provider_name}' is not initialized.{Colors.ENDC}"); return []
+            print(f"{Colors.FAIL}Provider '{self.provider.provider_name}' is not initialized.{Colors.ENDC}");
+            return []
         try:
             return await self.provider.list_models()
         except Exception as e:
@@ -315,7 +358,8 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
     async def select_model(self) -> None:
         models = await self.get_available_models()
         if not models:
-            print(f"{Colors.WARNING}No models to select for provider: {self.provider.provider_name}.{Colors.ENDC}"); return
+            print(f"{Colors.WARNING}No models to select for provider: {self.provider.provider_name}.{Colors.ENDC}");
+            return
         await self.display_models()
         try:
             selection_str = input(f"\nEnter model number for {self.provider.provider_name} (or press Enter to cancel): ").strip()
@@ -336,65 +380,120 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
             print(f"{Colors.FAIL}Invalid input. Please enter a number.{Colors.ENDC}")
 
     async def customize_params(self) -> None:
+        # This method customizes generation parameters like temperature, top_k etc.
+        # System instruction is handled separately by setting self.system_instruction
+        # or through conversation metadata.
         current_params_for_editing = self.params.copy()
         if self.conversation_data and "metadata" in self.conversation_data and "params" in self.conversation_data["metadata"]:
             current_params_for_editing.update(self.conversation_data["metadata"]["params"])
-        print(f"\n{Colors.HEADER}Customizing Parameters for Provider: {self.provider.provider_name} (Model: {self.current_model_name}){Colors.ENDC}")
+
+        print(f"\n{Colors.HEADER}Customizing Generation Parameters for Provider: {self.provider.provider_name} (Model: {self.current_model_name}){Colors.ENDC}")
+
+        # Edit System Instruction
+        current_sys_instruction = self.conversation_data.get("metadata", {}).get("system_instruction", self.system_instruction)
+        print(f"{Colors.CYAN}Current System Instruction: '{current_sys_instruction[:60]}...' (Press Enter to keep current){Colors.ENDC}")
+        new_sys_instruction = input("New System Instruction: ").strip()
+        if new_sys_instruction:
+            self.system_instruction = new_sys_instruction
+            if self.conversation_data and "metadata" in self.conversation_data:
+                self.conversation_data["metadata"]["system_instruction"] = new_sys_instruction
+            print(f"{Colors.GREEN}System instruction updated for current conversation.{Colors.ENDC}")
+
+        # Edit other generation parameters
         provider_param_keys = self.provider.get_default_params().keys()
-        print(f"{Colors.CYAN}Current values are shown in [brackets]. Press Enter to keep current value.{Colors.ENDC}")
+        # Exclude 'system_instruction' if it was part of provider's default_params structure
+        editable_gen_param_keys = [k for k in provider_param_keys if k != 'system_instruction']
+
+        print(f"{Colors.CYAN}Current generation parameter values are shown in [brackets]. Press Enter to keep current value.{Colors.ENDC}")
         editable_params = {}
         try:
-            for key in provider_param_keys:
+            for key in editable_gen_param_keys:
                 prompt_text = f"{key.replace('_', ' ').capitalize()} [{current_params_for_editing.get(key, 'Not set')}]: "
                 value_str = input(prompt_text).strip()
                 if value_str:
                     try:
-                        if '.' in value_str: editable_params[key] = float(value_str)
-                        else: editable_params[key] = int(value_str)
+                        if '.' in value_str:
+                            editable_params[key] = float(value_str)
+                        else:
+                            editable_params[key] = int(value_str)
                     except ValueError:
-                        if value_str.lower() in ['true', 'false']: editable_params[key] = value_str.lower() == 'true'
-                        else: editable_params[key] = value_str
+                        if value_str.lower() in ['true', 'false']:
+                            editable_params[key] = value_str.lower() == 'true'
+                        else:
+                            editable_params[key] = value_str  # Store as string if not parsable as num/bool
+
             if editable_params:
                 self.params.update(editable_params)
                 if self.conversation_data and "metadata" in self.conversation_data:
                     self.conversation_data["metadata"].setdefault("params", {}).update(editable_params)
-                    print(f"{Colors.CYAN}Conversation parameters updated. Saving...{Colors.ENDC}")
-                    await self.save_conversation(quiet=True)
                 print(f"{Colors.GREEN}Generation parameters updated successfully.{Colors.ENDC}")
+
+            if new_sys_instruction or editable_params:  # If any change was made
+                if self.conversation_data and "metadata" in self.conversation_data:
+                    print(f"{Colors.CYAN}Saving updated conversation settings...{Colors.ENDC}")
+                    await self.save_conversation(quiet=True)
             else:
-                print("No changes made to parameters.")
+                print("No changes made to parameters or system instruction.")
+
         except ValueError as e:
-            print(f"{Colors.FAIL}Invalid input: {e}. Parameters not updated.{Colors.ENDC}")
+            print(f"{Colors.FAIL}Invalid input for parameter: {e}. Parameters not updated.{Colors.ENDC}")
 
     def add_user_message(self, message: str) -> None:
+        """
+        Adds a user message to the current conversation data.
+        This is primarily for the GUI to update its internal state before calling
+        get_response or get_streaming_response.
+        """
         if not self.conversation_id or not self.conversation_data:
             print(f"{Colors.WARNING}[Client for GUI] No active conversation. Creating a default one for this session.{Colors.ENDC}")
+            # This direct call to start_new_conversation from a sync method is problematic if it becomes async.
+            # However, add_user_message itself is usually called from an async path in the GUI context.
+            # For now, assuming this path is handled carefully.
+            # Consider making this an async method if it needs to await start_new_conversation.
+            # asyncio.run(self.start_new_conversation(is_web_ui=True)) # This would block if called from sync.
+            # Let's assume start_new_conversation is called before this if no conv exists.
+            # For safety, let's make it create a basic structure if absolutely necessary.
             self.conversation_id = self.generate_conversation_id()
             self.conversation_data = self.create_metadata_structure(f"UI_Session_Conv_{self.conversation_id[:6]}", self.conversation_id)
             self.conversation_data["metadata"]["provider"] = self.provider.provider_name
             self.conversation_data["metadata"]["model"] = self.current_model_name
             self.conversation_data["metadata"]["params"] = self.params.copy()
+            self.conversation_data["metadata"]["system_instruction"] = self.system_instruction
             self.active_branch = "main"
+
         parent_id = self._get_last_message_id(self.conversation_data, self.active_branch)
         user_msg = self.create_message_structure(role="user", text=message, parent_id=parent_id, branch_id=self.active_branch)
         self._add_message_to_conversation(self.conversation_data, user_msg)
-        self.current_user_message_id = user_msg["id"]
+        self.current_user_message_id = user_msg["id"]  # Store ID of the user message just added
 
     def add_assistant_message(self, message_text: str, token_usage: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Adds an assistant's message to the current conversation data.
+        This is primarily for the GUI to update its internal state after receiving a response.
+        """
         text_to_add = message_text if message_text is not None else ""
-        parent_id_for_ai = self.current_user_message_id
+        parent_id_for_ai = self.current_user_message_id  # This should be the ID of the preceding user message
+
         if not parent_id_for_ai:
+            # Fallback if current_user_message_id wasn't set (e.g., if flow was interrupted)
             parent_id_for_ai = self._get_last_message_id(self.conversation_data, self.active_branch)
             print(f"{Colors.WARNING}[Client for GUI] current_user_message_id not set for AI msg. Using last in branch: {parent_id_for_ai}{Colors.ENDC}")
+
         ai_model_name = self.conversation_data.get("metadata", {}).get("model", self.current_model_name)
         ai_params = self.conversation_data.get("metadata", {}).get("params", self.params).copy()
+
         ai_msg = self.create_message_structure(role="assistant", text=text_to_add, model=ai_model_name,
                                                params=ai_params, token_usage=token_usage,
                                                parent_id=parent_id_for_ai, branch_id=self.active_branch)
         self._add_message_to_conversation(self.conversation_data, ai_msg)
-        self.current_user_message_id = None
+        self.current_user_message_id = None  # Clear after AI response is paired
 
     async def get_response(self) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+        """
+        Gets a non-streaming response from the provider.
+        Assumes add_user_message was called prior to set self.current_user_message_id.
+        The history sent to provider will include system prompt.
+        """
         if not self.current_user_message_id:
             print(f"{Colors.FAIL}[Client for GUI] User message not processed before requesting AI response.{Colors.ENDC}")
             return "Error: User message not processed first.", None
@@ -405,31 +504,46 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
             print(f"{Colors.FAIL}[Client for GUI] Conversation data not initialized.{Colors.ENDC}")
             return "Error: Conversation data not initialized.", None
 
-        history_for_provider = self._build_history_for_provider()
+        history_for_provider = self._build_history_for_provider()  # Includes system prompt
         current_params = self.conversation_data.get("metadata", {}).get("params", self.params).copy()
         try:
-            response_text, metadata = await self.provider.generate_response(history_for_provider, current_params, stream=False)
+            # Type hint to indicate what generate_response returns when stream=False
+            response_tuple: Tuple[str, Dict[str, Any]] = await self.provider.generate_response(history_for_provider, current_params, stream=False)  # type: ignore
+            response_text, metadata = response_tuple
             return response_text, metadata.get("token_usage", {})
         except Exception as e:
             print(f"{Colors.FAIL}[Client for GUI] Non-streaming provider error: {e}{Colors.ENDC}")
-            import traceback; traceback.print_exc()
+            import traceback;
+            traceback.print_exc()
             return f"Error: {str(e)}", None
 
     async def get_streaming_response(self) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Gets a streaming response from the provider.
+        Assumes add_user_message was called prior.
+        The history sent to provider will include system prompt.
+        """
         if not self.current_user_message_id:
-            yield {"error": "User message not processed before requesting AI stream."}; return
+            yield {"error": "User message not processed before requesting AI stream."};
+            return
         if not self.provider.is_initialized:
-            yield {"error": f"Provider '{self.provider.provider_name}' not initialized."}; return
+            yield {"error": f"Provider '{self.provider.provider_name}' not initialized."};
+            return
         if not self.conversation_data or not self.conversation_id:
-            yield {"error": "Conversation data not initialized."}; return
+            yield {"error": "Conversation data not initialized."};
+            return
 
         user_message_id_for_parenting = self.current_user_message_id
-        history_for_provider = self._build_history_for_provider()
+        history_for_provider = self._build_history_for_provider()  # Includes system prompt
         current_params = self.conversation_data.get("metadata", {}).get("params", self.params).copy()
         current_model_for_stream = self.conversation_data.get("metadata", {}).get("model", self.current_model_name)
-        full_response_text = ""; final_token_usage = {}
+
+        full_response_text = "";
+        final_token_usage = {}
         try:
-            stream_generator = await self.provider.generate_response(history_for_provider, current_params, stream=True)
+            # Type hint for the async generator
+            stream_generator: AsyncGenerator[Dict[str, Any], None] = await self.provider.generate_response(history_for_provider, current_params, stream=True)  # type: ignore
+
             async for chunk_data in stream_generator:
                 if chunk_data.get("error"): yield chunk_data; return
                 if chunk_data.get("chunk"):
@@ -437,28 +551,36 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
                     yield {"chunk": chunk_data["chunk"]}
                 if chunk_data.get("done"):
                     final_token_usage = chunk_data.get("token_usage", {})
-                    full_response_text = chunk_data.get("full_response", full_response_text)
+                    full_response_text = chunk_data.get("full_response", full_response_text)  # Ensure we get the final full response
                     break
+
+            # Add the complete assistant message to conversation data after stream finishes
             self.add_assistant_message(full_response_text, final_token_usage)
             assistant_msg_id = self._get_last_message_id(self.conversation_data, self.active_branch)
             await self.save_conversation(quiet=True)
+
             yield {"done": True, "full_response": full_response_text,
                    "conversation_id": self.conversation_id, "message_id": assistant_msg_id,
-                   "parent_id": user_message_id_for_parenting,
+                   "parent_id": user_message_id_for_parenting,  # This is the user message it's a child of
                    "model": current_model_for_stream, "token_usage": final_token_usage}
         except Exception as e:
             print(f"{Colors.FAIL}[Client for GUI] Streaming provider error: {e}{Colors.ENDC}")
-            import traceback; traceback.print_exc()
+            import traceback;
+            traceback.print_exc()
             yield {"error": str(e)}
 
     def get_conversation_history(self) -> List[Dict[str, Any]]:
+        """
+        Returns the actual stored message history for the active branch.
+        This does NOT include the dynamically prepended system prompt.
+        """
         hist_list = []
         if not self.conversation_data or "messages" not in self.conversation_data: return hist_list
         active_branch_ids = self._build_message_chain(self.conversation_data, self.active_branch)
         messages_dict = self.conversation_data.get("messages", {})
         for mid in active_branch_ids:
             msg = messages_dict.get(mid, {})
-            if msg.get("type") in ["user", "assistant"]:
+            if msg.get("type") in ["user", "assistant"]:  # Only user and assistant messages are part of history
                 hist_list.append({
                     'role': msg["type"], 'content': msg.get("content", ""), 'id': mid,
                     'model': msg.get("model"), 'timestamp': msg.get("timestamp"),
@@ -479,42 +601,60 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
             raise ValueError("Original assistant message for retry has no valid parent user message.")
 
         original_branch_context = original_assistant_msg.get("branch_id", self.active_branch)
-        history_ids_for_retry = self._build_message_chain_up_to_id(parent_user_id, original_branch_context)
 
-        history_for_provider_retry = []
-        for mid in history_ids_for_retry:
+        # Build history up to the parent user message for the retry context
+        history_ids_for_retry_context = self._build_message_chain_up_to_id(parent_user_id, original_branch_context)
+
+        history_for_provider_retry_raw = []
+        for mid in history_ids_for_retry_context:
             msg = messages_dict[mid]
-            history_for_provider_retry.append({"role": msg["type"], "content": msg["content"]})
+            history_for_provider_retry_raw.append({"role": msg["type"], "content": msg["content"]})
 
-        normalized_history_for_retry = self.provider.normalize_messages(history_for_provider_retry)
+        # Prepend system instruction to this specific retry context
+        current_system_instruction = self.conversation_data.get("metadata", {}).get("system_instruction")
+        history_with_system_prompt_for_retry = []
+        if current_system_instruction and current_system_instruction.strip():
+            history_with_system_prompt_for_retry.append({"role": "user", "content": current_system_instruction})
+            history_with_system_prompt_for_retry.append({"role": "model", "content": "Understood."})
+        history_with_system_prompt_for_retry.extend(history_for_provider_retry_raw)
+
+        normalized_history_for_retry = self.provider.normalize_messages(history_with_system_prompt_for_retry)
+
         current_model_for_retry = self.conversation_data.get("metadata", {}).get("model", self.current_model_name)
         current_params_for_retry = self.conversation_data.get("metadata", {}).get("params", self.params).copy()
 
         try:
-            new_response_text, metadata = await self.provider.generate_response(
+            # Type hint for the non-streaming response
+            response_tuple: Tuple[str, Dict[str, Any]] = await self.provider.generate_response(  # type: ignore
                 normalized_history_for_retry, current_params_for_retry, stream=False)
+            new_response_text, metadata = response_tuple
             new_token_usage = metadata.get("token_usage", {})
-            new_branch_id = f"branch_{uuid.uuid4().hex[:8]}"
+
+            # Create the new assistant message on a new branch stemming from the parent_user_id
+            new_branch_id = f"branch_{uuid.uuid4().hex[:8]}"  # Create a new branch ID for this retry
             new_assistant_msg_obj = self.create_message_structure(
                 role="assistant", text=new_response_text or "", model=current_model_for_retry,
                 params=current_params_for_retry, token_usage=new_token_usage,
-                parent_id=parent_user_id, branch_id=new_branch_id)
+                parent_id=parent_user_id, branch_id=new_branch_id)  # Assign to new branch
+
             self._add_message_to_conversation(self.conversation_data, new_assistant_msg_obj)
 
+            # Update conversation metadata to reflect the new active branch and leaf
             self.conversation_data["metadata"]["updated_at"] = datetime.now().isoformat()
-            self.active_branch = new_branch_id
+            self.active_branch = new_branch_id  # Switch active branch to the new one
             self.conversation_data["metadata"]["active_leaf"] = new_assistant_msg_obj["id"]
             await self.save_conversation(quiet=True)
 
             parent_user_msg_obj = messages_dict[parent_user_id]
-            sibling_ids = parent_user_msg_obj.get("children", [])
+            sibling_ids = parent_user_msg_obj.get("children", [])  # children of the USER message
             new_msg_idx = sibling_ids.index(new_assistant_msg_obj["id"]) if new_assistant_msg_obj["id"] in sibling_ids else -1
 
             print(f"[Client] Retry successful. New assistant message ID: {new_assistant_msg_obj['id']} on new branch '{new_branch_id}'.")
-            return {"message": new_assistant_msg_obj, "sibling_index": new_msg_idx, "total_siblings": len(sibling_ids)}
+            return {"message": new_assistant_msg_obj, "sibling_index": new_msg_idx, "total_siblings": len(sibling_ids), "system_instruction": current_system_instruction}
         except Exception as e:
             print(f"{Colors.FAIL}Error during retry message generation: {e}{Colors.ENDC}")
-            import traceback; traceback.print_exc()
+            import traceback;
+            traceback.print_exc()
             raise
 
     def _build_message_chain_up_to_id(self, target_leaf_id: str, branch_id_context: Optional[str] = None) -> List[str]:
@@ -527,7 +667,7 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
 
         messages = self.conversation_data.get("messages", {})
         if target_leaf_id not in messages:
-            return [] # Target leaf doesn't exist
+            return []  # Target leaf doesn't exist
 
         chain = []
         current_id: Optional[str] = target_leaf_id
@@ -538,11 +678,14 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
             current_msg_data = messages.get(current_id, {})
 
             # Ensure we are staying within the intended branch context if provided
+            # This check is important: if branch_id_context is specified, messages must belong to it.
             if branch_id_context and current_msg_data.get("branch_id") != branch_id_context:
-                 # This can happen if target_leaf_id's parent is on a different branch.
-                 # For retry, we usually want history on the *same branch* as the parent of the message being retried.
-                 # If parent_user_id is the target_leaf_id, then its branch_id is the context.
-                break # Stop if message is not on the expected branch
+                # This implies we've traversed to a parent that's on a different branch,
+                # which shouldn't happen if the branch structure is consistent for a single line of conversation.
+                # However, if target_leaf_id itself is on a different branch than its parent (which would be odd),
+                # this ensures we only trace back along the specified branch.
+                print(f"Warning: Message {current_id} is on branch {current_msg_data.get('branch_id')} but expected {branch_id_context}. Stopping chain build here.")
+                break
 
             chain.append(current_id)
             current_id = current_msg_data.get("parent_id")
@@ -571,18 +714,24 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
                 siblings_ids = parent_message_obj.get("children", [])
                 if message_id in siblings_ids:
                     current_index_in_siblings = siblings_ids.index(message_id)
-            else:
-                siblings_ids = [message_id]; current_index_in_siblings = 0
+            else:  # Should not happen if data is consistent
+                siblings_ids = [message_id];
+                current_index_in_siblings = 0
         elif current_message_obj["type"] == "user":
-            parent_id = message_id
-            siblings_ids = current_message_obj.get("children", [])
-            print(f"{Colors.WARNING}Navigating from a user message; behavior might be to activate its branch or select a child.{Colors.ENDC}")
+            # Navigation from a user message could mean selecting one of its children (AI responses)
+            # For this implementation, let's assume sibling navigation is primarily for assistant responses.
+            # If we want to navigate *from* a user message to one of its children, the logic would differ.
+            # For now, if it's a user message, we might just stay on its branch or pick its first child.
+            print(f"{Colors.WARNING}Sibling navigation attempted from a user message. This typically applies to assistant responses. Staying on current branch of user message.")
+            self.active_branch = current_message_obj.get("branch_id", self.active_branch)
+            self.conversation_data["metadata"]["active_leaf"] = message_id  # User message becomes the leaf
+            return {"message": current_message_obj, "sibling_index": -1, "total_siblings": 0, "system_instruction": self.conversation_data.get("metadata", {}).get("system_instruction", self.system_instruction)}
 
         if not siblings_ids:
             print(f"{Colors.WARNING}No siblings found for message {message_id} to navigate {direction}. Staying on current branch.{Colors.ENDC}")
             self.active_branch = current_message_obj.get("branch_id", self.active_branch)
             self.conversation_data["metadata"]["active_leaf"] = message_id
-            return {"message": current_message_obj, "sibling_index": current_index_in_siblings, "total_siblings": len(siblings_ids)}
+            return {"message": current_message_obj, "sibling_index": current_index_in_siblings, "total_siblings": len(siblings_ids), "system_instruction": self.conversation_data.get("metadata", {}).get("system_instruction", self.system_instruction)}
 
         new_active_message_obj = current_message_obj
         new_sibling_idx = current_index_in_siblings
@@ -593,12 +742,13 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
         elif direction == "next" and current_index_in_siblings < len(siblings_ids) - 1:
             new_sibling_idx = current_index_in_siblings + 1
             new_active_message_obj = messages[siblings_ids[new_sibling_idx]]
-        elif direction == "none":
+        elif direction == "none":  # Explicitly stay on current, useful for just getting info
             new_active_message_obj = current_message_obj
             new_sibling_idx = current_index_in_siblings
         else:
             print(f"{Colors.WARNING}Navigation '{direction}' from message {message_id} resulted in no change (edge or invalid direction).{Colors.ENDC}")
 
+        # Update active branch and leaf based on the *newly selected message*
         self.active_branch = new_active_message_obj.get("branch_id", self.active_branch)
         self.conversation_data["metadata"]["active_leaf"] = new_active_message_obj["id"]
         self.conversation_data["metadata"]["updated_at"] = datetime.now().isoformat()
@@ -606,7 +756,7 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
         await self.save_conversation(quiet=True)
 
         print(f"[Client] Switched. New active message: {new_active_message_obj['id'][:8]}, Branch: {self.active_branch}, Index: {new_sibling_idx}")
-        return {"message": new_active_message_obj, "sibling_index": new_sibling_idx, "total_siblings": len(siblings_ids)}
+        return {"message": new_active_message_obj, "sibling_index": new_sibling_idx, "total_siblings": len(siblings_ids), "system_instruction": self.conversation_data.get("metadata", {}).get("system_instruction", self.system_instruction)}
 
     async def get_message_siblings(self, message_id: str) -> Dict[str, Any]:
         if not self.conversation_data or "messages" not in self.conversation_data:
@@ -615,7 +765,9 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
         target_msg_obj = messages.get(message_id)
         if not target_msg_obj: raise ValueError(f"Message with ID '{message_id}' not found.")
 
-        parent_id_for_siblings: Optional[str] = None; sibling_ids: List[str] = []; current_idx: int = -1
+        parent_id_for_siblings: Optional[str] = None;
+        sibling_ids: List[str] = [];
+        current_idx: int = -1
 
         if target_msg_obj["type"] == "assistant":
             parent_id_for_siblings = target_msg_obj.get("parent_id")
@@ -623,18 +775,29 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
                 parent_msg_obj = messages[parent_id_for_siblings]
                 sibling_ids = parent_msg_obj.get("children", [])
                 if message_id in sibling_ids: current_idx = sibling_ids.index(message_id)
-            else: sibling_ids = [message_id]; current_idx = 0
+            else:
+                sibling_ids = [message_id]; current_idx = 0
         elif target_msg_obj["type"] == "user":
-            return {"message_id": message_id, "parent_id": target_msg_obj.get("parent_id"),
-                    "siblings": [], "current_index": -1, "total": 0,
-                    "note": "Sibling navigation is primarily for assistant message alternatives."}
-        return {"message_id": message_id, "parent_id": parent_id_for_siblings,
+            # A user message's "siblings" in this context are its children (AI responses)
+            sibling_ids = target_msg_obj.get("children", [])
+            # 'current_index' doesn't directly apply if we're looking at children of a user message
+            # unless we define one of them as "active".
+            # For now, returning all children.
+            current_idx = -1  # Or determine which child is on the active branch if applicable
+            # If active_leaf is one of the children, that's the current_index
+            active_leaf = self.conversation_data.get("metadata", {}).get("active_leaf")
+            if active_leaf and active_leaf in sibling_ids:
+                current_idx = sibling_ids.index(active_leaf)
+
+        return {"message_id": message_id, "parent_id": parent_id_for_siblings or (target_msg_obj.get("parent_id") if target_msg_obj["type"] == "user" else None),
                 "siblings": sibling_ids, "current_index": current_idx, "total": len(sibling_ids)}
 
     async def get_conversation_tree(self) -> Dict[str, Any]:
         if not self.conversation_data or "messages" not in self.conversation_data:
             return {"nodes": [], "edges": [], "metadata": self.conversation_data.get("metadata", {})}
-        messages = self.conversation_data["messages"]; nodes = []; edges = []
+        messages = self.conversation_data["messages"];
+        nodes = [];
+        edges = []
         active_leaf_id = self.conversation_data.get("metadata", {}).get("active_leaf")
         active_branch_path_ids = set(self._build_message_chain(self.conversation_data, self.active_branch))
 
@@ -660,39 +823,59 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
     async def display_conversations(self) -> List[Dict[str, Any]]:
         convs_info = await self.list_conversations()
         if not convs_info:
-            print(f"{Colors.WARNING}No saved conversations found in {self.base_directory}{Colors.ENDC}"); return []
-        headers = ["#", "Title", "Provider", "Model", "Msgs", "Updated", "File"]; table_data = []
+            print(f"{Colors.WARNING}No saved conversations found in {self.base_directory}{Colors.ENDC}");
+            return []
+        headers = ["#", "Title", "Provider", "Model", "Msgs", "Updated", "File"];
+        table_data = []
         for i, c_info in enumerate(convs_info, 1):
             updated_at_str = c_info.get("updated_at", "N/A")
             if updated_at_str != "N/A":
-                try: dt = datetime.fromisoformat(updated_at_str.replace("Z", "+00:00")); updated_at_str = dt.strftime("%Y-%m-%d %H:%M")
-                except ValueError: pass
+                try:
+                    dt = datetime.fromisoformat(updated_at_str.replace("Z", "+00:00")); updated_at_str = dt.strftime("%Y-%m-%d %H:%M")
+                except ValueError:
+                    pass
             table_data.append([i, c_info.get("title", "Untitled")[:30], c_info.get("provider", "N/A"),
                                c_info.get("model", "N/A").split('/')[-1][:20], c_info.get("message_count", 0),
                                updated_at_str, c_info.get("filename", "N/A")[:25]])
         print(f"\n{Colors.HEADER}Saved Conversations ({self.base_directory}):{Colors.ENDC}")
-        print(tabulate(table_data, headers=headers, tablefmt="pretty")); return convs_info
+        print(tabulate(table_data, headers=headers, tablefmt="pretty"));
+        return convs_info
 
     async def display_conversation_history(self) -> None:
         if not self.conversation_data or "messages" not in self.conversation_data or not self.conversation_data["messages"]:
-            print(f"{Colors.WARNING}No conversation history to display.{Colors.ENDC}"); return
+            print(f"{Colors.WARNING}No conversation history to display.{Colors.ENDC}");
+            return
         print(f"\n{Colors.HEADER}Conversation History:{Colors.ENDC}")
         metadata = self.conversation_data.get("metadata", {})
-        title = metadata.get("title", "Untitled"); provider_disp = metadata.get("provider", self.provider.provider_name if self.provider else "N/A")
+        title = metadata.get("title", "Untitled");
+        provider_disp = metadata.get("provider", self.provider.provider_name if self.provider else "N/A")
         model_disp = metadata.get("model", self.current_model_name if self.provider else "N/A")
-        print(f"{Colors.BOLD}Title: {title}{Colors.ENDC}\n{Colors.BOLD}Provider: {provider_disp}{Colors.ENDC}\n{Colors.BOLD}Model: {model_disp}{Colors.ENDC}\n{Colors.BOLD}Active Branch: {self.active_branch}{Colors.ENDC}\n")
+        system_instr_disp = metadata.get("system_instruction", self.system_instruction)
+
+        print(f"{Colors.BOLD}Title: {title}{Colors.ENDC}\n{Colors.BOLD}Provider: {provider_disp}{Colors.ENDC}\n{Colors.BOLD}Model: {model_disp}{Colors.ENDC}\n{Colors.BOLD}Active Branch: {self.active_branch}{Colors.ENDC}")
+        print(f"{Colors.CYAN}System Instruction: {system_instr_disp[:100]}{'...' if len(system_instr_disp) > 100 else ''}{Colors.ENDC}\n")
+
         active_branch_message_ids = self._build_message_chain(self.conversation_data, self.active_branch)
         messages_dict = self.conversation_data.get("messages", {})
         for msg_id in active_branch_message_ids:
             msg_data = messages_dict.get(msg_id, {})
             if msg_data.get("type") in ["user", "assistant"]:
-                role = msg_data["type"]; text_content = msg_data.get("content", ""); timestamp_str = msg_data.get("timestamp", "")
-                try: time_display = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")).strftime("%H:%M:%S")
-                except: time_display = "N/A"
+                role = msg_data["type"];
+                text_content = msg_data.get("content", "");
+                timestamp_str = msg_data.get("timestamp", "")
+                try:
+                    time_display = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")).strftime("%H:%M:%S")
+                except:
+                    time_display = "N/A"
                 color_code = Colors.BLUE if role == "user" else Colors.GREEN
                 print(f"{color_code}{role.capitalize()} ({time_display}): {Colors.ENDC}{text_content}\n")
 
     async def toggle_streaming(self) -> bool:
         self.use_streaming = not self.use_streaming
         print(f"{Colors.GREEN}CLI streaming mode is now {'enabled' if self.use_streaming else 'disabled'}.{Colors.ENDC}")
+        # This also updates the global config's streaming preference if main_config is available
+        if self.global_config:
+            self.global_config.set("use_streaming", self.use_streaming)
+            await asyncio.to_thread(self.global_config.save_config)  # Save in a thread
         return self.use_streaming
+

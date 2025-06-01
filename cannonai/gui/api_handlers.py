@@ -91,6 +91,12 @@ class APIHandlers:
         conv_data = self.client.conversation_data if hasattr(self.client, 'conversation_data') else {}
         metadata = conv_data.get("metadata", {})
 
+        # Get current system instruction for the active conversation, or global default
+        current_system_instruction = metadata.get(
+            "system_instruction",
+            main_config.get("default_system_instruction", Config.DEFAULT_SYSTEM_INSTRUCTION) if main_config else Config.DEFAULT_SYSTEM_INSTRUCTION
+        )
+
         active_branch_history = []
         current_messages_tree = {}
 
@@ -112,7 +118,8 @@ class APIHandlers:
             'conversation_name': metadata.get("title", getattr(self.client, 'conversation_name', 'New Conversation')),
             'params': metadata.get("params", self.client.params).copy(),
             'history': active_branch_history,
-            'full_message_tree': current_messages_tree
+            'full_message_tree': current_messages_tree,
+            'system_instruction': current_system_instruction,
         }
 
     def get_models(self) -> Dict[str, Any]:
@@ -130,23 +137,24 @@ class APIHandlers:
     def update_settings(self, provider: Optional[str] = None,
                         model: Optional[str] = None,
                         streaming: Optional[bool] = None,
-                        params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        logger.info(f"APIHandlers: Updating settings - Provider: {provider}, Model: {model}, Streaming: {streaming}, Params: {params}")
+                        params: Optional[Dict[str, Any]] = None,
+                        system_instruction: Optional[str] = None) -> Dict[str, Any]:
+        logger.info(f"APIHandlers: Updating settings - Provider: {provider}, Model: {model}, Streaming: {streaming}, Params: {params}, SystemInstruction: {system_instruction is not None}")
         if not self.client or not self.client.provider:
             return {'error': 'Client or provider not initialized', 'status_code': 503}
         try:
             global main_config  # Access the global config from server.py
+            # Accessing main_config_for_gui from server.py context for saving global defaults
+            from gui.server import main_config_for_gui as server_main_config
 
             if provider and provider != self.client.provider.provider_name:
                 logger.warning(f"Provider change requested to '{provider}'. This requires client re-initialization by the server. Updating config default for next startup.")
-                # Accessing main_config_for_gui from server.py context
-                from gui.server import main_config_for_gui as server_main_config
                 if server_main_config:
                     server_main_config.set("default_provider", provider)
                     new_provider_default_model = server_main_config.get_default_model_for_provider(provider)
                     if new_provider_default_model:
                         server_main_config.set("provider_models", {**server_main_config.get("provider_models", {}), provider: new_provider_default_model})
-                    server_main_config.save_config()
+                    server_main_config.save_config()  # Save global config change
                     return {
                         'success': False,
                         'message': f"Default provider changed to {provider}. Restart GUI for changes to take full effect.",
@@ -155,7 +163,6 @@ class APIHandlers:
                     }
                 else:
                     logger.error("main_config_for_gui not available in APIHandlers to update default provider.")
-
 
             if model is not None and model != self.client.current_model_name:
                 if self.client.provider.validate_model(model):
@@ -172,12 +179,31 @@ class APIHandlers:
                 if self.client.conversation_data and "metadata" in self.client.conversation_data:
                     self.client.conversation_data["metadata"]["streaming_preference"] = streaming
                 logger.debug(f"Client streaming preference updated to: {self.client.use_streaming}")
+                # Update global config for streaming if server_main_config is available
+                if server_main_config:
+                    server_main_config.set("use_streaming", streaming)
+                    server_main_config.save_config()
 
             if params is not None:
                 self.client.params.update(params)
                 if self.client.conversation_data and "metadata" in self.client.conversation_data:
                     self.client.conversation_data["metadata"].setdefault("params", {}).update(params)
                 logger.debug(f"Client params updated: {self.client.params}")
+
+            current_system_instruction_for_response = self.client.system_instruction  # Default to client's current
+            if system_instruction is not None:
+                self.client.system_instruction = system_instruction  # Update client's active system instruction
+                if self.client.conversation_data and "metadata" in self.client.conversation_data:
+                    self.client.conversation_data["metadata"]["system_instruction"] = system_instruction
+                logger.debug(f"Client system instruction updated to: '{system_instruction[:50]}...'")
+                current_system_instruction_for_response = system_instruction
+                # Optionally update the global default system instruction in config
+                if server_main_config and server_main_config.get("default_system_instruction") != system_instruction:
+                    # This could be a separate setting if global default vs conversation-specific is desired
+                    # For now, let's assume changing it here means changing the default for new conversations too.
+                    # server_main_config.set("default_system_instruction", system_instruction)
+                    # server_main_config.save_config()
+                    pass  # Decided not to update global default here, only conversation specific for now via sidebar. Wizard handles global.
 
             if self.client.conversation_id and self.client.conversation_data:
                 self.run_async(self.client.save_conversation(quiet=True))
@@ -187,7 +213,8 @@ class APIHandlers:
                 'provider_name': self.client.provider.provider_name,
                 'model': self.client.current_model_name,
                 'streaming': self.client.use_streaming,
-                'params': self.client.params.copy()
+                'params': self.client.params.copy(),
+                'system_instruction': current_system_instruction_for_response,
             }
         except Exception as e:
             logger.error(f"Failed to update settings: {e}", exc_info=True)
@@ -207,18 +234,20 @@ class APIHandlers:
         logger.info(f"APIHandlers: Starting new conversation with title: '{title if title else '(auto-generated)'}'")
         if not self.client: return {'error': 'Client not initialized', 'status_code': 503}
         try:
+            # The client's start_new_conversation will use its current system_instruction
             self.run_async(self.client.start_new_conversation(title=title, is_web_ui=True))
             metadata = self.client.conversation_data.get("metadata", {})
             return {
                 'success': True,
                 'conversation_id': self.client.conversation_id,
                 'conversation_name': metadata.get("title", self.client.conversation_name),
-                'history': [],
+                'history': [],  # Initial history is empty, system prompt handled by client
                 'provider_name': metadata.get("provider", self.client.provider.provider_name if self.client.provider else 'N/A'),
                 'model': metadata.get("model", self.client.current_model_name if self.client.provider else 'N/A'),
                 'params': metadata.get("params", self.client.params).copy(),
                 'streaming': self.client.use_streaming,
-                'full_message_tree': self.client.conversation_data.get("messages", {})
+                'full_message_tree': self.client.conversation_data.get("messages", {}),
+                'system_instruction': metadata.get("system_instruction", self.client.system_instruction)
             }
         except Exception as e:
             logger.error(f"Failed to create new conversation: {e}", exc_info=True)
@@ -229,7 +258,7 @@ class APIHandlers:
         if not self.client: return {'error': 'Client not initialized', 'status_code': 503}
         try:
             self.run_async(self.client.load_conversation(conversation_identifier))
-            active_history = self.client.get_conversation_history()
+            active_history = self.client.get_conversation_history()  # This history does not include the prepended system prompt
             metadata = self.client.conversation_data.get("metadata", {})
             full_tree = self.client.conversation_data.get("messages", {})
             return {
@@ -241,7 +270,8 @@ class APIHandlers:
                 'model': metadata.get("model", self.client.current_model_name if self.client.provider else 'N/A'),
                 'params': metadata.get("params", self.client.params).copy(),
                 'streaming': metadata.get("streaming_preference", self.client.use_streaming),
-                'full_message_tree': full_tree
+                'full_message_tree': full_tree,
+                'system_instruction': metadata.get("system_instruction", self.client.system_instruction)
             }
         except FileNotFoundError:
             logger.error(f"Conversation file for '{conversation_identifier}' not found.")
@@ -255,6 +285,10 @@ class APIHandlers:
         if not self.client or not self.client.conversation_id:
             return {'error': 'No active conversation to save', 'status_code': 400}
         try:
+            # Ensure current system instruction is in metadata before saving
+            if self.client.conversation_data and "metadata" in self.client.conversation_data:
+                self.client.conversation_data["metadata"]["system_instruction"] = self.client.system_instruction
+
             self.run_async(self.client.save_conversation())
             title = self.client.conversation_data.get("metadata", {}).get("title", "Untitled")
             return {'success': True, 'message': f"Conversation '{title}' saved."}
@@ -263,15 +297,14 @@ class APIHandlers:
             return {'error': str(e), 'status_code': 500}
 
     def _find_conv_file(self, conv_id_or_name: str) -> Optional[Path]:
-        if not self.client or not self.client.base_directory: return None # Use base_directory
+        if not self.client or not self.client.base_directory: return None  # Use base_directory
         return self.run_async(asyncio.to_thread(self.client._find_conversation_file_by_id_or_filename, self.client.base_directory, conv_id_or_name))
-
 
     def duplicate_conversation(self, conversation_id_to_duplicate: str, new_title: str) -> Dict[str, Any]:
         if not self.client: return {'error': 'Client not initialized', 'status_code': 503}
         logger.info(f"APIHandlers: Duplicating conversation ID/File: {conversation_id_to_duplicate} to new title: '{new_title}'")
         try:
-            original_filepath = self._find_conv_file(conversation_id_to_duplicate) # Uses corrected _find_conv_file
+            original_filepath = self._find_conv_file(conversation_id_to_duplicate)
             if not original_filepath or not original_filepath.exists():
                 return {'error': 'Original conversation file not found', 'status_code': 404}
 
@@ -286,9 +319,11 @@ class APIHandlers:
             data['metadata']['updated_at'] = now_iso
             data['metadata']['provider'] = data['metadata'].get('provider', self.client.provider.provider_name if self.client.provider else "unknown")
             data['metadata']['model'] = data['metadata'].get('model', self.client.current_model_name if self.client.provider else "unknown")
+            # Preserve system instruction from duplicated conversation
+            data['metadata']['system_instruction'] = data['metadata'].get('system_instruction', self.client.system_instruction)
 
             new_filename_str = self.client.format_filename(new_title, new_conv_id_str)
-            new_filepath = self.client.base_directory / new_filename_str # Use base_directory
+            new_filepath = self.client.base_directory / new_filename_str
             with open(new_filepath, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -301,7 +336,7 @@ class APIHandlers:
         if not self.client: return {'error': 'Client not initialized', 'status_code': 503}
         logger.info(f"APIHandlers: Renaming conversation ID/File: {conversation_id_or_filename_to_rename} to new title: '{new_title}'")
         try:
-            original_filepath = self._find_conv_file(conversation_id_or_filename_to_rename) # Uses corrected _find_conv_file
+            original_filepath = self._find_conv_file(conversation_id_or_filename_to_rename)
             if not original_filepath or not original_filepath.exists():
                 return {'error': 'Conversation file not found for renaming', 'status_code': 404}
 
@@ -317,9 +352,13 @@ class APIHandlers:
             with open(original_filepath, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
             new_filename_str = self.client.format_filename(new_title, actual_conversation_id)
-            new_filepath = self.client.base_directory / new_filename_str # Use base_directory
+            new_filepath = self.client.base_directory / new_filename_str
             if original_filepath != new_filepath:
                 os.rename(original_filepath, new_filepath)
+
+            # If renaming the active conversation, update client's current name
+            if self.client.conversation_id == actual_conversation_id:
+                self.client.conversation_name = new_title
 
             return {'success': True, 'conversation_id': actual_conversation_id, 'new_title': new_title, 'new_filename': new_filename_str}
         except Exception as e:
@@ -330,7 +369,7 @@ class APIHandlers:
         if not self.client: return {'error': 'Client not initialized', 'status_code': 503}
         logger.info(f"APIHandlers: Deleting conversation ID/File: {conversation_id_or_filename_to_delete}")
         try:
-            filepath_to_delete = self._find_conv_file(conversation_id_or_filename_to_delete) # Uses corrected _find_conv_file
+            filepath_to_delete = self._find_conv_file(conversation_id_or_filename_to_delete)
             if not filepath_to_delete or not filepath_to_delete.exists():
                 return {'error': 'Conversation file not found for deletion', 'status_code': 404}
 
@@ -355,24 +394,19 @@ class APIHandlers:
         logger.debug(f"APIHandlers: Handling non-streaming send for: '{message_content[:50]}...'")
         if not self.client or not self.client.provider: return {'error': 'Client or provider not initialized', 'status_code': 503}
         try:
-            response_text, token_usage_dict = self.run_async(self.client.get_response())
+            # add_user_message now happens in the Flask route before calling this
+            # So, self.client.current_user_message_id should be set.
+            response_text, token_usage_dict = self.run_async(self.client.get_response())  # get_response uses current_user_message_id
 
-            if response_text is None and token_usage_dict is None: # Check if provider failed
-                 # If get_response itself raised an error that was caught by run_async,
-                 # run_async would re-raise it, and this part might not be reached.
-                 # This check is more for if get_response returns (None, None) explicitly.
+            if response_text is None and token_usage_dict is None:
                 logger.error("AI client's get_response returned None for text and token_usage.")
-                # Attempt to get a more specific error if available from the client or provider state
                 error_detail = "Provider returned no data or an error occurred during generation."
-                # Example: if self.client.provider.last_error: error_detail = self.client.provider.last_error
                 return {'error': error_detail, 'status_code': 500}
 
+            self.client.add_assistant_message(response_text, token_usage_dict)  # Adds to conversation_data
 
-            self.client.add_assistant_message(response_text, token_usage_dict)
-
-            # Corrected call to _get_last_message_id
             assistant_message_id = self.client._get_last_message_id(
-                self.client.conversation_data, # Pass the conversation_data dict
+                self.client.conversation_data,
                 self.client.active_branch
             )
             user_message_id_for_parenting = self.client.conversation_data["messages"][assistant_message_id]["parent_id"]
@@ -393,12 +427,13 @@ class APIHandlers:
             return {'error': str(e), 'status_code': 500}
 
     async def stream_message(self, message_content: str) -> AsyncGenerator[Dict[str, Any], None]:
-        logger.debug(f"APIHandlers: Initiating stream for message (content already added): '{message_content[:50]}...'")
+        logger.debug(f"APIHandlers: Initiating stream for message (content already added by client.add_user_message): '{message_content[:50]}...'")
         if not self.client or not self.client.provider:
             yield {"error": "Client or provider not initialized in APIHandlers."};
             return
         try:
-            async for data_event in self.client.get_streaming_response():
+            # client.add_user_message was called in the Flask route handler
+            async for data_event in self.client.get_streaming_response():  # get_streaming_response uses current_user_message_id
                 yield data_event
                 if data_event.get("error") or data_event.get("done"):
                     break
@@ -420,7 +455,8 @@ class APIHandlers:
                 'total_siblings': retry_result_dict['total_siblings'],
                 'history': current_active_history, 'conversation_id': self.client.conversation_id,
                 'conversation_name': self.client.conversation_data.get("metadata", {}).get("title"),
-                'full_message_tree': current_full_tree
+                'full_message_tree': current_full_tree,
+                'system_instruction': self.client.conversation_data.get("metadata", {}).get("system_instruction", self.client.system_instruction)
             }
         except Exception as e:
             logger.error(f"Failed to retry message {assistant_message_id_to_retry}: {e}", exc_info=True)
@@ -439,7 +475,8 @@ class APIHandlers:
                 'total_siblings': nav_result_dict['total_siblings'],
                 'history': current_active_history, 'conversation_id': self.client.conversation_id,
                 'conversation_name': self.client.conversation_data.get("metadata", {}).get("title"),
-                'full_message_tree': current_full_tree
+                'full_message_tree': current_full_tree,
+                'system_instruction': self.client.conversation_data.get("metadata", {}).get("system_instruction", self.client.system_instruction)
             }
         except Exception as e:
             logger.error(f"Failed to navigate sibling for {message_id} ({direction}): {e}", exc_info=True)
@@ -484,8 +521,19 @@ class APIHandlers:
             cmd_name = parts[0]
             cmd_args = parts[1] if len(parts) > 1 else ""
 
-            if cmd_name == '/new': return self.new_conversation(title=cmd_args)
-            if cmd_name == '/load': return self.load_conversation(cmd_args) if cmd_args else {'error': 'Specify conversation name/ID', 'status_code': 400}
+            # For commands that modify state and should return full status
+            if cmd_name == '/new':
+                response = self.new_conversation(title=cmd_args)
+                # Ensure system_instruction is part of the response for /new
+                response['system_instruction'] = self.client.system_instruction
+                return response
+            if cmd_name == '/load':
+                if not cmd_args: return {'error': 'Specify conversation name/ID', 'status_code': 400}
+                response = self.load_conversation(cmd_args)
+                # Ensure system_instruction is part of the response for /load
+                response['system_instruction'] = self.client.system_instruction
+                return response
+
             if cmd_name == '/save': return self.save_conversation()
             if cmd_name == '/list':
                 convos = self.get_conversations()
@@ -495,8 +543,10 @@ class APIHandlers:
                     return self.update_settings(model=cmd_args)
                 else:
                     return self.get_models()
-            if cmd_name == '/stream':
-                return self.update_settings(streaming=not self.client.use_streaming if self.client else False)
+            if cmd_name == '/stream':  # Toggles global default streaming
+                response = self.update_settings(streaming=not self.client.use_streaming if self.client else False)
+                response['message'] = f"Default streaming mode set to {'ON' if self.client.use_streaming else 'OFF'}."
+                return response
 
             logger.warning(f"Command '{cmd_name}' not directly mapped in APIHandlers.execute_command for rich response.")
             return {'error': f"Command '{cmd_name}' not directly supported via this API endpoint for structured response.", 'status_code': 400}
