@@ -91,11 +91,8 @@ class APIHandlers:
         conv_data = self.client.conversation_data if hasattr(self.client, 'conversation_data') else {}
         metadata = conv_data.get("metadata", {})
 
-        # Get current system instruction for the active conversation, or global default
-        current_system_instruction = metadata.get(
-            "system_instruction",
-            main_config.get("default_system_instruction", Config.DEFAULT_SYSTEM_INSTRUCTION) if main_config else Config.DEFAULT_SYSTEM_INSTRUCTION
-        )
+        # Get current system instruction from the client (which gets it from first message)
+        current_system_instruction = self.client.system_instruction
 
         active_branch_history = []
         current_messages_tree = {}
@@ -192,18 +189,12 @@ class APIHandlers:
 
             current_system_instruction_for_response = self.client.system_instruction  # Default to client's current
             if system_instruction is not None:
-                self.client.system_instruction = system_instruction  # Update client's active system instruction
-                if self.client.conversation_data and "metadata" in self.client.conversation_data:
-                    self.client.conversation_data["metadata"]["system_instruction"] = system_instruction
-                logger.debug(f"Client system instruction updated to: '{system_instruction[:50]}...'")
+                logger.debug(f"Updating system instruction via update_system_instruction method: '{system_instruction[:50]}...'")
+                # Use the new update_system_instruction method which updates the first message
+                self.run_async(self.client.update_system_instruction(system_instruction))
                 current_system_instruction_for_response = system_instruction
-                # Optionally update the global default system instruction in config
-                if server_main_config and server_main_config.get("default_system_instruction") != system_instruction:
-                    # This could be a separate setting if global default vs conversation-specific is desired
-                    # For now, let's assume changing it here means changing the default for new conversations too.
-                    # server_main_config.set("default_system_instruction", system_instruction)
-                    # server_main_config.save_config()
-                    pass  # Decided not to update global default here, only conversation specific for now via sidebar. Wizard handles global.
+                logger.debug(f"System instruction updated successfully")
+                # Note: We don't update global config here - that's handled in wizard
 
             if self.client.conversation_id and self.client.conversation_data:
                 self.run_async(self.client.save_conversation(quiet=True))
@@ -247,7 +238,7 @@ class APIHandlers:
                 'params': metadata.get("params", self.client.params).copy(),
                 'streaming': self.client.use_streaming,
                 'full_message_tree': self.client.conversation_data.get("messages", {}),
-                'system_instruction': metadata.get("system_instruction", self.client.system_instruction)
+                'system_instruction': self.client.system_instruction  # From first message
             }
         except Exception as e:
             logger.error(f"Failed to create new conversation: {e}", exc_info=True)
@@ -271,7 +262,7 @@ class APIHandlers:
                 'params': metadata.get("params", self.client.params).copy(),
                 'streaming': metadata.get("streaming_preference", self.client.use_streaming),
                 'full_message_tree': full_tree,
-                'system_instruction': metadata.get("system_instruction", self.client.system_instruction)
+                'system_instruction': self.client.system_instruction  # From first message
             }
         except FileNotFoundError:
             logger.error(f"Conversation file for '{conversation_identifier}' not found.")
@@ -285,10 +276,7 @@ class APIHandlers:
         if not self.client or not self.client.conversation_id:
             return {'error': 'No active conversation to save', 'status_code': 400}
         try:
-            # Ensure current system instruction is in metadata before saving
-            if self.client.conversation_data and "metadata" in self.client.conversation_data:
-                self.client.conversation_data["metadata"]["system_instruction"] = self.client.system_instruction
-
+            # Don't save system_instruction in metadata - it's in the first message now
             self.run_async(self.client.save_conversation())
             title = self.client.conversation_data.get("metadata", {}).get("title", "Untitled")
             return {'success': True, 'message': f"Conversation '{title}' saved."}
@@ -319,8 +307,7 @@ class APIHandlers:
             data['metadata']['updated_at'] = now_iso
             data['metadata']['provider'] = data['metadata'].get('provider', self.client.provider.provider_name if self.client.provider else "unknown")
             data['metadata']['model'] = data['metadata'].get('model', self.client.current_model_name if self.client.provider else "unknown")
-            # Preserve system instruction from duplicated conversation
-            data['metadata']['system_instruction'] = data['metadata'].get('system_instruction', self.client.system_instruction)
+            # System instruction is now stored as first message, not in metadata
 
             new_filename_str = self.client.format_filename(new_title, new_conv_id_str)
             new_filepath = self.client.base_directory / new_filename_str
@@ -456,7 +443,7 @@ class APIHandlers:
                 'history': current_active_history, 'conversation_id': self.client.conversation_id,
                 'conversation_name': self.client.conversation_data.get("metadata", {}).get("title"),
                 'full_message_tree': current_full_tree,
-                'system_instruction': self.client.conversation_data.get("metadata", {}).get("system_instruction", self.client.system_instruction)
+                'system_instruction': self.client.system_instruction  # From first message
             }
         except Exception as e:
             logger.error(f"Failed to retry message {assistant_message_id_to_retry}: {e}", exc_info=True)
@@ -476,7 +463,7 @@ class APIHandlers:
                 'history': current_active_history, 'conversation_id': self.client.conversation_id,
                 'conversation_name': self.client.conversation_data.get("metadata", {}).get("title"),
                 'full_message_tree': current_full_tree,
-                'system_instruction': self.client.conversation_data.get("metadata", {}).get("system_instruction", self.client.system_instruction)
+                'system_instruction': self.client.system_instruction  # From first message
             }
         except Exception as e:
             logger.error(f"Failed to navigate sibling for {message_id} ({direction}): {e}", exc_info=True)

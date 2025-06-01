@@ -111,19 +111,53 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
         self.conversation_name = title
         self.conversation_data = self.create_metadata_structure(title, self.conversation_id)
 
-        # Set conversation-specific system instruction from the client's current (global default)
-        self.conversation_data["metadata"]["system_instruction"] = self.system_instruction
+        # Update metadata with current settings (but NOT system_instruction)
         self.conversation_data["metadata"]["provider"] = self.provider.provider_name
         self.conversation_data["metadata"]["model"] = self.current_model_name
         self.conversation_data["metadata"]["params"] = self.params.copy()
+        self.conversation_data["metadata"]["streaming_preference"] = self.use_streaming
+        # Remove system_instruction from metadata - it will be in messages instead
+        
+        # Create the first message exchange with system instruction
+        # Step 1: Add user message with system instruction
+        system_instruction_text = self.system_instruction or Config.DEFAULT_SYSTEM_INSTRUCTION
+        print(f"{Colors.CYAN}Creating initial system instruction message...{Colors.ENDC}")
+        user_message = self.create_message_structure(
+            role="user",
+            text=system_instruction_text,
+            message_id=None,  # Will be auto-generated
+            parent_id=None,   # First message has no parent
+            branch_id="main"
+        )
+        self._add_message_to_conversation(self.conversation_data, user_message)
+        print(f"{Colors.GREEN}Added system instruction as first user message (ID: {user_message['id'][:8]}...){Colors.ENDC}")
+        
+        # Step 2: Add assistant acknowledgment
+        assistant_response = self.create_message_structure(
+            role="assistant",
+            text="I understand the instructions you have given me. I will follow the instructions throughout our conversation.",
+            model=self.current_model_name,
+            params=self.params.copy(),
+            token_usage=None,  # No actual API call for this
+            message_id=None,   # Will be auto-generated
+            parent_id=user_message["id"],  # Parent is the system instruction message
+            branch_id="main"
+        )
+        self._add_message_to_conversation(self.conversation_data, assistant_response)
+        print(f"{Colors.GREEN}Added assistant acknowledgment (ID: {assistant_response['id'][:8]}...){Colors.ENDC}")
+        
+        # Update active leaf to the assistant response
+        self.conversation_data["metadata"]["active_leaf"] = assistant_response["id"]
+        
+        # Set the active branch
         self.active_branch = "main"
 
         print(f"{Colors.GREEN}Started new conversation: {title} (Provider: {self.provider.provider_name}, Model: {self.current_model_name}), ID: {self.conversation_id[:8]}...{Colors.ENDC}")
-        print(f"{Colors.CYAN}System Instruction for this conversation: '{self.conversation_data['metadata']['system_instruction'][:60]}...'")
+        print(f"{Colors.CYAN}System Instruction saved as first message: '{system_instruction_text[:60]}...'")
         await self.save_conversation()
 
     async def save_conversation(self, quiet: bool = False) -> None:
-        """Saves the current conversation data, ensuring provider/model/system_instruction metadata is current."""
+        """Saves the current conversation data, ensuring provider/model metadata is current."""
         if not self.conversation_id or not self.conversation_data:
             if not quiet: print(f"{Colors.WARNING}No active conversation to save.{Colors.ENDC}")
             return
@@ -132,8 +166,7 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
             self.conversation_data["metadata"]["provider"] = self.provider.provider_name
             self.conversation_data["metadata"]["model"] = self.current_model_name
             self.conversation_data["metadata"]["params"] = self.params.copy()
-            # Ensure system_instruction is saved with the conversation
-            self.conversation_data["metadata"]["system_instruction"] = self.system_instruction
+            # Don't save system_instruction in metadata - it's now in messages
 
         await super().save_conversation_data(
             conversation_data=self.conversation_data,
@@ -202,11 +235,24 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
         loaded_provider = metadata.get("provider")
         loaded_model = metadata.get("model")
         loaded_params = metadata.get("params")
-        # Load system instruction for the conversation, fallback to global default
-        self.system_instruction = metadata.get("system_instruction",
-                                               self.global_config.get("default_system_instruction", Config.DEFAULT_SYSTEM_INSTRUCTION))
-        self.conversation_data["metadata"]["system_instruction"] = self.system_instruction  # Ensure it's in current conv_data
-
+        
+        # Get system instruction from first message in conversation
+        print(f"{Colors.CYAN}Loading system instruction from conversation...{Colors.ENDC}")
+        messages_dict = self.conversation_data.get("messages", {})
+        message_chain = self._build_message_chain(self.conversation_data, metadata.get("active_branch", "main"))
+        
+        if len(message_chain) >= 2:
+            first_msg = messages_dict.get(message_chain[0], {})
+            if first_msg.get("type") == "user" and first_msg.get("parent_id") is None:
+                self.system_instruction = first_msg.get("content", Config.DEFAULT_SYSTEM_INSTRUCTION)
+                print(f"{Colors.GREEN}Loaded system instruction from first message{Colors.ENDC}")
+            else:
+                print(f"{Colors.WARNING}First message is not a system instruction, using default{Colors.ENDC}")
+                self.system_instruction = Config.DEFAULT_SYSTEM_INSTRUCTION
+        else:
+            print(f"{Colors.WARNING}Conversation has no messages, using default system instruction{Colors.ENDC}")
+            self.system_instruction = Config.DEFAULT_SYSTEM_INSTRUCTION
+        
         self.conversation_name = metadata.get("title", "Untitled")
         self.active_branch = metadata.get("active_branch", "main")
 
@@ -307,31 +353,24 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
     def _build_history_for_provider(self) -> List[Dict[str, str]]:
         """
         Builds the message history to be sent to the AI provider.
-        Prepends the system instruction (if any) as the first user message,
-        followed by a standard model acknowledgment. These are NOT saved to the
-        conversation_data.messages but are used for the API call context.
+        All messages including system instruction are stored in conversation.
         """
         provider_history: List[Dict[str, str]] = []
+        print(f"{Colors.CYAN}Building history for provider...{Colors.ENDC}")
 
-        # Get system instruction for the current conversation
-        current_system_instruction = self.conversation_data.get("metadata", {}).get("system_instruction")
-
-        if current_system_instruction and current_system_instruction.strip():
-            provider_history.append({"role": "user", "content": current_system_instruction})
-            provider_history.append({"role": "model", "content": "Understood."})  # Standard, non-LLM generated ack
-
-        # Append actual conversation messages
+        # Simply build history from all messages in the conversation
         if self.conversation_data and "messages" in self.conversation_data:
             message_chain_ids = self._build_message_chain(self.conversation_data, self.active_branch)
             messages_dict = self.conversation_data.get("messages", {})
+            
             for msg_id in message_chain_ids:
                 msg = messages_dict.get(msg_id, {})
                 if msg.get("type") in ["user", "assistant"]:
-                    # Make sure content is a string, even if it's None or empty
                     content_text = msg.get("content", "")
                     if content_text is None: content_text = ""
                     provider_history.append({"role": msg["type"], "content": content_text})
 
+        print(f"{Colors.CYAN}Total messages in history: {len(provider_history)}{Colors.ENDC}")
         # Normalize messages for the specific provider (e.g., role mapping)
         return self.provider.normalize_messages(provider_history)
 
@@ -379,10 +418,35 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
         except ValueError:
             print(f"{Colors.FAIL}Invalid input. Please enter a number.{Colors.ENDC}")
 
+    async def update_system_instruction(self, new_instruction: str) -> None:
+        """
+        Updates the system instruction by modifying the first message in the conversation.
+        This is called when the system instruction is changed in the GUI.
+        """
+        print(f"{Colors.CYAN}Updating system instruction...{Colors.ENDC}")
+        self.system_instruction = new_instruction
+        
+        if self.conversation_data and "messages" in self.conversation_data:
+            # Find the first message (system instruction)
+            message_chain = self._build_message_chain(self.conversation_data, self.active_branch)
+            if message_chain:
+                first_msg_id = message_chain[0]
+                messages_dict = self.conversation_data.get("messages", {})
+                first_msg = messages_dict.get(first_msg_id, {})
+                
+                # Update the content of the first message
+                if first_msg.get("type") == "user" and first_msg.get("parent_id") is None:
+                    first_msg["content"] = new_instruction
+                    first_msg["timestamp"] = datetime.now().isoformat()  # Update timestamp
+                    print(f"{Colors.GREEN}Updated system instruction in first message{Colors.ENDC}")
+                    await self.save_conversation(quiet=True)
+                else:
+                    print(f"{Colors.WARNING}First message is not a system instruction message. Cannot update.{Colors.ENDC}")
+        else:
+            print(f"{Colors.WARNING}No conversation data available to update system instruction{Colors.ENDC}")
+
     async def customize_params(self) -> None:
         # This method customizes generation parameters like temperature, top_k etc.
-        # System instruction is handled separately by setting self.system_instruction
-        # or through conversation metadata.
         current_params_for_editing = self.params.copy()
         if self.conversation_data and "metadata" in self.conversation_data and "params" in self.conversation_data["metadata"]:
             current_params_for_editing.update(self.conversation_data["metadata"]["params"])
@@ -390,13 +454,10 @@ class AsyncClient(BaseClientFeatures):  # Inherit from the new base
         print(f"\n{Colors.HEADER}Customizing Generation Parameters for Provider: {self.provider.provider_name} (Model: {self.current_model_name}){Colors.ENDC}")
 
         # Edit System Instruction
-        current_sys_instruction = self.conversation_data.get("metadata", {}).get("system_instruction", self.system_instruction)
-        print(f"{Colors.CYAN}Current System Instruction: '{current_sys_instruction[:60]}...' (Press Enter to keep current){Colors.ENDC}")
+        print(f"{Colors.CYAN}Current System Instruction: '{self.system_instruction[:60]}...' (Press Enter to keep current){Colors.ENDC}")
         new_sys_instruction = input("New System Instruction: ").strip()
         if new_sys_instruction:
-            self.system_instruction = new_sys_instruction
-            if self.conversation_data and "metadata" in self.conversation_data:
-                self.conversation_data["metadata"]["system_instruction"] = new_sys_instruction
+            await self.update_system_instruction(new_sys_instruction)
             print(f"{Colors.GREEN}System instruction updated for current conversation.{Colors.ENDC}")
 
         # Edit other generation parameters
