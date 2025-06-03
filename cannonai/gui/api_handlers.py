@@ -130,21 +130,21 @@ class APIHandlers:
                         # system_instruction is now handled by update_conversation_system_instruction
                         ) -> Dict[str, Any]:
         """Updates client/conversation settings like model, params, session streaming preference."""
+        global main_config  # Declare global at the beginning of the function scope
+
         logger.info(f"APIHandlers: Updating settings - Provider: {provider}, Model: {model}, Streaming: {streaming}, Params: {params}")
         if not self.client or not self.client.provider:
             return {'error': 'Client or provider not initialized', 'status_code': 503}
 
         try:
             # Provider change requires app restart or more complex client re-initialization.
-            # For now, we'll just log and not change it here.
             if provider and provider != self.client.provider.provider_name:
                 logger.warning(f"Provider change to '{provider}' requested via API. This requires client re-initialization, not handled by this endpoint. Current provider: '{self.client.provider.provider_name}'.")
                 # Optionally, update global config default if main_config is available
-                global main_config
                 if main_config:
                     main_config.set("default_provider", provider)
                     # Potentially update default model for the new provider in config
-                    main_config.save_config()
+                    main_config.save_config() # This was the error line (167)
                     logger.info(f"Global default provider in config updated to '{provider}'. Restart needed for change to take effect.")
 
             if model is not None and model != self.client.current_model_name:
@@ -164,7 +164,6 @@ class APIHandlers:
                     self.client.conversation_data["metadata"]["streaming_preference"] = streaming
                 logger.debug(f"Client session streaming preference updated to: {self.client.use_streaming}")
                 # Also update global config's default streaming
-                global main_config
                 if main_config:
                     main_config.set("use_streaming", streaming)
                     main_config.save_config()
