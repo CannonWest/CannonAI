@@ -9,16 +9,16 @@ for file operations, conversation data structuring, and terminal colors.
 import json
 import os
 import platform
-# import re # Was unused
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Union
+import uuid  # Added for generate_conversation_id and create_message_structure
 
 import asyncio
 
 # Use colorama for cross-platform terminal colors
 try:
-    from colorama import init, Fore, Back, Style
+    from colorama import init, Fore, Style  # Removed Back as it's not used
 
     init(autoreset=True)
     colorama_available = True
@@ -27,10 +27,6 @@ except ImportError:
     print("Please install with: pip install colorama")
     colorama_available = False
 
-
-# Removed Gemini-specific imports:
-# from google import genai
-# from google.genai import types
 
 class Colors:
     """
@@ -45,7 +41,7 @@ class Colors:
     FAIL = Fore.RED if colorama_available else '\033[91m'
     ENDC = Style.RESET_ALL if colorama_available else '\033[0m'
     BOLD = Style.BRIGHT if colorama_available else '\033[1m'
-    UNDERLINE = '\033[4m'
+    UNDERLINE = '\033[4m'  # Retained as it was there, though not actively used in provided snippets
 
 
 class BaseClientFeatures:
@@ -55,7 +51,7 @@ class BaseClientFeatures:
     This class is provider-agnostic.
     """
 
-    VERSION = "2.2.0"  # Version indicating base client refactor
+    VERSION = "2.3.0"  # Version indicating system instruction refactor
 
     def __init__(self, conversations_dir: Optional[Path] = None):
         """Initialize the base client features.
@@ -70,23 +66,19 @@ class BaseClientFeatures:
         else:
             self.base_directory = Path(conversations_dir)
 
-        # Default params are now primarily handled by each provider and then layered by AsyncClient.
-        # This can be a fallback or not used at all by inheriting clients.
-        self._fallback_default_params = {
-            "temperature": 0.7,
-            "max_output_tokens": 800,
-            "top_p": 0.95,
-            "top_k": 40
-        }
-        # The actual client (AsyncClient) will have its own self.params,
-        # initialized from its provider and config.
+        # Fallback default params are not strictly needed here anymore as providers handle their defaults.
+        # AsyncClient will manage the layering of these.
+        # self._fallback_default_params = { ... }
 
     def ensure_directories(self, base_dir: Optional[Path] = None) -> None:
-        """Ensure necessary directories exist."""
+        """Ensure necessary directories exist.
+
+        Args:
+            base_dir: The directory to ensure. Uses self.base_directory if None.
+        """
         dir_to_ensure = base_dir or self.base_directory
         try:
             dir_to_ensure.mkdir(parents=True, exist_ok=True)
-            # print(f"Debug: Ensured directory: {dir_to_ensure}")
         except Exception as e:
             print(f"{Colors.FAIL}Error creating directory {dir_to_ensure}: {e}{Colors.ENDC}")
 
@@ -106,8 +98,7 @@ class BaseClientFeatures:
         return f"{safe_title}_{conversation_id[:8]}.json"
 
     def generate_conversation_id(self) -> str:
-        """Generates a unique conversation ID."""
-        import uuid  # Local import for this utility method is fine
+        """Generates a unique conversation ID using UUID v4."""
         return str(uuid.uuid4())
 
     def create_message_structure(self, role: str, text: str,
@@ -118,6 +109,7 @@ class BaseClientFeatures:
                                  parent_id: Optional[str] = None,
                                  branch_id: str = "main") -> Dict[str, Any]:
         """Create a standard message structure for conversation history.
+        This structure represents actual user/assistant messages to be stored.
 
         Args:
             role: "user" or "assistant".
@@ -132,57 +124,57 @@ class BaseClientFeatures:
         Returns:
             Message structure dictionary.
         """
-        import uuid  # Local import
-
         if message_id is None:
             message_id = str(uuid.uuid4())
 
         message_dict = {
             "id": message_id,
             "parent_id": parent_id,
-            "branch_id": branch_id,
-            "type": role,
+            "branch_id": branch_id,  # Branch this message primarily belongs to
+            "type": role,  # 'user' or 'assistant'
             "content": text,
             "timestamp": datetime.now().isoformat(),
-            "children": []
+            "children": []  # List of child message IDs
         }
 
         if role == "assistant":
-            # Store AI-specific metadata if provided
             if model: message_dict["model"] = model
             if params: message_dict["params"] = params.copy()
             if token_usage: message_dict["token_usage"] = token_usage
 
         return message_dict
 
-    def create_metadata_structure(self, title: str, conversation_id: str) -> Dict[str, Any]:
+    def create_metadata_structure(self, title: str, conversation_id: str, system_instruction: str) -> Dict[str, Any]:
         """Create metadata structure for a new conversation.
+        System instruction is now part of metadata.
 
         Args:
             title: Conversation title.
             conversation_id: Unique conversation identifier.
+            system_instruction: The system instruction for this conversation.
 
         Returns:
             Metadata structure dictionary for a new conversation.
         """
         return {
             "conversation_id": conversation_id,
-            "version": self.VERSION,
+            "version": self.VERSION,  # Use class attribute for version
             "metadata": {
                 "title": title,
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
                 "app_info": "CannonAI Application",
                 "platform": platform.system(),
-                "active_branch": "main",
-                "active_leaf": None,
-                # Provider, model, params will be filled by the specific client instance
+                "active_branch": "main",  # Default active branch
+                "active_leaf": None,  # ID of the last message in the active branch
+                "system_instruction": system_instruction,  # NEW: Stored in metadata
+                # Provider, model, params will be filled by the specific client instance when saving
             },
-            "messages": {},
-            "branches": {
+            "messages": {},  # Dictionary to store all messages, keyed by message_id
+            "branches": {  # Information about different conversation branches
                 "main": {
                     "created_at": datetime.now().isoformat(),
-                    "last_message": None,
+                    "last_message": None,  # ID of the last message in this branch
                     "message_count": 0
                 }
             }
@@ -191,6 +183,7 @@ class BaseClientFeatures:
     def _build_message_chain(self, conversation_data: Dict[str, Any], branch_id: Optional[str] = None) -> List[str]:
         """
         Builds an ordered list of message IDs for a specific branch, from root to leaf.
+        This chain represents the actual stored messages.
         """
         if not conversation_data or "messages" not in conversation_data:
             return []
@@ -204,65 +197,82 @@ class BaseClientFeatures:
         leaf_id = branch_info.get("last_message")
 
         if not leaf_id or leaf_id not in messages:
+            # This can happen if a branch is created but has no messages yet, or if active_leaf points to a non-existent message
             return []
 
         chain = []
-        current_id = leaf_id
-
+        current_id: Optional[str] = leaf_id  # Start from the leaf of the branch
         visited_ids_for_chain = set()  # To prevent infinite loops in malformed data
 
         while current_id and current_id not in visited_ids_for_chain:
             visited_ids_for_chain.add(current_id)
-            chain.append(current_id)
             current_msg_data = messages.get(current_id, {})
-            current_id = current_msg_data.get("parent_id")
-            # Basic check for branch consistency if needed, though current structure assumes
-            # parent_id links define the branch structure correctly.
-            # if current_id and messages.get(current_id, {}).get("branch_id") != actual_branch_id:
-            #     break # Stop if parent is on a different branch (should not happen with current model)
 
-        chain.reverse()
+            # Ensure the message belongs to the target branch if we are strictly tracing one branch
+            # This is important because a message's parent might be on a different branch if branching occurred.
+            if current_msg_data.get("branch_id") == actual_branch_id:
+                chain.append(current_id)
+            else:
+                # If the message is not on the current branch, but its parent_id might be,
+                # we need to decide if we stop or if this message is an ancestor from a shared path.
+                # For _build_message_chain, we expect messages to be on the specified branch.
+                # If a message's branch_id doesn't match actual_branch_id, it means we've likely
+                # hit the point where this branch diverged.
+                # However, the parent_id link should still be followed to get the full ancestry.
+                # The critical part is that `leaf_id` must be on `actual_branch_id`.
+                # Let's assume the parent_id chain correctly defines ancestry.
+                pass  # Continue tracing parent even if branch_id differs, for full history.
+
+            current_id = current_msg_data.get("parent_id")
+
+        chain.reverse()  # Reverse to get chronological order (root to leaf)
         return chain
 
     def _add_message_to_conversation(self, conversation_data: Dict[str, Any], message: Dict[str, Any]) -> None:
-        """Adds a message to the provided conversation_data structure."""
+        """Adds a message to the provided conversation_data structure.
+           Updates message counts and parent-child relationships.
+        """
         if not conversation_data:
             print(f"{Colors.WARNING}Attempted to add message but conversation_data is not initialized/provided.{Colors.ENDC}")
             return
 
         msg_id = message["id"]
         parent_id = message.get("parent_id")
-        branch_id = message.get("branch_id", "main")
+        branch_id = message.get("branch_id", "main")  # Default to main if not specified
 
+        # Ensure main structures exist
         conversation_data.setdefault("messages", {})
         conversation_data.setdefault("branches", {})
         conversation_data.setdefault("metadata", {}).setdefault("active_branch", "main")
 
+        # Add message to the global messages dictionary
         conversation_data["messages"][msg_id] = message
 
+        # Link to parent if parent_id exists and is valid
         if parent_id and parent_id in conversation_data["messages"]:
             parent_message_data = conversation_data["messages"][parent_id]
             parent_message_data.setdefault("children", [])
             if msg_id not in parent_message_data["children"]:
                 parent_message_data["children"].append(msg_id)
 
+        # Update branch information
         if branch_id not in conversation_data["branches"]:
             conversation_data["branches"][branch_id] = {
                 "created_at": message.get("timestamp", datetime.now().isoformat()),
                 "last_message": None, "message_count": 0
             }
         branch_info = conversation_data["branches"][branch_id]
-        branch_info["last_message"] = msg_id
+        branch_info["last_message"] = msg_id  # This message is now the latest on its branch
 
-        # Recalculate message count for the branch
+        # Recalculate message count for this specific branch
+        # This counts messages whose primary branch_id matches.
         count = 0
-        for m_data_id, m_data_content in conversation_data["messages"].items():
+        for m_data_content in conversation_data["messages"].values():
             if m_data_content.get("branch_id") == branch_id:
                 count += 1
         branch_info["message_count"] = count
-        # branch_info["message_count"] = sum(1 for m_data in conversation_data["messages"].values() if m_data.get("branch_id") == branch_id)
 
-        # If this message is on the active branch, update the active_leaf in metadata
+        # If this message is on the currently active branch, update the active_leaf in metadata
         if branch_id == conversation_data.get("metadata", {}).get("active_branch"):
             conversation_data["metadata"]["active_leaf"] = msg_id
 
@@ -277,11 +287,10 @@ class BaseClientFeatures:
         """Get the current version of the CannonAI application framework."""
         return self.VERSION
 
-    # --- File Operations (can be called by concrete clients via super() or directly) ---
     async def save_conversation_data(self, conversation_data: Dict[str, Any],
                                      conversation_id: str, title: str,
                                      conversations_dir: Path, quiet: bool = False) -> None:
-        """Saves the given conversation data to a JSON file."""
+        """Saves the given conversation data to a JSON file. (Async wrapper for sync I/O)"""
         if not conversation_id or not conversation_data:
             if not quiet: print(f"{Colors.WARNING}No active conversation data to save.{Colors.ENDC}")
             return
@@ -289,21 +298,20 @@ class BaseClientFeatures:
         filename = self.format_filename(title, conversation_id)
         filepath = conversations_dir / filename
 
-        # Ensure metadata like updated_at is current before saving
         if "metadata" in conversation_data:
             conversation_data["metadata"]["updated_at"] = datetime.now().isoformat()
-            # Message count for the whole conversation (sum of messages in all branches or just count of messages dict)
             conversation_data["metadata"]["total_message_count"] = len(conversation_data.get("messages", {}))
+            # Provider, model, params should be updated by the client before calling this.
+            # System instruction is already in metadata.
 
-        if not quiet: print(f"{Colors.CYAN}Saving conversation v{self.VERSION} to {filepath}...{Colors.ENDC}")
+        if not quiet: print(f"{Colors.CYAN}Saving conversation (v{self.VERSION}) to {filepath}...{Colors.ENDC}")
+
         try:
             def save_json_sync():
+                filepath.parent.mkdir(parents=True, exist_ok=True)  # Ensure directory exists
                 with open(filepath, 'w', encoding='utf-8') as f:
                     json.dump(conversation_data, f, indent=2, ensure_ascii=False)
 
-            # Run the synchronous file I/O in a separate thread from an async context
-            # If called from a sync context, this would just be direct call.
-            # This method is designed to be awaitable if needed.
             await asyncio.to_thread(save_json_sync)
 
             if not quiet:
@@ -313,7 +321,7 @@ class BaseClientFeatures:
             print(f"{Colors.FAIL}Error saving conversation '{title}' to {filepath}: {e}{Colors.ENDC}")
 
     async def load_conversation_data(self, filepath: Path) -> Optional[Dict[str, Any]]:
-        """Loads conversation data from a JSON file."""
+        """Loads conversation data from a JSON file. (Async wrapper for sync I/O)"""
         if not filepath.exists():
             print(f"{Colors.FAIL}Conversation file not found: {filepath}{Colors.ENDC}")
             return None
@@ -324,10 +332,19 @@ class BaseClientFeatures:
 
             loaded_data = await asyncio.to_thread(load_json_sync)
 
-            # Basic validation
-            if not isinstance(loaded_data, dict) or "conversation_id" not in loaded_data or "metadata" not in loaded_data:
+            if not isinstance(loaded_data, dict) or \
+                    "conversation_id" not in loaded_data or \
+                    "metadata" not in loaded_data:
                 print(f"{Colors.WARNING}File {filepath} does not appear to be a valid CannonAI conversation file (missing key fields).{Colors.ENDC}")
                 return None
+
+            # Ensure system_instruction is present in metadata for backward compatibility (or add default)
+            if "system_instruction" not in loaded_data.get("metadata", {}):
+                print(f"{Colors.WARNING}System instruction not found in metadata of {filepath}. Attempting to derive or using default.{Colors.ENDC}")
+                # For this refactor, we'll assume new conversations get it. Old ones might need migration or will use default.
+                # If we wanted to derive from old format (first message), that logic would go here.
+                # For now, if it's missing, AsyncClient.load_conversation will handle setting a default.
+                pass
 
             print(f"{Colors.GREEN}Conversation data loaded from: {filepath}{Colors.ENDC}")
             return loaded_data
@@ -357,14 +374,14 @@ class BaseClientFeatures:
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                # Check by conversation_id stored in the file
                 if data.get("conversation_id") == conversation_id_or_filename:
                     return file_path
-                # Check by title (less reliable but can be a fallback)
-                # if data.get("metadata", {}).get("title") == conversation_id_or_filename:
+                # Consider also checking by title if needed, but ID is primary
+                # if data.get("metadata", {}).get("title", "").lower() == conversation_id_or_filename.lower():
                 #    return file_path
-            except (json.JSONDecodeError, IOError):
-                continue  # Skip corrupted or unreadable files
+            except (json.JSONDecodeError, IOError, TypeError):  # Added TypeError for robustness
+                # print(f"{Colors.WARNING}Skipping unreadable/corrupt file: {file_path.name}{Colors.ENDC}")
+                continue
         return None
 
     async def list_conversation_files_info(self, conversations_dir: Path) -> List[Dict[str, Any]]:
@@ -372,38 +389,38 @@ class BaseClientFeatures:
 
         def list_files_sync():
             convs_info = []
+            if not conversations_dir.exists():  # Check if directory exists
+                print(f"{Colors.WARNING}Conversations directory not found: {conversations_dir}{Colors.ENDC}")
+                return convs_info
+
             for file_path in conversations_dir.glob("*.json"):
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
 
                     metadata = data.get("metadata", {})
-                    # Fallback for very old format if metadata key is missing but history/type:metadata is present
-                    if not metadata and "history" in data:
-                        for history_item in data.get("history", []):
-                            if history_item.get("type") == "metadata":
-                                metadata = history_item.get("content", {})
-                                break
-
-                    messages_dict = data.get("messages", {})  # New format
+                    messages_dict = data.get("messages", {})
                     message_count = len(messages_dict)
-                    if message_count == 0 and "history" in data:  # Old format message count
+
+                    # Fallback for old format message count if messages_dict is empty but history exists
+                    if message_count == 0 and "history" in data and isinstance(data["history"], list):
                         message_count = sum(1 for item in data.get("history", []) if item.get("type") == "message")
 
                     convs_info.append({
                         "filename": file_path.name,
-                        "path": str(file_path),  # Store as string for easier JSON serialization if needed
+                        "path": str(file_path),
                         "title": metadata.get("title", "Untitled Conversation"),
                         "provider": metadata.get("provider", "N/A"),
                         "model": metadata.get("model", "N/A"),
                         "created_at": metadata.get("created_at", "N/A"),
                         "updated_at": metadata.get("updated_at", "N/A"),
                         "message_count": message_count,
-                        "conversation_id": data.get("conversation_id", None)  # Essential field
+                        "conversation_id": data.get("conversation_id"),  # Should always exist
+                        "system_instruction_preview": metadata.get("system_instruction", "")[:50] + "..." if metadata.get("system_instruction") else "N/A"
                     })
                 except Exception as e:
                     print(f"{Colors.WARNING}Error reading or parsing {file_path.name}: {e}{Colors.ENDC}")
-            return sorted(convs_info, key=lambda x: x.get("updated_at", ""), reverse=True)  # Sort by most recently updated
+            # Sort by most recently updated
+            return sorted(convs_info, key=lambda x: x.get("updated_at", "0"), reverse=True)
 
         return await asyncio.to_thread(list_files_sync)
-

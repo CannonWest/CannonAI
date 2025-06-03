@@ -18,7 +18,7 @@
                 <div class="position-sticky pt-3">
                     <h5 class="sidebar-heading d-flex justify-content-between align-items-center px-3 mt-4 mb-3 text-muted">
                         <span>Conversations</span>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="app.showNewConversationModal()">
+                        <button class="btn btn-sm btn-outline-secondary" onclick="app.showNewConversationModal()" title="New Conversation">
                             <i class="bi bi-plus-circle"></i>
                         </button>
                     </h5>
@@ -50,21 +50,26 @@
 
             <main class="px-0 d-flex flex-column col-md-6 col-lg-8" id="mainContent">
                 <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom px-3">
-                    <h1 class="h2">
-                        <i class="bi bi-chat-dots"></i> CannonAI
-                        <small class="text-muted" id="conversationName">New Conversation</small>
-                    </h1>
+                    <div class="d-flex align-items-center">
+                        <h1 class="h2 mb-0">
+                            <i class="bi bi-chat-dots"></i> CannonAI
+                        </h1>
+                        <small class="text-muted ms-2 align-self-end" id="conversationName">New Conversation</small>
+                        <button type="button" class="btn btn-sm btn-outline-info ms-2" id="editSystemInstructionBtn" onclick="app.showSystemInstructionModal()" title="Edit System Instruction for this Conversation">
+                            <i class="bi bi-card-text"></i> Instruct
+                        </button>
+                    </div>
                     <div class="btn-toolbar mb-2 mb-md-0">
                         <div class="btn-group me-2">
-                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.showModelSelector()">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.showModelSelector()" title="Select Model">
                                 <i class="bi bi-cpu"></i> <span id="currentModel">Loading...</span>
                             </button>
-                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.showAppSettingsModal()">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.showAppSettingsModal()" title="Application Settings">
                                 <i class="bi bi-gear"></i> Settings
                             </button>
                         </div>
                         <div class="btn-group ms-auto">
-                            <button type="button" class="btn btn-sm btn-outline-secondary" id="toggleModelSettingsBtn" onclick="app.toggleModelSettingsSidebar()">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" id="toggleModelSettingsBtn" onclick="app.toggleModelSettingsSidebar()" title="Generation Parameters">
                                 <i class="bi bi-sliders"></i> Params
                             </button>
                         </div>
@@ -75,7 +80,7 @@
                     <div class="chat-messages p-3" id="chatMessages">
                         <div class="text-center text-muted py-5">
                             <i class="bi bi-chat-dots display-1"></i>
-                            <p>Start a conversation by typing a message below</p>
+                            <p>Start a conversation by typing a message below, or load an existing one.</p>
                         </div>
                     </div>
                 </div>
@@ -92,7 +97,7 @@
                         <textarea class="form-control" id="messageInput"
                                placeholder="Type a message or command (e.g., /help)..."
                                rows="1" style="resize: none;"></textarea>
-                        <button class="btn btn-primary" type="button" onclick="app.sendMessage()">
+                        <button class="btn btn-primary" type="button" onclick="app.sendMessage()" title="Send Message">
                             <i class="bi bi-send"></i> Send
                         </button>
                     </div>
@@ -111,12 +116,6 @@
                     <div class="p-3">
                         <form id="modelSettingsForm">
                             <div class="mb-3">
-                                <label for="systemInstructionInput" class="form-label">System Instruction</label>
-                                <textarea class="form-control form-control-sm" id="systemInstructionInput" rows="3" placeholder="e.g., You are a helpful assistant."></textarea>
-                                <small class="form-text text-muted d-block mt-0">Defines the AI's role or persona for the current conversation.</small>
-                            </div>
-
-                            <div class="mb-3">
                                 <label for="temperatureInput" class="form-label">
                                     Temperature: <span id="temperatureValueDisplay">0.7</span>
                                 </label>
@@ -128,7 +127,7 @@
                             <div class="mb-3">
                                 <label for="maxTokensInput" class="form-label">Max Output Tokens</label>
                                 <input type="number" class="form-control form-control-sm" id="maxTokensInput"
-                                       value="800" min="100" max="8192">
+                                       value="800" min="100" max="8192" step="100">
                                 <small class="form-text text-muted d-block mt-0">Max response length</small>
                             </div>
 
@@ -137,22 +136,23 @@
                                     Top-p: <span id="topPValueDisplay">0.95</span>
                                 </label>
                                 <input type="range" class="form-range" id="topPInput"
-                                       min="0" max="1" step="0.05" value="0.95">
+                                       min="0" max="1" step="0.01" value="0.95">
                                 <small class="form-text text-muted d-block mt-0">Nucleus sampling</small>
                             </div>
 
                             <div class="mb-3">
                                 <label for="topKInput" class="form-label">Top-k</label>
                                 <input type="number" class="form-control form-control-sm" id="topKInput"
-                                       value="40" min="1" max="100">
-                                <small class="form-text text-muted d-block mt-0">Limits sampling vocabulary</small>
+                                       value="40" min="0" max="100" step="1">
+                                <small class="form-text text-muted d-block mt-0">Limits sampling vocabulary (0 to disable)</small>
                             </div>
 
                             <div class="form-check form-switch mb-3">
                                 <input class="form-check-input" type="checkbox" id="streamingToggleRightSidebar">
                                 <label class="form-check-label" for="streamingToggleRightSidebar">
-                                    Enable Streaming
+                                    Enable Streaming (Session)
                                 </label>
+                                <small class="form-text text-muted d-block mt-0">Client requests streaming for this session. Actual mode also depends on server/provider.</small>
                             </div>
                             <button type="button" class="btn btn-primary w-100" onclick="app.saveModelSettingsFromSidebar()">Apply Params</button>
                         </form>
@@ -167,26 +167,26 @@
             <i class="bi bi-circle-fill text-danger"></i> Disconnected
         </span>
         <span class="mx-2">|</span>
-        <span id="streamingStatus">
-            <i class="bi bi-broadcast"></i> Streaming: <span id="streamingMode">OFF</span>
+        <span id="streamingStatus" title="Client's current streaming preference for this session">
+            <i class="bi bi-broadcast"></i> Session Streaming: <span id="streamingMode">OFF</span>
         </span>
          <span class="mx-2">|</span>
-        <span id="systemInstructionStatus" class="text-truncate" style="max-width: 200px;" title="Current System Instruction">
-            <i class="bi bi-card-text"></i> Sys: <span id="systemInstructionDisplay">Default</span>
+        <span id="systemInstructionStatus" class="text-truncate" style="max-width: 250px;" title="Current Conversation's System Instruction">
+            <i class="bi bi-card-text"></i> Sys. Instruct: <span id="systemInstructionDisplay">Default</span>
         </span>
     </div>
 
-    <div class="modal fade" id="newConversationModal" tabindex="-1">
+    <div class="modal fade" id="newConversationModal" tabindex="-1" aria-labelledby="newConversationModalLabel" aria-hidden="true">
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">New Conversation</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <h5 class="modal-title" id="newConversationModalLabel">New Conversation</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="mb-3">
-                        <label for="conversationTitle" class="form-label">Conversation Title</label>
-                        <input type="text" class="form-control" id="conversationTitle"
+                        <label for="conversationTitleInput" class="form-label">Conversation Title</label>
+                        <input type="text" class="form-control" id="conversationTitleInput"
                                placeholder="Enter title or leave blank for auto-generated">
                     </div>
                 </div>
@@ -198,12 +198,12 @@
         </div>
     </div>
 
-    <div class="modal fade" id="modelSelectorModal" tabindex="-1">
+    <div class="modal fade" id="modelSelectorModal" tabindex="-1" aria-labelledby="modelSelectorModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">Select Model</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <h5 class="modal-title" id="modelSelectorModalLabel">Select Model</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="table-responsive">
@@ -226,53 +226,65 @@
         </div>
     </div>
 
-    <div class="modal fade" id="appSettingsModal" tabindex="-1">
-        <div class="modal-dialog modal-lg">
-            <div class="modal-content">
+    <div class="modal fade" id="systemInstructionModal" tabindex="-1" aria-labelledby="systemInstructionModalLabel" aria-hidden="true">
+        <div class.modal-dialog modal-lg"> <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title">Application Settings</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    <h5 class="modal-title" id="systemInstructionModalLabel">Edit System Instruction</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small mb-2">
+                        This instruction guides the AI's behavior and persona for the <strong>current conversation</strong>.
+                        It's sent to the AI provider at the beginning of the interaction context but is not stored as a visible message in the chat history.
+                    </p>
+                    <textarea class="form-control" id="systemInstructionModalInput" rows="12" placeholder="e.g., You are a witty pirate captain who speaks in rhymes. You are an expert in astrophysics..."></textarea>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="app.saveSystemInstructionFromModal()">Save Instruction</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <div class="modal fade" id="appSettingsModal" tabindex="-1" aria-labelledby="appSettingsModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl"> <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="appSettingsModalLabel">Application Settings</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <form id="appSettingsForm">
                         <h6 class="mb-3">Theme</h6>
                         <div class="mb-4">
                             <div class="btn-group" role="group" aria-label="Theme selection">
-                                <input type="radio" class="btn-check" name="theme" id="themeLight" value="light" checked>
-                                <label class="btn btn-outline-primary" for="themeLight">
-                                    <i class="bi bi-sun"></i> Light
-                                </label>
+                                <input type="radio" class="btn-check" name="theme" id="themeLight" value="light" autocomplete="off">
+                                <label class="btn btn-outline-primary" for="themeLight"><i class="bi bi-sun"></i> Light</label>
 
-                                <input type="radio" class="btn-check" name="theme" id="themeDark" value="dark">
-                                <label class="btn btn-outline-primary" for="themeDark">
-                                    <i class="bi bi-moon"></i> Dark
-                                </label>
+                                <input type="radio" class="btn-check" name="theme" id="themeDark" value="dark" autocomplete="off">
+                                <label class="btn btn-outline-primary" for="themeDark"><i class="bi bi-moon"></i> Dark</label>
 
-                                <input type="radio" class="btn-check" name="theme" id="themeAuto" value="auto">
-                                <label class="btn btn-outline-primary" for="themeAuto">
-                                    <i class="bi bi-circle-half"></i> Auto
-                                </label>
+                                <input type="radio" class="btn-check" name="theme" id="themeAuto" value="auto" autocomplete="off">
+                                <label class="btn btn-outline-primary" for="themeAuto"><i class="bi bi-circle-half"></i> Auto</label>
                             </div>
                         </div>
 
                         <h6 class="mb-3">Font Settings</h6>
                         <div class="row mb-4">
                             <div class="col-md-6">
-                                <label for="fontSize" class="form-label">
-                                    Font Size: <span id="fontSizeValue">16</span>px
-                                </label>
-                                <input type="range" class="form-range" id="fontSize"
-                                       min="12" max="24" step="1" value="16">
+                                <label for="fontSize" class="form-label">Font Size: <span id="fontSizeValue">16</span>px</label>
+                                <input type="range" class="form-range" id="fontSize" min="12" max="24" step="1" value="16">
                             </div>
                             <div class="col-md-6">
                                 <label for="fontFamily" class="form-label">Font Family</label>
                                 <select class="form-select" id="fontFamily">
-                                    <option value="system-ui">System Default</option>
-                                    <option value="'Segoe UI', sans-serif">Segoe UI</option>
+                                    <option value="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif">System Default</option>
+                                    <option value="'Segoe UI', Tahoma, Geneva, Verdana, sans-serif">Segoe UI</option>
                                     <option value="'Roboto', sans-serif">Roboto</option>
                                     <option value="'Inter', sans-serif">Inter</option>
-                                    <option value="'SF Mono', monospace">SF Mono (Monospace)</option>
-                                    <option value="'Cascadia Code', monospace">Cascadia Code</option>
+                                    <option value="'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace">SF Mono (Monospace)</option>
+                                    <option value="'Cascadia Code', 'Courier New', monospace">Cascadia Code (Monospace)</option>
                                 </select>
                             </div>
                         </div>
@@ -281,27 +293,19 @@
                         <div class="mb-4">
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" id="showTimestamps" checked>
-                                <label class="form-check-label" for="showTimestamps">
-                                    Show message timestamps
-                                </label>
+                                <label class="form-check-label" for="showTimestamps">Show message timestamps</label>
                             </div>
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" id="showAvatars" checked>
-                                <label class="form-check-label" for="showAvatars">
-                                    Show user avatars
-                                </label>
+                                <label class="form-check-label" for="showAvatars">Show user/AI avatars</label>
                             </div>
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" id="enableAnimations" checked>
-                                <label class="form-check-label" for="enableAnimations">
-                                    Enable animations
-                                </label>
+                                <label class="form-check-label" for="enableAnimations">Enable UI animations</label>
                             </div>
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" id="compactMode">
-                                <label class="form-check-label" for="compactMode">
-                                    Compact message view
-                                </label>
+                                <label class="form-check-label" for="compactMode">Compact message view</label>
                             </div>
                         </div>
 
@@ -310,39 +314,39 @@
                             <div class="col-md-6">
                                 <label for="codeTheme" class="form-label">Syntax Highlighting Theme</label>
                                 <select class="form-select" id="codeTheme">
-                                    <option value="github-dark">GitHub Dark (Default Dark)</option>
-                                    <option value="github">GitHub Light (Default Light)</option>
-                                    <option value="default">Auto based on theme</option>
+                                    <option value="default">Auto (Matches UI Theme)</option>
+                                    <option value="github-dark">GitHub Dark</option>
+                                    <option value="github">GitHub Light</option>
                                     <option value="monokai">Monokai</option>
                                     <option value="dracula">Dracula</option>
                                     <option value="vs2015">VS 2015</option>
                                     <option value="atom-one-dark">Atom One Dark</option>
+                                    <option value="stackoverflow-light">Stack Overflow Light</option>
+                                    <option value="stackoverflow-dark">Stack Overflow Dark</option>
                                 </select>
                             </div>
                             <div class="col-md-6">
-                                <div class="form-check form-switch mt-md-4">
+                                <div class="form-check form-switch mt-md-4 pt-md-2">
                                     <input class="form-check-input" type="checkbox" id="showLineNumbers" checked>
-                                    <label class="form-check-label" for="showLineNumbers">
-                                        Show line numbers in code blocks
-                                    </label>
+                                    <label class="form-check-label" for="showLineNumbers">Show line numbers in code blocks</label>
                                 </div>
                             </div>
                         </div>
 
-                        <h6 class="mb-3">Preview</h6>
+                        <h6 class="mb-3">Settings Preview</h6>
                         <div class="preview-area border rounded p-3" id="settingsPreview">
                             <div class="message-row message-assistant mb-2">
-                                <div class="message-icon me-2 ms-2" id="previewAvatar">
-                                    <i class="bi bi-robot fs-4"></i>
+                                <div class="message-icon me-2 ms-2" id="previewAvatarContainer">
+                                    <i class="bi bi-robot fs-4" id="previewAvatar"></i>
                                 </div>
                                 <div class="message-body">
                                     <div class="message-header d-flex align-items-center mb-1">
                                         <strong>CannonAI</strong>
-                                        <span class="text-muted ms-2" id="previewTimestamp">10:30 AM</span>
+                                        <span class="text-muted ms-auto message-timestamp-display" id="previewTimestamp">10:30 AM</span>
                                     </div>
                                     <div class="message-content p-2 rounded shadow-sm bg-light">
                                         <p>This is a preview of how messages will appear with your selected settings.</p>
-                                        <pre><code class="language-python">def hello_world():
+                                        <pre><code class="language-python hljs">def hello_world():
     print("Hello, World!")</code></pre>
                                     </div>
                                 </div>
@@ -360,7 +364,8 @@
     </div>
 
     <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 1060;">
-        <div id="alertContainer"></div>
+        <div id="alertContainer">
+            </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
