@@ -37,7 +37,8 @@ body {
 .sidebar {
     padding: 0;
     background-color: #f8f9fa !important;
-    overflow-y: auto;
+    overflow-y: auto; /* Keep this for vertical scrolling */
+    overflow-x: hidden; /* Add this to prevent horizontal scrolling */
     height: 100%;
     z-index: 100;
     transition: width 0.3s ease-in-out, margin 0.3s ease-in-out, opacity 0.3s ease-in-out, visibility 0.3s ease-in-out;

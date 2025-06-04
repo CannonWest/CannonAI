@@ -154,20 +154,33 @@ class BaseClientFeatures:
         if not conversation_data or "messages" not in conversation_data: return []
         messages = conversation_data.get("messages", {})
         if not messages: return []
+
         actual_branch_id = branch_id or conversation_data.get("metadata", {}).get("active_branch", "main")
         branch_info = conversation_data.get("branches", {}).get(actual_branch_id, {})
-        leaf_id = branch_info.get("last_message")
-        if not leaf_id or leaf_id not in messages: return []
+        leaf_id = branch_info.get("last_message")  # This leaf_id is the end of the active branch.
+
+        if not leaf_id or leaf_id not in messages:
+            # If no leaf_id for the branch, it might be an empty branch or metadata issue.
+            # Attempt to find any message on this branch, or default to empty.
+            # This part might need more robust handling if branches can be truly empty after creation.
+            # For now, returning empty if the designated leaf isn't found.
+            return []
+
         chain = []
-        current_id: Optional[str] = leaf_id
-        visited_ids_for_chain = set()
+        current_id: Optional[str] = leaf_id  # Start from the active leaf of the active branch
+        visited_ids_for_chain = set()  # Prevent loops in case of malformed data
+
         while current_id and current_id not in visited_ids_for_chain:
             visited_ids_for_chain.add(current_id)
-            current_msg_data = messages.get(current_id, {})
-            if current_msg_data.get("branch_id") == actual_branch_id:
-                chain.append(current_id)
-            current_id = current_msg_data.get("parent_id")
-        chain.reverse()
+            # current_msg_data = messages.get(current_id, {}) # No longer needed for the removed condition
+
+            # Simply add the current message ID to the chain
+            chain.append(current_id)
+
+            # Move to its parent
+            current_id = messages.get(current_id, {}).get("parent_id")
+
+        chain.reverse()  # Order from oldest to newest
         return chain
 
     def _add_message_to_conversation(self, conversation_data: Dict[str, Any], message: Dict[str, Any]) -> None:
