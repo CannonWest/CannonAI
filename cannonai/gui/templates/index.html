@@ -66,7 +66,7 @@
                     <div class="btn-toolbar mb-2 mb-md-0">
                         <div class="btn-group me-2">
                             <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.showModelSelector()" title="Select Model">
-                                <i class="bi bi-cpu"></i> <span id="currentModel">Loading...</span>
+                                <i class="bi bi-cpu"></i> <span id="currentModelDisplay">Loading...</span> <!-- Changed ID for clarity -->
                             </button>
                             <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.showAppSettingsModal()" title="Application Settings">
                                 <i class="bi bi-gear"></i> Settings
@@ -126,16 +126,22 @@
                                     Temperature: <span id="temperatureValueDisplay">0.7</span>
                                 </label>
                                 <input type="range" class="form-range" id="temperatureInput"
-                                       min="0" max="2" step="0.1" value="0.7">
+                                       min="0" max="2" step="0.01" value="0.7"> <!-- Adjusted step for finer control -->
                                 <small class="form-text text-muted d-block mt-0">Controls randomness (0=deterministic, 2=creative)</small>
                             </div>
 
+                            <!-- Updated Max Output Tokens Section -->
                             <div class="mb-3">
-                                <label for="maxTokensInput" class="form-label">Max Output Tokens</label>
-                                <input type="number" class="form-control form-control-sm" id="maxTokensInput"
-                                       value="800" min="100" max="8192" step="100">
-                                <small class="form-text text-muted d-block mt-0">Max response length</small>
+                                <label for="maxTokensSlider" class="form-label">
+                                    Max Output Tokens: <span id="maxTokensValueDisplay">800</span>
+                                </label>
+                                <input type="range" class="form-range" id="maxTokensSlider"
+                                       min="128" max="8192" step="128" value="800"> <!-- Default min/max/step, JS will update -->
+                                <input type="number" class="form-control form-control-sm mt-1" id="maxTokensInput"
+                                       value="800" min="128" step="128"> <!-- Default min/step, JS will update max -->
+                                <small class="form-text text-muted d-block mt-0">Max response length. Actual max depends on model.</small>
                             </div>
+                            <!-- End Updated Max Output Tokens Section -->
 
                             <div class="mb-3">
                                 <label for="topPInput" class="form-label">
@@ -149,7 +155,7 @@
                             <div class="mb-3">
                                 <label for="topKInput" class="form-label">Top-k</label>
                                 <input type="number" class="form-control form-control-sm" id="topKInput"
-                                       value="40" min="0" max="100" step="1">
+                                       value="40" min="0" max="1024" step="1"> <!-- Increased max for top_k -->
                                 <small class="form-text text-muted d-block mt-0">Limits sampling vocabulary (0 to disable)</small>
                             </div>
 
@@ -222,7 +228,7 @@
                                     <th>Model</th>
                                     <th>Display Name</th>
                                     <th>Input Tokens</th>
-                                    <th>Output Tokens</th>
+                                    <th>Output Tokens</th> <!-- This is the model's max capability -->
                                     <th>Action</th>
                                 </tr>
                             </thead>
@@ -238,7 +244,6 @@
 
     <!-- System Instruction Modal -->
     <div class="modal fade" id="systemInstructionModal" tabindex="-1" aria-labelledby="systemInstructionModalLabel" aria-hidden="true">
-        <!-- *** FIX: Corrected class attribute for modal-dialog *** -->
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header">

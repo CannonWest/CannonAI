@@ -1,336 +1,264 @@
-Okay, I can help you update the README file.
-
-Based on the provided files, here's an updated version of your `gemini_chat/README.md`. The key changes include:
-* Correcting the Web Interface Mode details (Flask instead of FastAPI, correct port number).
-* Updating the Project Structure to reflect the `gui` directory and its contents (Flask server, API handlers, templates).
-* Aligning the Web UI dependencies with Flask.
-* Adding the Gemini 2.5 preview models to the Supported Models list.
-* Removing references to non-existent files like `websocket_fix.py` and `websocket_diagnostics.py`.
-* Clarifying the GUI requirements installation.
-
-```markdown
-# CannonAI
+# **CannonAI**
 
 A powerful, modular application for interacting with Google's Gemini AI models, supporting both command-line and web interfaces.
 
-[![Python Version](https://img.shields.io/badge/python-3.6%2B-blue)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+## **Features**
 
-## Features
+* Multi-turn conversations with Google's Gemini models and other supported providers (Claude, OpenAI \- placeholder implementations).  
+* Select from available AI models.  
+* Customize generation parameters (temperature, max tokens, etc.).  
+* Save and load conversations as JSON files.  
+* Navigate between different saved conversations.  
+* Full conversation history management, including retrying messages and navigating alternative responses (branching).  
+* Support for both streaming and non-streaming responses.  
+* Provider-agnostic asynchronous client at its core.  
+* Cross-platform terminal colors for CLI.  
+* Persistent configuration system.  
+* Web-based user interface using Flask and Bootstrap, featuring:  
+  * Markdown rendering with syntax highlighting for code blocks.  
+  * Visual conversation management.  
+  * Intuitive settings interface.  
+  * Real-time streaming with visual feedback.
 
-- Multi-turn conversations with Google's Gemini models
-- Select from available Gemini models
-- Customize generation parameters (temperature, max tokens, etc.)
-- Save and load conversations as JSON files
-- Navigate between different saved conversations
-- Full conversation history management, including retrying messages and navigating alternative responses (branching)
-- Support for both streaming and non-streaming responses
-- Support for both synchronous and asynchronous implementations
-- Cross-platform terminal colors
-- Persistent configuration system
-- Web-based user interface using Flask and Bootstrap
+## **Project Structure**
 
-## Project Structure
+The application is organized with a modular architecture:
 
-The application is organized with a modular architecture to minimize redundancy:
+CannonAI\_GIT/                 \# Your main project root  
+├── cannonai/                 \# Main application code  
+│   ├── cannonai.py           \# Single unified entry point  
+│   ├── base\_client.py        \# Core shared functionality (conversation structure, file I/O)  
+│   ├── async\_client.py       \# Asynchronous, provider-agnostic client  
+│   ├── command\_handler.py    \# Command processing for CLI mode  
+│   ├── client\_manager.py     \# Client creation and provider management  
+│   ├── config.py             \# Configuration management  
+│   ├── providers/            \# AI Provider implementations  
+│   │   ├── \_\_init\_\_.py  
+│   │   ├── base\_provider.py  
+│   │   ├── gemini\_provider.py  
+│   │   ├── claude\_provider.py  \# Placeholder  
+│   │   └── openai\_provider.py  \# Placeholder  
+│   ├── gui/                  \# Web interface implementation (Flask)  
+│   │   ├── server.py         \# Flask server for web UI  
+│   │   ├── api\_handlers.py   \# Business logic for API endpoints  
+│   │   ├── static/           \# Static UI assets (CSS, JS)  
+│   │   ├── templates/        \# HTML templates  
+│   │   ├── \_\_init\_\_.py  
+│   │   └── GUI\_README.md     \# Detailed documentation for the GUI  
+│   ├── \_\_init\_\_.py           \# Package initialization  
+│   └── requirements.txt      \# Core and GUI dependencies  
+├── cannonai\_config/          \# Configuration storage (auto-created)  
+│   └── cannonai\_config.json  \# Default configuration file  
+└── cannonai\_conversations/   \# Saved conversations (auto-created)
 
-```
-CannonAI_GIT/
-├── gemini_chat/                  # Main application code (to be renamed to cannonai)
-│   ├── gemini_chat.py            # Single unified entry point
-│   ├── base_client.py            # Core shared functionality
-│   ├── sync_client.py            # Synchronous implementation
-│   ├── async_client.py           # Asynchronous implementation
-│   ├── command_handler.py        # Command processing for both modes
-│   ├── client_manager.py         # Client creation and management
-│   ├── config.py                 # Configuration management
-│   ├── gui/                      # Web interface implementation (Flask)
-│   │   ├── server.py             # Flask server for web UI
-│   │   ├── api_handlers.py       # Business logic for API endpoints
-│   │   ├── static/               # Static UI assets
-│   │   │   ├── css/style.css     # UI styling
-│   │   │   ├── js/app.js         # UI JavaScript functionality
-│   │   ├── templates/
-│   │   │   └── index.html        # Main UI template
-│   │   └── __init__.py           # GUI package initialization
-│   ├── __init__.py               # Package initialization
-│   ├── requirements.txt          # Core and GUI dependencies
-│   ├── GUI_README.md             # Detailed documentation for the GUI
-│   └── tests/                    # Test suite (if present)
-├── gemini_chat_config/           # Configuration storage (to be renamed to cannonai_config)
-└── gemini_chat_conversations/    # Saved conversations (auto-created, to be renamed to cannonai_conversations)
-```
+## **Installation**
 
-## Installation
+1. Clone this repository:  
+   git clone \[https://github.com/yourusername/CannonAI.git\](https://github.com/yourusername/CannonAI.git)  
+   cd CannonAI
 
-1.  Clone this repository:
-    ```bash
-    git clone https://github.com/yourusername/CannonAI.git
-    cd CannonAI
-    ```
+2. Install the required dependencies:  
+   \# Core and Web UI (Flask) dependencies are in one file  
+   pip install \-r cannonai/requirements.txt
 
-2.  Install the required dependencies:
-    ```bash
-    # Core and Web UI (Flask) dependencies
-    pip install -r gemini_chat/requirements.txt
-    ```
-    Alternatively, if you have a separate `gui_requirements.txt` specifically for Flask (as mentioned in GUI_README.md):
-    ```bash
-    pip install -r gemini_chat/requirements.txt # for core
-    pip install -r gemini_chat/gui_requirements.txt # for GUI
-    ```
+3. Set up your API key(s) (choose one method):  
+   * Set as environment variables (e.g., GEMINI\_API\_KEY, CLAUDE\_API\_KEY, OPENAI\_API\_KEY):  
+     \# Linux/macOS  
+     export GEMINI\_API\_KEY='your\_gemini\_api\_key\_here'
 
-3.  Set up your API key (choose one method):
-    * Set as an environment variable:
-        ```bash
-        # Linux/macOS
-        export GEMINI_API_KEY='your_api_key_here'
+     \# Windows  
+     set GEMINI\_API\_KEY=your\_gemini\_api\_key\_here
 
-        # Windows
-        set GEMINI_API_KEY=your_api_key_here
-        ```
-    * Run the configuration wizard:
-        ```bash
-        python cannonai/cannonai.py --setup
-        ```
-    * Pass as a command-line argument:
-        ```bash
-        python cannonai/cannonai.py --api-key 'your_api_key_here'
-        ```
+   * Run the configuration wizard (will prompt for keys for supported providers):  
+     python cannonai/cannonai.py \--setup
 
-## Usage
+   * For CLI mode, you can pass an API key for the *active provider* for that session (ignored if \--gui is used):  
+     python cannonai/cannonai.py \--provider gemini \--api-key 'your\_gemini\_api\_key\_here'
 
-### Running the Application
+## **Usage**
 
-```bash
-python gemini_chat/gemini_chat.py [options]
-```
+### **Running the Application**
 
-### Command-line Arguments
+python cannonai/cannonai.py \[options\]
 
-```bash
-python gemini_chat/gemini_chat.py --help
-```
+### **Command-line Arguments**
+
+python cannonai/cannonai.py \--help
 
 Available arguments:
-* `--api-key`: Specify your Gemini API key (overrides config and environment variable)
-* `--model`: Specify the model to use (default: from config or gemini-2.0-flash)
-* `--async`: Use asynchronous client implementation
-* `--dir`, `--conversations-dir`: Directory to store conversations
-* `--gui`: Launch with the web-based user interface (Flask + Bootstrap)
-* `--setup`: Run the configuration setup wizard
-* `--config`: Specify a custom configuration file path
 
-Advanced options:
-* `--temp`, `--temperature`: Generation temperature (0.0-2.0)
-* `--max-tokens`: Maximum output tokens
-* `--top-p`: Top-p sampling parameter (0.0-1.0)
-* `--top-k`: Top-k sampling parameter
-* `--stream`: Enable streaming mode by default
+* \--api-key: (CLI Mode Only) Specify API key for the active provider. Overrides config and environment variables for the session. Ignored if \--gui is used.  
+* \--provider: AI provider to use (e.g., gemini, claude, openai). Defaults to provider set in config.  
+* \--model: Specify the model to use (e.g., gemini-2.0-flash, claude-3-opus-20240229). Overrides provider's default model in config.  
+* \--dir, \--conversations-dir: Directory to store conversations.  
+* \--gui: Launch with the web-based user interface (Flask \+ Bootstrap).  
+* \--setup: Run the configuration setup wizard.  
+* \--config: Specify a custom configuration file path.  
+* \--quiet: Suppress non-essential output messages.
 
-## User Interface Modes
+Advanced options (override config for the session):
+
+* \--temp, \--temperature: Generation temperature (0.0-2.0).  
+* \--max-tokens: Maximum output tokens.  
+* \--top-p: Top-p sampling parameter (0.0-1.0).  
+* \--top-k: Top-k sampling parameter.  
+* \--stream / \--no-stream: Enable/disable streaming mode by default for this session.
+
+## **User Interface Modes**
 
 The application supports two different user interface modes:
 
-### Command-Line Interface (CLI) Mode
+### **Command-Line Interface (CLI) Mode**
 
-This is the default mode when running the application without any UI-related flags:
+This is the default mode when running the application without the \--gui flag:
 
-```bash
-python gemini_chat/gemini_chat.py
-```
+python cannonai/cannonai.py
 
 The CLI mode provides a traditional terminal-based interface with command-line commands.
 
-### Web Interface Mode
+### **Web Interface Mode**
 
-The web interface provides a more user-friendly experience with the same functionality:
+The web interface provides a more user-friendly experience with the same core functionality:
 
-```bash
-python gemini_chat/gemini_chat.py --gui
-```
+python cannonai/cannonai.py \--gui
 
 When using the web UI mode:
-* A local web server will start (default: `http://127.0.0.1:8080`)
-* Your default web browser will automatically open to the CannonAI interface
-* The same commands available in CLI mode are available through the web interface
-* The web interface provides a more visual experience with better formatting
 
-The modern UI includes additional features:
-* Markdown rendering with syntax highlighting for code blocks
-* Improved conversation management
-* More intuitive settings interface
-* Real-time streaming with visual feedback
+* A local web server will start (default: http://127.0.0.1:8080).  
+* Your default web browser will automatically open to the CannonAI interface.  
+* Many commands available in CLI mode are accessible through UI interactions or by typing them into the chat input.  
+* The web interface provides a visual experience with Markdown rendering, syntax highlighting, and easier conversation management.
 
-**Note**: To use the web interface, ensure you have installed the GUI dependencies as mentioned in the Installation section (typically via `pip install -r gemini_chat/requirements.txt` which includes Flask and Flask-CORS, or a specific `gui_requirements.txt`).
+**Note**: To use the web interface, ensure you have installed the dependencies from cannonai/requirements.txt, which includes Flask and Flask-CORS.
 
-### Commands During Chat
+### **Commands During Chat (CLI and GUI via input field)**
 
-During the chat session (both CLI and GUI), you can use the following commands:
+During the chat session, you can use the following commands:
 
-| Command   | Description                   |
-|-----------|-------------------------------|
-| /help     | Show help message             |
-| /quit     | Save and exit the application |
-| /save     | Save the current conversation |
-| /new      | Start a new conversation      |
-| /list     | List saved conversations      |
-| /load     | Load a saved conversation     |
-| /history  | Display conversation history  |
-| /model    | Select a different model      |
-| /params   | Customize generation parameters |
-| /stream   | Toggle streaming mode         |
-| /clear    | Clear the screen              |
-| /config   | Open configuration settings   |
-| /version  | Show version information      |
+| Command | Description |
+| :---- | :---- |
+| /help | Show help message |
+| /quit | Save and exit the application (CLI) |
+| /save | Save the current conversation |
+| /new | Start a new conversation |
+| /list | List saved conversations |
+| /load | Load a saved conversation |
+| /history | Display conversation history (CLI) |
+| /model | Select a different model for current provider |
+| /params | Customize generation parameters (CLI) |
+| /stream | Toggle streaming mode for current session/conv |
+| /clear | Clear the screen (CLI) |
+| /config | Open configuration setup wizard (CLI) |
+| /version | Show version information |
 
-## Conversation Storage
+## **Conversation Storage**
 
-Conversations are saved as JSON files in the `gemini_chat_conversations` directory, which is automatically created adjacent to the `gemini_chat` directory. The new conversation structure (v2.0.0) includes:
-- A unique `conversation_id`.
-- `metadata` including title, timestamps, model, parameters, active branch, and active leaf.
-- A `messages` dictionary where each message has an ID, parent ID, branch ID, type (user/assistant), content, timestamp, and children.
-- A `branches` dictionary to track different lines of conversation.
-- Token usage statistics (when available) are stored within assistant messages.
+Conversations are saved as JSON files in the cannonai\_conversations directory (by default, adjacent to the cannonai directory). The conversation structure (v2.3.0+) includes:
 
-You can navigate between saved conversations using the `/list` and `/load` commands during a chat session.
+* A unique conversation\_id.  
+* metadata including title, timestamps, provider, model, parameters, active branch, active leaf, and system instruction.  
+* A messages dictionary where each message has an ID, parent ID, branch ID, type (user/assistant), content, timestamp, children, and potentially attachments or token usage.  
+* A branches dictionary to track different lines of conversation.
 
-## Configuration System
+You can manage conversations through commands (CLI/GUI input) or UI elements (GUI).
 
-The application uses a persistent configuration system that saves your settings between sessions. Configuration is stored in the `gemini_chat_config` directory adjacent to the `gemini_chat` directory:
+## **Configuration System**
 
-```
-CannonAI_GIT/
-├── gemini_chat/             # Main application code
-└── gemini_chat_config/      # Configuration storage
-    └── gemini_chat_config.json  # (to be renamed to cannonai_config.json)
-```
+The application uses a persistent configuration system. Configuration is stored in cannonai\_config/cannonai\_config.json (by default).
 
 Configuration options include:
-* API key
-* Default model
-* Conversations directory
-* Generation parameters
-* Default streaming mode
+
+* API keys for supported providers (gemini, claude, openai).  
+* Default provider.  
+* Default models for each provider.  
+* Conversations directory.  
+* Default generation parameters.  
+* Default streaming mode.  
+* Global default system instruction (for new conversations).
 
 Run the configuration wizard to set up or modify your configuration:
-```bash
-python gemini_chat/gemini_chat.py --setup
-```
 
-## Sync vs Async Mode
+python cannonai/cannonai.py \--setup
 
-The application supports both synchronous and asynchronous operations:
+## **Provider-Agnostic Design**
 
-* **Synchronous Mode (Default)**: Traditional mode where operations block until completed.
-* **Asynchronous Mode**: Non-blocking mode for better responsiveness with I/O operations.
+The application is designed to be provider-agnostic via BaseAIProvider. The AsyncClient interacts with a provider instance (e.g., GeminiProvider).
 
-Use asynchronous mode when working with:
-* High-volume API requests
-* Applications that need to remain responsive during network operations
-* Integration with other asynchronous systems
-* The Web Interface (GUI) mode, which utilizes the asynchronous client.
+* **Gemini**: Fully implemented.  
+* **Claude, OpenAI**: Placeholder implementations exist in cannonai/providers/. Full integration is pending.
 
-To enable asynchronous mode for the CLI:
-```bash
-python gemini_chat/gemini_chat.py --async
-```
+## **Getting an API Key**
 
-## Getting an API Key
+To use this application, you need an API key for your chosen provider(s):
 
-To use this application, you need a Google Gemini API key:
+* **Google Gemini**: Visit [Google AI Studio](https://ai.google.dev/).  
+* **Anthropic Claude**: Visit [Anthropic Console](https://console.anthropic.com/).  
+* **OpenAI**: Visit [OpenAI Platform](https://platform.openai.com/).
 
-1.  Visit the [Google AI Studio](https://ai.google.dev/)
-2.  Sign in with your Google account
-3.  Create a new API key from the settings page
-4.  Copy and use this key with the application
+## **Development**
 
-## Development
+### **Running Tests**
 
-### Running Tests
+(Assuming tests are set up in a tests/ directory, which is not present in the provided file list)
 
-(Assuming tests are set up in `gemini_chat/tests/`)
-```bash
-pytest gemini_chat/tests/
-```
+pytest tests/
 
-### Using the Makefile
+## **Requirements**
 
-(If a Makefile is present and configured)
-A Makefile might be provided for common development tasks:
+* Python 3.6 or higher  
+* google-genai package (\>=0.5.0)  
+* tabulate package (\>=0.9.0)  
+* colorama package (\>=0.4.4)
 
-```bash
-# Install dependencies
-make install
+### **Web UI Additional Requirements (included in cannonai/requirements.txt)**
 
-# Run tests
-make test
+* flask (\>=2.3.0)  
+* flask-cors (\>=4.0.0)  
+* asyncio (\>=3.4.3)
 
-# Run linters
-make lint
+## **Supported Models (Examples)**
 
-# Run in sync mode
-make run
+CannonAI supports multiple AI models from different providers. The client attempts to fetch available models from the active provider's API.
 
-# Run in async mode
-make run-async
+**Google Gemini:**
 
-# Clean up generated files
-make clean
+* gemini-2.0-flash \- Fast model, good for quick responses.  
+* gemini-pro / gemini-1.5-pro-latest \- More advanced models.  
+* gemini-1.5-flash-latest
 
-# Show help message
-make help
-```
+**Anthropic Claude (Placeholder):**
 
-## Requirements
+* claude-3-opus-20240229  
+* claude-3-sonnet-20240229  
+* claude-3-haiku-20240307
 
-- Python 3.6 or higher
-- `google-genai` package (>=0.5.0)
-- `tabulate` package (>=0.9.0)
-- `colorama` package (>=0.4.4)
+**OpenAI GPT (Placeholder):**
 
-### Web UI Additional Requirements (Flask-based)
-- `flask` (>=2.3.0)
-- `flask-cors` (>=4.0.0)
-- `asyncio` (>=3.4.3) (for running the async client with Flask)
-- `Jinja2` (typically installed with Flask)
-- `Markdown` and `Pygments` (if you wish to ensure specific versions for Markdown rendering in the GUI, though `marked.js` and `highlight.js` are used client-side)
+* gpt-4-turbo  
+* gpt-3.5-turbo  
+* gpt-4o
 
-## Supported Models
+Model availability may vary. The application allows selection from models that support content generation for the active provider.
 
-CannonAI supports multiple Gemini AI models. The client attempts to fetch available models from the API, and falls back to a default list if the API call fails or returns no usable models. This list includes:
+## **Troubleshooting**
 
--   **`models/gemini-2.0-flash`** (Often referred to as Gemini 2.0 Flash) - Fast model, good for quick responses.
--   **`models/gemini-2.0-pro`** (Often referred to as Gemini 2.0 Pro) - More advanced model with better reasoning capabilities.
--   **`models/gemini-2.5-flash-preview-05-20`**
--   **`models/gemini-2.5-pro-preview-05-06`**
+### **Common Issues**
 
-Model availability may vary based on your API access level and Google's current offerings. The application allows selection from models that support "generateContent".
+#### **API Key Errors**
 
-## Troubleshooting
+* **Symptom**: "API key not found" or authentication errors.  
+* **Solution**: Ensure your API key is correctly set via environment variable, the config wizard (python cannonai/cannonai.py \--setup), or for CLI, the \--api-key argument for the active provider. Verify the key is valid and has permissions.
 
-### Common Issues
+#### **WebSocket Connection Errors (GUI)**
 
-#### WebSocket Connection Errors (GUI)
--   **Symptom**: "Disconnected" status in the web UI status bar.
--   **Solution**: Ensure the Flask server (`python gemini_chat/gemini_chat.py --gui`) is running. Check the terminal for any server-side errors. Refresh the web page. The GUI uses Server-Sent Events (SSE) for streaming, not WebSockets directly for the chat stream, so check for SSE compatibility or proxy issues if streaming fails.
+* **Symptom**: "Disconnected" status in the web UI status bar.  
+* **Solution**: Ensure the Flask server (python cannonai/cannonai.py \--gui) is running. Check the terminal for any server-side errors. Refresh the web page. The GUI uses Server-Sent Events (SSE) for streaming.
 
-#### Model Selector Not Populating (GUI)
--   **Symptom**: Empty model dropdown or "Loading..." in the GUI.
--   **Solution**: The UI fetches models when the model selector or settings are opened. Check your internet connection and ensure the Gemini API key is correctly configured and has permissions to list models. Look for errors in the browser's developer console and the Flask server terminal.
+#### **Model Selector Not Populating (GUI)**
 
-#### JavaScript Console Errors (GUI)
--   If you encounter JavaScript errors in the browser console, please report them as issues on the repository, including the error message and steps to reproduce.
+* **Symptom**: Empty model dropdown or "Loading..." in the GUI.  
+* **Solution**: Check your internet connection and ensure the API key for the active provider is correctly configured and has permissions to list models. Look for errors in the browser's developer console and the Flask server terminal.
 
-### Browser Compatibility (GUI)
-
-The web interface is generally expected to work on modern browsers:
-- Chrome 90+
-- Firefox 88+
-- Edge 90+
-- Safari 14+
-
-## License
+## **License**
 
 MIT License
-```
