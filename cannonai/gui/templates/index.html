@@ -66,7 +66,7 @@
                     <div class="btn-toolbar mb-2 mb-md-0">
                         <div class="btn-group me-2">
                             <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.showModelSelector()" title="Select Model">
-                                <i class="bi bi-cpu"></i> <span id="currentModelDisplay">Loading...</span> <!-- Changed ID for clarity -->
+                                <i class="bi bi-cpu"></i> <span id="currentModelDisplay">Loading...</span>
                             </button>
                             <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.showAppSettingsModal()" title="Application Settings">
                                 <i class="bi bi-gear"></i> Settings
@@ -122,40 +122,42 @@
                     <div class="p-3">
                         <form id="modelSettingsForm">
                             <div class="mb-3">
-                                <label for="temperatureInput" class="form-label">
-                                    Temperature: <span id="temperatureValueDisplay">0.7</span>
+                                <label for="temperatureSlider" class="form-label"> <!-- Changed for to slider -->
+                                    Temperature
                                 </label>
-                                <input type="range" class="form-range" id="temperatureInput"
-                                       min="0" max="2" step="0.01" value="0.7"> <!-- Adjusted step for finer control -->
-                                <small class="form-text text-muted d-block mt-0">Controls randomness (0=deterministic, 2=creative)</small>
+                                <input type="range" class="form-range" id="temperatureSlider"
+                                       min="0" max="2" step="0.01" value="0.7">
+                                <input type="number" class="form-control form-control-sm mt-1" id="temperatureInput"
+                                       min="0" max="2" step="0.01" value="0.7">
+                                <small class="form-text text-muted d-block mt-0">Controls randomness (0.0-2.0)</small>
                             </div>
 
-                            <!-- Updated Max Output Tokens Section -->
                             <div class="mb-3">
                                 <label for="maxTokensSlider" class="form-label">
-                                    Max Output Tokens: <span id="maxTokensValueDisplay">800</span>
+                                    Max Output Tokens
                                 </label>
                                 <input type="range" class="form-range" id="maxTokensSlider"
-                                       min="128" max="8192" step="128" value="800"> <!-- Default min/max/step, JS will update -->
+                                       min="128" max="8192" step="128" value="800">
                                 <input type="number" class="form-control form-control-sm mt-1" id="maxTokensInput"
-                                       value="800" min="128" step="128"> <!-- Default min/step, JS will update max -->
+                                       value="800" min="128" step="128">
                                 <small class="form-text text-muted d-block mt-0">Max response length. Actual max depends on model.</small>
                             </div>
-                            <!-- End Updated Max Output Tokens Section -->
 
                             <div class="mb-3">
-                                <label for="topPInput" class="form-label">
-                                    Top-p: <span id="topPValueDisplay">0.95</span>
+                                <label for="topPSlider" class="form-label"> <!-- Changed for to slider -->
+                                    Top-p
                                 </label>
-                                <input type="range" class="form-range" id="topPInput"
+                                <input type="range" class="form-range" id="topPSlider"
                                        min="0" max="1" step="0.01" value="0.95">
-                                <small class="form-text text-muted d-block mt-0">Nucleus sampling</small>
+                                <input type="number" class="form-control form-control-sm mt-1" id="topPInput"
+                                       min="0" max="1" step="0.01" value="0.95">
+                                <small class="form-text text-muted d-block mt-0">Nucleus sampling (0.0-1.0)</small>
                             </div>
 
                             <div class="mb-3">
                                 <label for="topKInput" class="form-label">Top-k</label>
                                 <input type="number" class="form-control form-control-sm" id="topKInput"
-                                       value="40" min="0" max="1024" step="1"> <!-- Increased max for top_k -->
+                                       value="40" min="0" max="1024" step="1">
                                 <small class="form-text text-muted d-block mt-0">Limits sampling vocabulary (0 to disable)</small>
                             </div>
 
@@ -166,7 +168,7 @@
                                 </label>
                                 <small class="form-text text-muted d-block mt-0">Client requests streaming for this session. Actual mode also depends on server/provider.</small>
                             </div>
-                            <button type="button" class="btn btn-primary w-100" onclick="app.saveModelSettingsFromSidebar()">Apply Params</button>
+                            <!-- Apply Params button removed -->
                         </form>
                     </div>
                 </div>
@@ -228,7 +230,7 @@
                                     <th>Model</th>
                                     <th>Display Name</th>
                                     <th>Input Tokens</th>
-                                    <th>Output Tokens</th> <!-- This is the model's max capability -->
+                                    <th>Output Tokens</th>
                                     <th>Action</th>
                                 </tr>
                             </thead>
