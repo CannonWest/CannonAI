@@ -41,6 +41,7 @@ class CannonAIApp {
         this.modals.newConversation = new bootstrap.Modal(document.getElementById('newConversationModal'));
         this.modals.modelSelector = new bootstrap.Modal(document.getElementById('modelSelectorModal'));
         this.modals.appSettings = new bootstrap.Modal(document.getElementById('appSettingsModal'));
+        this.modals.messageMetadata = new bootstrap.Modal(document.getElementById('messageMetadataModal')); // New Modal
         const systemInstructionModalEl = document.getElementById('systemInstructionModal');
         if (systemInstructionModalEl) {
             this.modals.systemInstruction = new bootstrap.Modal(systemInstructionModalEl);
@@ -184,7 +185,7 @@ class CannonAIApp {
         });
         document.getElementById('fontFamily')?.addEventListener('change', () => this.updatePreview());
         document.getElementById('codeTheme')?.addEventListener('change', () => this.updatePreview());
-        ['showTimestamps', 'showAvatars', 'enableAnimations', 'compactMode', 'showLineNumbers'].forEach(id => {
+        ['showTimestamps', 'showAvatars', 'enableAnimations', 'compactMode', 'showLineNumbers', 'showMetadataIcons'].forEach(id => { // Added 'showMetadataIcons'
             document.getElementById(id)?.addEventListener('change', () => this.updatePreview());
         });
 
@@ -776,14 +777,18 @@ class CannonAIApp {
             this.messageTree[uniqueMessageId] = {
                 id: uniqueMessageId, role, content: contentString, parent_id: metadata.parent_id || null, children: [],
                 model: metadata.model, timestamp: metadata.timestamp || new Date().toISOString(),
-                token_usage: metadata.token_usage || {}, attachments: metadata.attachments
+                token_usage: metadata.token_usage || {}, attachments: metadata.attachments,
+                // Store other metadata from the JSON directly if available at this point
+                ...(metadata.params && { params: metadata.params }),
+                ...(metadata.branch_id && { branch_id: metadata.branch_id }),
             };
         } else { // If message already in tree (e.g. temp message being finalized)
             this.messageTree[uniqueMessageId].content = contentString; // Update content
             if (metadata.model) this.messageTree[uniqueMessageId].model = metadata.model;
             if (metadata.token_usage) this.messageTree[uniqueMessageId].token_usage = metadata.token_usage;
             if (metadata.attachments) this.messageTree[uniqueMessageId].attachments = metadata.attachments;
-            // Parent and children relationships should be handled carefully if ID changes or is finalized
+            if (metadata.params) this.messageTree[uniqueMessageId].params = metadata.params;
+            if (metadata.branch_id) this.messageTree[uniqueMessageId].branch_id = metadata.branch_id;
         }
 
         // Ensure parent-child relationship in messageTree is updated
@@ -817,12 +822,21 @@ class CannonAIApp {
         const messageTimestamp = this.messageTree[uniqueMessageId]?.timestamp || new Date().toISOString();
         const displayTime = new Date(messageTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+        // Metadata Info Icon
+        const infoIconHTML = `
+            <button class="btn btn-sm btn-message-info-icon p-0 me-2" onclick="app.showMessageMetadata('${uniqueMessageId}')" title="View Message Metadata">
+                <i class="bi bi-info-circle"></i>
+            </button>`;
+
         let headerHTML = `<strong>${roleLabel}</strong>`;
         if (role === 'assistant' && this.messageTree[uniqueMessageId]?.model) {
             headerHTML += ` <span class="badge bg-secondary text-dark me-2">${this.messageTree[uniqueMessageId].model.split('/').pop()}</span>`;
         }
-        // Sibling indicator will be added by updateSiblingIndicators
+        // Add info icon to all messages (user and assistant)
+        headerHTML += infoIconHTML;
+
         headerHTML += ` <span class="text-muted ms-auto message-timestamp-display">${displayTime}</span>`;
+
 
         let actionsHTML = '';
         if (role === 'assistant') {
@@ -852,14 +866,17 @@ class CannonAIApp {
                 indicatorText.className = 'branch-indicator-text';
                 indicatorSpan.appendChild(indicatorText);
 
-                const modelBadge = headerElement.querySelector('.badge.bg-secondary');
+                const modelBadge = headerElement.querySelector('.badge.bg-secondary'); // Add after model badge
+                const infoIconBtn = headerElement.querySelector('.btn-message-info-icon'); // Or after info icon
+
                 if (modelBadge) modelBadge.insertAdjacentElement('afterend', indicatorSpan);
+                else if (infoIconBtn) infoIconBtn.insertAdjacentElement('afterend', indicatorSpan);
                 else headerElement.querySelector('strong')?.insertAdjacentElement('afterend', indicatorSpan);
             }
         }
 
         this.applyCodeHighlighting(messageRow);
-        this.reRenderAllMessagesVisuals(); // Apply app settings like avatar/timestamp visibility
+        this.reRenderAllMessagesVisuals(); // Apply app settings like avatar/timestamp/metadata icon visibility
         this.scrollToBottom();
 
         // Update sibling indicators for the parent of this new message
@@ -1190,6 +1207,7 @@ class CannonAIApp {
             theme: 'light', fontSize: 16, fontFamily: 'system-ui',
             showTimestamps: true, showAvatars: true, enableAnimations: true,
             compactMode: false, codeTheme: 'github-dark', showLineNumbers: true,
+            showMetadataIcons: true, // New setting
             defaultSystemInstruction: "You are a helpful assistant.", // For new conversations
             params: { temperature: 0.7, max_output_tokens: 800, top_p: 0.95, top_k: 40 } // Default generation params
         };
@@ -1209,6 +1227,7 @@ class CannonAIApp {
         document.body.classList.toggle('hide-avatars', !this.appSettings.showAvatars);
         document.body.classList.toggle('disable-animations', !this.appSettings.enableAnimations);
         document.body.classList.toggle('compact-mode', this.appSettings.compactMode);
+        document.body.classList.toggle('hide-metadata-icons', !this.appSettings.showMetadataIcons); // New
         this.updateCodeThemeLink(this.appSettings.codeTheme); // Applies code theme and re-highlights
         this.reRenderAllMessagesVisuals(); // Applies settings to existing messages
     }
@@ -1256,6 +1275,7 @@ class CannonAIApp {
         document.getElementById('fontFamily').value = this.appSettings.fontFamily;
         document.getElementById('showTimestamps').checked = this.appSettings.showTimestamps;
         document.getElementById('showAvatars').checked = this.appSettings.showAvatars;
+        document.getElementById('showMetadataIcons').checked = this.appSettings.showMetadataIcons; // New
         document.getElementById('enableAnimations').checked = this.appSettings.enableAnimations;
         document.getElementById('compactMode').checked = this.appSettings.compactMode;
         document.getElementById('codeTheme').value = this.appSettings.codeTheme;
@@ -1269,6 +1289,7 @@ class CannonAIApp {
             fontFamily: document.getElementById('fontFamily').value,
             showTimestamps: document.getElementById('showTimestamps').checked,
             showAvatars: document.getElementById('showAvatars').checked,
+            showMetadataIcons: document.getElementById('showMetadataIcons').checked, // New
             enableAnimations: document.getElementById('enableAnimations').checked,
             compactMode: document.getElementById('compactMode').checked,
             codeTheme: document.getElementById('codeTheme').value, // This will be the selected value e.g. "github-dark" or "default"
@@ -1300,6 +1321,9 @@ class CannonAIApp {
 
         const previewAvatarContainer = preview.querySelector('#previewAvatarContainer');
         if(previewAvatarContainer) previewAvatarContainer.style.display = document.getElementById('showAvatars').checked ? 'flex' : 'none';
+
+        const previewMetadataIcon = preview.querySelector('.btn-message-info-icon');
+        if(previewMetadataIcon) previewMetadataIcon.style.display = document.getElementById('showMetadataIcons').checked ? 'inline-block' : 'none';
 
         const previewTimestamp = preview.querySelector('#previewTimestamp');
         if(previewTimestamp) previewTimestamp.style.display = document.getElementById('showTimestamps').checked ? 'inline' : 'none';
@@ -1352,9 +1376,14 @@ class CannonAIApp {
             const timestampEl = messageEl.querySelector('.message-timestamp-display');
             if (timestampEl) timestampEl.style.display = this.appSettings.showTimestamps ? 'inline' : 'none';
 
+            const metadataIconEl = messageEl.querySelector('.btn-message-info-icon');
+             if (metadataIconEl) metadataIconEl.style.display = this.appSettings.showMetadataIcons ? 'inline-block' : 'none';
+
+
             this.applyCodeHighlighting(messageEl); // Re-applies line numbers based on current setting
         });
         document.body.classList.toggle('compact-mode', this.appSettings.compactMode);
+        document.body.classList.toggle('hide-metadata-icons', !this.appSettings.showMetadataIcons); // Toggle body class
         document.body.classList.toggle('disable-animations', !this.appSettings.enableAnimations); // Animations are enabled by default
     }
     showAlert(message, type = 'info') {
@@ -1458,6 +1487,53 @@ class CannonAIApp {
         } catch (error) { console.error("[ERROR] Failed to delete:", error); this.showAlert('Client error deleting conversation', 'danger'); }
         finally { this.showThinking(false); }
     }
+
+    // New methods for metadata display
+    showMessageMetadata(messageId) {
+        const messageData = this.messageTree[messageId];
+        if (!messageData) {
+            this.showAlert('Could not find metadata for this message.', 'warning');
+            return;
+        }
+        const metadataContentEl = document.getElementById('messageMetadataContent');
+        if (metadataContentEl) {
+            // Exclude 'content' and 'children' for brevity, or include them if desired.
+            // For this example, we'll show most of it.
+            const displayData = { ...messageData };
+            // delete displayData.content; // Optionally remove long content from modal
+            // delete displayData.children; // Optionally remove children array
+
+            metadataContentEl.textContent = JSON.stringify(displayData, null, 2);
+            hljs.highlightElement(metadataContentEl); // Apply highlighting
+        }
+        this.modals.messageMetadata.show();
+    }
+
+    copyMetadataToClipboard() {
+        const metadataContentEl = document.getElementById('messageMetadataContent');
+        if (metadataContentEl && navigator.clipboard) {
+            navigator.clipboard.writeText(metadataContentEl.textContent)
+                .then(() => this.showAlert('Metadata copied to clipboard!', 'success'))
+                .catch(err => {
+                    console.error('Failed to copy metadata: ', err);
+                    this.showAlert('Failed to copy metadata.', 'danger');
+                });
+        } else if (metadataContentEl) { // Fallback for older browsers or if navigator.clipboard is blocked (e.g. in iframe)
+            const textarea = document.createElement('textarea');
+            textarea.value = metadataContentEl.textContent;
+            document.body.appendChild(textarea);
+            textarea.select();
+            try {
+                document.execCommand('copy');
+                this.showAlert('Metadata copied to clipboard! (fallback)', 'success');
+            } catch (err) {
+                console.error('Fallback copy failed: ', err);
+                this.showAlert('Failed to copy metadata (fallback).', 'danger');
+            }
+            document.body.removeChild(textarea);
+        }
+    }
 }
 
 const app = new CannonAIApp();
+

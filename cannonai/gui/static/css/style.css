@@ -387,6 +387,23 @@ body {
 .message-header .badge { font-size: 0.65rem; font-weight: normal; padding: 0.15rem 0.35rem; }
 .message-header .badge.bg-secondary { background-color: #e0e0e0 !important; color: #555 !important; }
 .message-header .text-muted { font-size: 0.95em; }
+/* Metadata Info Icon */
+.btn-message-info-icon {
+    background-color: transparent;
+    border: none;
+    color: var(--bs-secondary-color); /* Bootstrap secondary color */
+    padding: 0 0.25rem; /* Minimal padding */
+    line-height: 1; /* Align icon better */
+    font-size: 0.8em; /* Slightly smaller than text */
+    opacity: 0.6;
+    transition: opacity 0.2s ease;
+}
+.message-row:hover .btn-message-info-icon { opacity: 1; }
+.btn-message-info-icon:hover { color: var(--bs-primary); /* Or your primary color */ }
+.btn-message-info-icon i { vertical-align: middle; } /* Helps with alignment */
+
+/* Hide metadata icons by default if class is on body */
+body.hide-metadata-icons .btn-message-info-icon { display: none !important; }
 
 
 /* Markdown Styles, Code Blocks, Theme Styles, Display Settings - largely same as before */
@@ -449,6 +466,9 @@ body {
 .theme-dark .btn-close { filter: invert(1) grayscale(100%) brightness(200%);}
 .theme-dark .message-content pre { background-color: #1e1e1e !important; border-color: #444; }
 .theme-dark .message-content pre code { color: #d4d4d4 !important; }
+.theme-dark .btn-message-info-icon { color: #aaa; }
+.theme-dark .btn-message-info-icon:hover { color: #0d6efd; }
+
 
 /* Display Setting Classes */
 body.hide-timestamps .message-header .text-muted { display: none !important; }

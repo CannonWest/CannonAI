@@ -318,6 +318,10 @@
                                 <input class="form-check-input" type="checkbox" id="showAvatars" checked>
                                 <label class="form-check-label" for="showAvatars">Show user/AI avatars</label>
                             </div>
+                             <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="showMetadataIcons" checked>
+                                <label class="form-check-label" for="showMetadataIcons">Show message metadata icons (ⓘ)</label>
+                            </div>
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" id="enableAnimations" checked>
                                 <label class="form-check-label" for="enableAnimations">Enable UI animations</label>
@@ -361,6 +365,8 @@
                                 <div class="message-body">
                                     <div class="message-header d-flex align-items-center mb-1">
                                         <strong>CannonAI</strong>
+                                        <span class="badge bg-secondary text-dark me-2">model-name</span>
+                                        <button class="btn btn-sm btn-message-info-icon p-0 me-2" title="View Message Metadata"><i class="bi bi-info-circle"></i></button>
                                         <span class="text-muted ms-auto message-timestamp-display" id="previewTimestamp">10:30 AM</span>
                                     </div>
                                     <div class="message-content p-2 rounded shadow-sm bg-light">
@@ -377,6 +383,27 @@
                     <button type="button" class="btn btn-outline-secondary me-auto" onclick="app.resetAppSettings()">Reset to Defaults</button>
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="button" class="btn btn-primary" onclick="app.saveAppSettings()">Save Settings</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Message Metadata Modal -->
+    <div class="modal fade" id="messageMetadataModal" tabindex="-1" aria-labelledby="messageMetadataModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="messageMetadataModalLabel">Message Metadata</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <pre><code id="messageMetadataContent" class="language-json hljs"></code></pre>
+                </div>
+                <div class="modal-footer">
+                     <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.copyMetadataToClipboard()" title="Copy to Clipboard">
+                        <i class="bi bi-clipboard"></i> Copy
+                    </button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>
