@@ -4,7 +4,10 @@ A powerful, modular application for interacting with Google's Gemini AI models, 
 
 ## **Features**
 
-* Multi-turn conversations with Google's Gemini models and other supported providers (Claude, OpenAI \- placeholder implementations).  
+* Multi-turn conversations with multiple AI providers:
+  * **Google Gemini** - Fully implemented with all Gemini models
+  * **OpenAI** - Fully implemented with GPT-4, GPT-3.5, and o1 models
+  * **Claude** - Coming soon (placeholder implementation)  
 * Select from available AI models.  
 * Customize generation parameters (temperature, max tokens, etc.).  
 * Save and load conversations as JSON files.  
@@ -60,6 +63,11 @@ CannonAI\_GIT/                 \# Your main project root
 2. Install the required dependencies:  
    \# Core and Web UI (Flask) dependencies are in one file  
    pip install \-r cannonai/requirements.txt
+   
+   \# This will install:  
+   \# - google-genai>=0.5.0 (for Gemini provider)  
+   \# - openai>=1.0.0 (for OpenAI provider)  
+   \# - Flask and other UI dependencies
 
 3. Set up your API key(s) (choose one method):  
    * Set as environment variables (e.g., GEMINI\_API\_KEY, CLAUDE\_API\_KEY, OPENAI\_API\_KEY):  
@@ -184,8 +192,9 @@ python cannonai/cannonai.py \--setup
 
 The application is designed to be provider-agnostic via BaseAIProvider. The AsyncClient interacts with a provider instance (e.g., GeminiProvider).
 
-* **Gemini**: Fully implemented.  
-* **Claude, OpenAI**: Placeholder implementations exist in cannonai/providers/. Full integration is pending.
+* **Gemini**: Fully implemented.
+* **OpenAI**: Fully implemented with complete SDK integration.
+* **Claude**: Placeholder implementation exists in cannonai/providers/. Full integration is pending.
 
 ## **Getting an API Key**
 
@@ -205,10 +214,11 @@ pytest tests/
 
 ## **Requirements**
 
-* Python 3.6 or higher  
-* google-genai package (\>=0.5.0)  
-* tabulate package (\>=0.9.0)  
-* colorama package (\>=0.4.4)
+* Python 3.8 or higher (3.12+ recommended)
+* google-genai package (\>=0.5.0) - For Gemini provider
+* openai package (\>=1.0.0) - For OpenAI provider
+* tabulate package (\>=0.9.0) - For CLI table display
+* colorama package (\>=0.4.4) - For cross-platform terminal colors
 
 ### **Web UI Additional Requirements (included in cannonai/requirements.txt)**
 
@@ -232,11 +242,15 @@ CannonAI supports multiple AI models from different providers. The client attemp
 * claude-3-sonnet-20240229  
 * claude-3-haiku-20240307
 
-**OpenAI GPT (Placeholder):**
+**OpenAI GPT (Fully Implemented):**
 
-* gpt-4-turbo  
-* gpt-3.5-turbo  
-* gpt-4o
+* gpt-4o - Most capable OpenAI model with 128K context window
+* gpt-4o-mini - Smaller, faster version of GPT-4o
+* gpt-4-turbo - Previous generation turbo model with 128K context
+* gpt-4 - Standard GPT-4 with 8K context
+* gpt-3.5-turbo - Fast and cost-effective model
+* o1-preview - Advanced reasoning model (beta)
+* o1-mini - Smaller reasoning model (beta)
 
 Model availability may vary. The application allows selection from models that support content generation for the active provider.
 

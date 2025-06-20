@@ -244,6 +244,13 @@ class CannonAIApp {
             if (data.models && Array.isArray(data.models)) {
                 this.settings.updateModelCapabilities(data.models);
                 this.displayModelsList(data.models);
+                
+                // Update provider dropdown to current provider
+                const providerSelect = document.getElementById('providerSelect');
+                if (providerSelect && data.current_provider) {
+                    console.log(`[App] Setting provider dropdown to: ${data.current_provider}`);
+                    providerSelect.value = data.current_provider;
+                }
             }
         } catch (error) {
             console.error("[App] Failed to load models:", error);
@@ -262,6 +269,9 @@ class CannonAIApp {
                 this.settings.setCurrentModel(data.model);
                 this.settings.streamingEnabled = data.streaming;
                 this.ui.updateStreamingStatus(data.streaming);
+                
+                // Update provider display
+                this.updateProviderDisplay(data.provider_name);
 
                 this.conversations.currentSystemInstruction = data.system_instruction || "You are a helpful assistant.";
                 this.ui.updateSystemInstructionDisplay(this.conversations.currentSystemInstruction);
@@ -289,6 +299,7 @@ class CannonAIApp {
                 this.conversations.clearConversation();
                 this.settings.updateModelSettingsForm({}, false, this.conversations.currentSystemInstruction);
                 this.ui.updateSystemInstructionDisplay(this.conversations.currentSystemInstruction);
+                this.updateProviderDisplay(null);
             }
         } catch (error) {
             console.error("[App] Failed to load status:", error);
@@ -296,6 +307,7 @@ class CannonAIApp {
             this.settings.setCurrentModel(null);
             this.messages.clearChatDisplay();
             this.conversations.clearConversation();
+            this.updateProviderDisplay(null);
         }
     }
 
@@ -564,9 +576,17 @@ class CannonAIApp {
         console.log(`[App] Displaying ${models.length} models`);
         
         const tbody = document.getElementById('modelsList');
+        const modelCount = document.getElementById('modelCount');
+        const loadingIndicator = document.getElementById('modelsLoadingIndicator');
+        
         tbody.innerHTML = '';
         
-        if (!Array.isArray(models)) return;
+        if (!Array.isArray(models)) {
+            console.log("[App] No models to display");
+            if (modelCount) modelCount.textContent = '0 models';
+            if (loadingIndicator) loadingIndicator.classList.add('d-none');
+            return;
+        }
 
         models.forEach(model => {
             const tr = document.createElement('tr');
@@ -576,8 +596,8 @@ class CannonAIApp {
             tr.innerHTML = `
                 <td><code>${model.name}</code></td>
                 <td>${model.display_name}</td>
-                <td>${inputLimit}</td>
-                <td>${outputLimit}</td>
+                <td>${typeof inputLimit === 'number' ? inputLimit.toLocaleString() : inputLimit}</td>
+                <td>${typeof outputLimit === 'number' ? outputLimit.toLocaleString() : outputLimit}</td>
                 <td>
                     <button class="btn btn-sm btn-primary" 
                             onclick="app.selectModel('${model.name}')">
@@ -587,6 +607,16 @@ class CannonAIApp {
             
             tbody.appendChild(tr);
         });
+        
+        // Update model count
+        if (modelCount) {
+            modelCount.textContent = `${models.length} model${models.length !== 1 ? 's' : ''}`;
+        }
+        
+        // Hide loading indicator
+        if (loadingIndicator) {
+            loadingIndicator.classList.add('d-none');
+        }
     }
 
     updateAllSiblingIndicators() {
@@ -597,6 +627,102 @@ class CannonAIApp {
         allSiblings.forEach(({ parentId, siblings }) => {
             this.messages.updateSiblingIndicators(parentId, siblings, this.conversations.messageTree);
         });
+    }
+
+    // ============ Provider Management ============
+    
+    async onProviderChange() {
+        console.log("[App] Provider selection changed");
+        const providerSelect = document.getElementById('providerSelect');
+        const selectedProvider = providerSelect?.value;
+        
+        if (!selectedProvider) {
+            console.log("[App] No provider selected");
+            return;
+        }
+        
+        console.log(`[App] Selected provider: ${selectedProvider}`);
+        
+        // Show loading indicator
+        const loadingIndicator = document.getElementById('modelsLoadingIndicator');
+        const tbody = document.getElementById('modelsList');
+        if (loadingIndicator) loadingIndicator.classList.remove('d-none');
+        if (tbody) tbody.innerHTML = '';
+        
+        // Update provider and reload models
+        try {
+            // Note: Actual provider switching requires backend restart or more complex handling
+            // For now, we'll show a message about this limitation
+            const currentProvider = await this.getCurrentProvider();
+            
+            if (currentProvider !== selectedProvider) {
+                this.ui.showAlert(
+                    `Provider switching to '${selectedProvider}' requires updating your config file and restarting the application. ` +
+                    `Current provider is '${currentProvider}'.`,
+                    'warning'
+                );
+                
+                // Reset dropdown to current provider
+                if (providerSelect) {
+                    providerSelect.value = currentProvider;
+                }
+            }
+            
+            // Reload models for current provider
+            await this.loadModels();
+            
+        } catch (error) {
+            console.error("[App] Error handling provider change:", error);
+            this.ui.showAlert('Error loading models', 'danger');
+        } finally {
+            if (loadingIndicator) loadingIndicator.classList.add('d-none');
+        }
+    }
+    
+    async getCurrentProvider() {
+        console.log("[App] Getting current provider");
+        try {
+            const status = await this.api.getStatus();
+            return status.provider_name || 'unknown';
+        } catch (error) {
+            console.error("[App] Failed to get current provider:", error);
+            return 'unknown';
+        }
+    }
+    
+    updateProviderDisplay(providerName) {
+        console.log(`[App] Updating provider display: ${providerName}`);
+        
+        const providerIcon = document.getElementById('providerIcon');
+        const providerDisplay = document.getElementById('currentProviderDisplay');
+        
+        if (providerDisplay) {
+            providerDisplay.textContent = providerName || 'N/A';
+        }
+        
+        if (providerIcon) {
+            // Remove all provider-specific classes
+            providerIcon.className = providerIcon.className.replace(/bi-\S+/g, '').trim();
+            
+            // Add appropriate icon based on provider
+            switch (providerName) {
+                case 'gemini':
+                    providerIcon.classList.add('bi', 'bi-google');
+                    providerIcon.title = 'Google Gemini';
+                    break;
+                case 'openai':
+                    providerIcon.classList.add('bi', 'bi-chat-square-dots');
+                    providerIcon.title = 'OpenAI';
+                    break;
+                case 'claude':
+                    providerIcon.classList.add('bi', 'bi-lightning');
+                    providerIcon.title = 'Anthropic Claude';
+                    break;
+                default:
+                    providerIcon.classList.add('bi', 'bi-cpu');
+                    providerIcon.title = 'AI Provider';
+            }
+        }
     }
 
     // ============ Action Methods (called from HTML) ============

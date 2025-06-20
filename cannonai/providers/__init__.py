@@ -7,25 +7,25 @@ allowing the application to work with multiple AI services through a common API.
 
 from .base_provider import BaseAIProvider, ProviderError, ProviderConfig
 from .gemini_provider import GeminiProvider
+from .openai_provider import OpenAIProvider
 
 # Future imports will be added as we implement them
-# from .claude_provider import ClaudeProvider  
-# from .openai_provider import OpenAIProvider
+# from .claude_provider import ClaudeProvider
 
 __all__ = [
     'BaseAIProvider',
     'ProviderError',
     'ProviderConfig',
     'GeminiProvider',
+    'OpenAIProvider',
     # 'ClaudeProvider',
-    # 'OpenAIProvider',
 ]
 
 # Provider registry for easy lookup
 PROVIDERS = {
     'gemini': GeminiProvider,
+    'openai': OpenAIProvider,
     # 'claude': ClaudeProvider,
-    # 'openai': OpenAIProvider,
 }
 
 def get_provider_class(provider_name: str):

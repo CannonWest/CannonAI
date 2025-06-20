@@ -84,7 +84,31 @@ export class MessageRenderer {
         let headerHTML = `<strong>${roleLabel}</strong>`;
         
         if (role === 'assistant' && metadata.model) {
+            // Add model badge
             headerHTML += ` <span class="badge bg-secondary text-dark me-2">${metadata.model.split('/').pop()}</span>`;
+            
+            // Add provider badge if available
+            if (metadata.provider) {
+                let providerClass = 'bg-info';
+                let providerIcon = 'bi-cpu';
+                
+                switch (metadata.provider) {
+                    case 'gemini':
+                        providerClass = 'bg-primary';
+                        providerIcon = 'bi-google';
+                        break;
+                    case 'openai':
+                        providerClass = 'bg-success';
+                        providerIcon = 'bi-chat-square-dots';
+                        break;
+                    case 'claude':
+                        providerClass = 'bg-warning';
+                        providerIcon = 'bi-lightning';
+                        break;
+                }
+                
+                headerHTML += ` <span class="badge ${providerClass} text-dark me-2" title="Provider: ${metadata.provider}"><i class="bi ${providerIcon}"></i> ${metadata.provider}</span>`;
+            }
         }
         
         // Add info button
@@ -268,6 +292,7 @@ export class MessageRenderer {
         history.forEach(msg => {
             this.addMessageToDOM(msg.role, msg.content, msg.id, {
                 model: msg.model,
+                provider: msg.provider,
                 timestamp: msg.timestamp,
                 parent_id: msg.parent_id,
                 token_usage: msg.token_usage,

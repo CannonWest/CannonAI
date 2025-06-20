@@ -66,7 +66,7 @@
                     <div class="btn-toolbar mb-2 mb-md-0">
                         <div class="btn-group me-2">
                             <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.showModelSelector()" title="Select Model">
-                                <i class="bi bi-cpu"></i> <span id="currentModelDisplay">Loading...</span>
+                                <i class="bi bi-cpu" id="providerIcon"></i> <span id="currentModelDisplay">Loading...</span>
                             </button>
                             <button type="button" class="btn btn-sm btn-outline-secondary" onclick="app.showAppSettingsModal()" title="Application Settings">
                                 <i class="bi bi-gear"></i> Settings
@@ -182,6 +182,10 @@
             <i class="bi bi-circle-fill text-danger"></i> Disconnected
         </span>
         <span class="mx-2">|</span>
+        <span id="providerStatus">
+            <i class="bi bi-robot"></i> Provider: <span id="currentProviderDisplay">N/A</span>
+        </span>
+        <span class="mx-2">|</span>
         <span id="streamingStatus" title="Client's current streaming preference for this session">
             <i class="bi bi-broadcast"></i> Session Streaming: <span id="streamingMode">OFF</span>
         </span>
@@ -219,10 +223,28 @@
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title" id="modelSelectorModalLabel">Select Model</h5>
+                    <h5 class="modal-title" id="modelSelectorModalLabel">Select AI Provider & Model</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
+                    <!-- Provider Selection Dropdown -->
+                    <div class="mb-3">
+                        <label for="providerSelect" class="form-label">AI Provider</label>
+                        <select class="form-select" id="providerSelect" onchange="app.onProviderChange()">
+                            <option value="gemini">Google Gemini</option>
+                            <option value="openai">OpenAI</option>
+                            <!-- Future providers can be added here -->
+                        </select>
+                        <small class="form-text text-muted">Changing providers requires API keys configured in your config file</small>
+                    </div>
+                    
+                    <hr>
+                    
+                    <!-- Models Table -->
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="mb-0">Available Models</h6>
+                        <span class="badge bg-secondary" id="modelCount">0 models</span>
+                    </div>
                     <div class="table-responsive">
                         <table class="table table-hover">
                             <thead>
@@ -238,6 +260,14 @@
                                 <!-- Models will be populated by JavaScript -->
                             </tbody>
                         </table>
+                    </div>
+                    
+                    <!-- Loading indicator -->
+                    <div class="text-center py-3 d-none" id="modelsLoadingIndicator">
+                        <div class="spinner-border spinner-border-sm" role="status">
+                            <span class="visually-hidden">Loading models...</span>
+                        </div>
+                        <p class="text-muted mt-2">Loading models...</p>
                     </div>
                 </div>
             </div>
