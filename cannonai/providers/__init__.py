@@ -8,6 +8,7 @@ allowing the application to work with multiple AI services through a common API.
 from .base_provider import BaseAIProvider, ProviderError, ProviderConfig
 from .gemini_provider import GeminiProvider
 from .openai_provider import OpenAIProvider
+from .deepseek_provider import DeepSeekProvider
 
 # Future imports will be added as we implement them
 # from .claude_provider import ClaudeProvider
@@ -18,6 +19,7 @@ __all__ = [
     'ProviderConfig',
     'GeminiProvider',
     'OpenAIProvider',
+    'DeepSeekProvider',
     # 'ClaudeProvider',
 ]
 
@@ -25,6 +27,7 @@ __all__ = [
 PROVIDERS = {
     'gemini': GeminiProvider,
     'openai': OpenAIProvider,
+    'deepseek': DeepSeekProvider,
     # 'claude': ClaudeProvider,
 }
 
