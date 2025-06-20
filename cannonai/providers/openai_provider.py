@@ -36,13 +36,24 @@ class OpenAIProvider(BaseAIProvider):
     # Default OpenAI models - updated to latest available models
     DEFAULT_MODELS = [
         "gpt-4o",
-        "gpt-4o-mini", 
-        "gpt-4-turbo",
-        "gpt-4",
-        "gpt-3.5-turbo",
-        "o1-preview",
-        "o1-mini"
+        "gpt-4.5",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "o4-mini",
+        "o3",
+        "o3-pro"
     ]
+    
+    # Model specifications (hardcoded as per requirements)
+    MODEL_SPECS = {
+        "gpt-4o": {"context_window": 128000, "max_output_tokens": 16384},
+        "gpt-4.5": {"context_window": 128000, "max_output_tokens": 16384},
+        "o4-mini": {"context_window": 200000, "max_output_tokens": 100000},
+        "o3": {"context_window": 200000, "max_output_tokens": 100000},
+        "gpt-4.1": {"context_window": 1047576, "max_output_tokens": 32768},
+        "o3-pro": {"context_window": 200000, "max_output_tokens": 100000},
+        "gpt-4.1-mini": {"context_window": 1047576, "max_output_tokens": 32768}
+    }
     
     def __init__(self, config: ProviderConfig):
         """Initialize the OpenAI provider.
@@ -101,58 +112,38 @@ class OpenAIProvider(BaseAIProvider):
             return self._get_fallback_models()
             
         try:
-            logger.debug("Fetching available OpenAI models from API...")
-            
-            # Use the async client to list models
-            models_response = await self._async_client.models.list()
+            logger.debug("Using hardcoded OpenAI model specifications...")
             
             models = []
-            api_model_ids = set()
             
-            for model in models_response.data:
-                # Filter for chat models
-                if 'gpt' in model.id or 'o1' in model.id:
-                    api_model_ids.add(model.id)
-                    
-            logger.info(f"Found {len(api_model_ids)} chat models from API")
-            
-            # Define token limits for known models
-            model_limits = {
-                "gpt-4o": (128000, 4096),
-                "gpt-4o-mini": (128000, 16384),
-                "gpt-4-turbo": (128000, 4096),
-                "gpt-4-turbo-preview": (128000, 4096),
-                "gpt-4": (8192, 8192),
-                "gpt-3.5-turbo": (16385, 4096),
-                "gpt-3.5-turbo-16k": (16385, 16384),
-                "o1-preview": (128000, 32768),
-                "o1-mini": (128000, 65536)
-            }
-            
-            # Add models with their metadata
-            for model_id in sorted(api_model_ids):
-                # Skip deprecated or non-chat models
-                if any(skip in model_id for skip in ['instruct', 'davinci', 'curie', 'babbage', 'ada']):
-                    continue
-                    
-                input_limit, output_limit = model_limits.get(model_id, (8192, 4096))
+            # Use hardcoded model specifications as requested
+            for model_id in self.DEFAULT_MODELS:
+                if model_id in self.MODEL_SPECS:
+                    spec = self.MODEL_SPECS[model_id]
+                    model_info = {
+                        'name': model_id,
+                        'display_name': model_id.upper().replace('-', ' '),
+                        'description': f'OpenAI {model_id} model',
+                        'input_token_limit': spec['context_window'],
+                        'output_token_limit': spec['max_output_tokens'],
+                        'supported_methods': ['chat']
+                    }
+                    models.append(model_info)
+                    logger.debug(f"Added model: {model_info['name']} with context: {spec['context_window']}, max output: {spec['max_output_tokens']}")
+                else:
+                    # For models not in specs, indicate info not available
+                    model_info = {
+                        'name': model_id,
+                        'display_name': model_id.upper().replace('-', ' '),
+                        'description': f'OpenAI {model_id} model (specifications not available)',
+                        'input_token_limit': None,
+                        'output_token_limit': None,
+                        'supported_methods': ['chat']
+                    }
+                    models.append(model_info)
+                    logger.debug(f"Added model: {model_info['name']} (specs not available)")
                 
-                model_info = {
-                    'name': model_id,
-                    'display_name': model_id.upper().replace('-', ' '),
-                    'description': f'OpenAI {model_id} model',
-                    'input_token_limit': input_limit,
-                    'output_token_limit': output_limit,
-                    'supported_methods': ['chat']
-                }
-                models.append(model_info)
-                logger.debug(f"Added model: {model_info['name']}")
-            
-            if not models:
-                logger.warning("No suitable chat models found from API, using fallback list")
-                return self._get_fallback_models()
-                
-            logger.info(f"Total OpenAI chat models available: {len(models)}")
+            logger.info(f"Total OpenAI models available: {len(models)}")
             return models
             
         except Exception as e:
@@ -163,28 +154,28 @@ class OpenAIProvider(BaseAIProvider):
         """Get fallback model list if API call fails."""
         logger.info("Using fallback model list for OpenAI")
         
-        model_limits = {
-            "gpt-4o": (128000, 4096),
-            "gpt-4o-mini": (128000, 16384),
-            "gpt-4-turbo": (128000, 4096),
-            "gpt-4": (8192, 8192),
-            "gpt-3.5-turbo": (16385, 4096),
-            "o1-preview": (128000, 32768),
-            "o1-mini": (128000, 65536)
-        }
-        
         models = []
         for model_id in self.DEFAULT_MODELS:
-            input_limit, output_limit = model_limits.get(model_id, (8192, 4096))
-            
-            model_info = {
-                'name': model_id,
-                'display_name': model_id.upper().replace('-', ' '),
-                'description': f'OpenAI {model_id} model (fallback)',
-                'input_token_limit': input_limit,
-                'output_token_limit': output_limit,
-                'supported_methods': ['chat']
-            }
+            if model_id in self.MODEL_SPECS:
+                spec = self.MODEL_SPECS[model_id]
+                model_info = {
+                    'name': model_id,
+                    'display_name': model_id.upper().replace('-', ' '),
+                    'description': f'OpenAI {model_id} model (fallback)',
+                    'input_token_limit': spec['context_window'],
+                    'output_token_limit': spec['max_output_tokens'],
+                    'supported_methods': ['chat']
+                }
+            else:
+                # For models not in specs, indicate info not available
+                model_info = {
+                    'name': model_id,
+                    'display_name': model_id.upper().replace('-', ' '),
+                    'description': f'OpenAI {model_id} model (specifications not available)',
+                    'input_token_limit': None,
+                    'output_token_limit': None,
+                    'supported_methods': ['chat']
+                }
             models.append(model_info)
             
         return models
@@ -254,13 +245,18 @@ class OpenAIProvider(BaseAIProvider):
         if 'stop_sequences' in merged_params and merged_params['stop_sequences']:
             openai_params['stop'] = merged_params['stop_sequences']
             
-        # Special handling for o1 models - they don't support some parameters
-        if self.config.model.startswith('o1'):
-            logger.info(f"Using o1 model {self.config.model}, removing unsupported parameters")
-            # o1 models only support max_completion_tokens, not max_tokens
+        # Special handling for reasoning models (o3, o4-mini)
+        reasoning_models = ['o3', 'o3-pro', 'o4-mini']
+        if self.config.model in reasoning_models:
+            logger.info(f"Using reasoning model {self.config.model}, adjusting parameters")
+            # Reasoning models use max_completion_tokens instead of max_tokens
             if 'max_tokens' in openai_params:
                 openai_params['max_completion_tokens'] = openai_params.pop('max_tokens')
-            # Remove unsupported parameters
+            # Add reasoning_effort if specified in params
+            if 'reasoning_effort' in merged_params:
+                openai_params['reasoning_effort'] = merged_params['reasoning_effort']
+                logger.debug(f"Setting reasoning_effort to: {openai_params['reasoning_effort']}")
+            # Remove unsupported parameters for reasoning models
             for param in ['temperature', 'top_p', 'frequency_penalty', 'presence_penalty']:
                 openai_params.pop(param, None)
         
@@ -344,7 +340,8 @@ class OpenAIProvider(BaseAIProvider):
         # Check if it's an OpenAI model
         is_valid = (
             model_name.startswith("gpt") or 
-            model_name.startswith("o1") or
+            model_name.startswith("o3") or
+            model_name.startswith("o4") or
             model_name in self.DEFAULT_MODELS
         )
         logger.debug(f"Model '{model_name}' is {'valid' if is_valid else 'invalid'} for OpenAI")
@@ -353,7 +350,10 @@ class OpenAIProvider(BaseAIProvider):
     
     def get_default_params(self) -> Dict[str, Any]:
         """Get default generation parameters for OpenAI."""
-        return {
+        # Check if current model is a reasoning model
+        reasoning_models = ['o3', 'o3-pro', 'o4-mini']
+        
+        default_params = {
             'temperature': 0.7,
             'max_tokens': 800,
             'top_p': 0.95,
@@ -361,6 +361,13 @@ class OpenAIProvider(BaseAIProvider):
             'presence_penalty': 0.0,
             'stop_sequences': None
         }
+        
+        # Add reasoning_effort for reasoning models
+        if self.config.model in reasoning_models:
+            default_params['reasoning_effort'] = 'medium'  # Default to medium
+            logger.debug(f"Using reasoning model {self.config.model}, added default reasoning_effort: medium")
+        
+        return default_params
     
     def normalize_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """Normalize message format for OpenAI API."""
@@ -388,6 +395,9 @@ class OpenAIProvider(BaseAIProvider):
             elif role == 'system':
                 # Skip system role here as it's handled separately
                 continue
+            elif role == 'developer':
+                # New developer role for high-priority instructions
+                role = 'developer'
             else:
                 logger.warning(f"Unknown role '{role}', defaulting to 'user'")
                 role = 'user'
