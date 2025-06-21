@@ -319,6 +319,7 @@ class AsyncClient(BaseClientFeatures):
             # Add AI's response to conversation data
             ai_msg_obj = self.create_message_structure(
                 role="assistant", text=response_text, model=self.current_model_name,
+                provider=self.provider.provider_name,  # *** ADDED: Track provider per message ***
                 params=current_params, token_usage=token_usage,
                 parent_id=user_msg_id, branch_id=self.active_branch
             )
@@ -335,6 +336,7 @@ class AsyncClient(BaseClientFeatures):
             if self.conversation_data and self.conversation_id:  # Check if conversation is active
                 error_message_obj = self.create_message_structure(
                     role="assistant", text=err_msg_text, model=self.current_model_name,
+                    provider=self.provider.provider_name,  # *** ADDED: Track provider per message ***
                     params=self.params, parent_id=err_parent_id, branch_id=self.active_branch
                 )
                 self._add_message_to_conversation(self.conversation_data, error_message_obj)
@@ -516,7 +518,11 @@ class AsyncClient(BaseClientFeatures):
         ai_model_name = conv_meta.get("model", self.current_model_name)  # Use conversation's model if set
         ai_params = conv_meta.get("params", self.params).copy()  # Use conversation's params if set
 
-        ai_msg = self.create_message_structure(role="assistant", text=text_to_add, model=ai_model_name, params=ai_params, token_usage=token_usage, parent_id=parent_id_for_ai, branch_id=self.active_branch)
+        ai_msg = self.create_message_structure(
+            role="assistant", text=text_to_add, model=ai_model_name,
+            provider=self.provider.provider_name,  # *** ADDED: Track provider per message ***
+            params=ai_params, token_usage=token_usage, parent_id=parent_id_for_ai, branch_id=self.active_branch
+        )
         self._add_message_to_conversation(self.conversation_data, ai_msg)
         self.current_user_message_id = None  # Clear after AI response is parented
 
@@ -697,6 +703,7 @@ class AsyncClient(BaseClientFeatures):
             new_branch_id = f"branch_{uuid.uuid4().hex[:8]}"  # Unique ID for the new branch
             new_assistant_msg_obj = self.create_message_structure(
                 role="assistant", text=new_response_text or "", model=current_model_for_retry,
+                provider=self.provider.provider_name,  # *** ADDED: Track provider per message ***
                 params=current_params_for_retry, token_usage=new_token_usage,
                 parent_id=parent_user_id, branch_id=new_branch_id  # Assign to new branch
             )
@@ -897,8 +904,12 @@ class AsyncClient(BaseClientFeatures):
             content_preview = (content_preview[:75] + "...") if len(content_preview) > 75 else content_preview
             # Create a more detailed label for nodes
             node_label_lines = [f"{msg_data.get('type', 'N/A').capitalize()}: {content_preview.splitlines()[0] if content_preview else 'Empty'}"]
-            if msg_data.get('type') == 'assistant' and msg_data.get('model'):
-                node_label_lines.append(f"Model: {msg_data['model'].split('/')[-1]}")  # Short model name
+            if msg_data.get('type') == 'assistant':
+                # *** ADDED: Show both provider and model for assistant messages ***
+                if msg_data.get('provider'):
+                    node_label_lines.append(f"Provider: {msg_data['provider']}")
+                if msg_data.get('model'):
+                    node_label_lines.append(f"Model: {msg_data['model'].split('/')[-1]}")  # Short model name
             node_label_lines.append(f"Branch: {msg_data.get('branch_id', 'N/A')}")
 
             node_info = {
@@ -907,6 +918,7 @@ class AsyncClient(BaseClientFeatures):
                 "title": (f"ID: {msg_id}\nTimestamp: {msg_data.get('timestamp')}\n"
                           f"Branch: {msg_data.get('branch_id', 'N/A')}\nParent: {msg_data.get('parent_id', 'None')}\n"
                           f"Children: {len(msg_data.get('children', []))}\n"
+                          f"Provider: {msg_data.get('provider', 'N/A') if msg_data.get('type') == 'assistant' else ''}\n"  # *** ADDED: Provider info ***
                           f"Model: {msg_data.get('model', 'N/A') if msg_data.get('type') == 'assistant' else ''}\n"
                           f"Content:\n{msg_data.get('content', '')}"),  # Full content for tooltip
                 "type": msg_data.get("type", "unknown"),

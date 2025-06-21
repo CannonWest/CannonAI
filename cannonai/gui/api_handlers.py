@@ -21,6 +21,7 @@ from async_client import AsyncClient
 from command_handler import CommandHandler  # Retained
 from base_client import Colors  # Retained
 from config import Config  # For default system instruction if needed
+from provider_manager import ProviderManager  # *** ADDED: For seamless provider switching ***
 
 logger = logging.getLogger("cannonai.gui.api_handlers")
 
@@ -36,6 +37,7 @@ class APIHandlers:
         self.client = client
         self.command_handler = command_handler  # Retained, though its use of system instruction might change
         self.event_loop = event_loop
+        self.provider_manager: Optional[ProviderManager] = None  # *** ADDED: Will be set later ***
 
         if self.client and self.client.provider:
             logger.info(f"APIHandlers initialized with client for provider: {self.client.provider.provider_name}.")
@@ -43,6 +45,11 @@ class APIHandlers:
             logger.warning("APIHandlers initialized with a client, but client has no provider set.")
         else:
             logger.error("APIHandlers initialized WITHOUT a client instance. GUI may not function.")
+    
+    def set_provider_manager(self, provider_manager: ProviderManager) -> None:
+        """Set the provider manager for dynamic provider switching."""
+        self.provider_manager = provider_manager
+        logger.info("Provider manager set for API handlers")
 
     def run_async(self, coro, timeout: int = 60) -> Any:
         """
@@ -137,15 +144,39 @@ class APIHandlers:
             return {'error': 'Client or provider not initialized', 'status_code': 503}
 
         try:
-            # Provider change requires app restart or more complex client re-initialization.
+            # *** SEAMLESS PROVIDER SWITCHING ***
             if provider and provider != self.client.provider.provider_name:
-                logger.warning(f"Provider change to '{provider}' requested via API. This requires client re-initialization, not handled by this endpoint. Current provider: '{self.client.provider.provider_name}'.")
-                # Optionally, update global config default if main_config is available
-                if main_config:
-                    main_config.set("default_provider", provider)
-                    # Potentially update default model for the new provider in config
-                    main_config.save_config() # This was the error line (167)
-                    logger.info(f"Global default provider in config updated to '{provider}'. Restart needed for change to take effect.")
+                logger.info(f"Provider change to '{provider}' requested. Switching providers seamlessly...")
+                
+                if not self.provider_manager:
+                    logger.error("Provider manager not available for dynamic switching")
+                    return {'error': 'Provider switching not available', 'status_code': 503}
+                
+                try:
+                    # Switch to the new provider
+                    new_provider = self.run_async(self.provider_manager.switch_provider(provider, model))
+                    
+                    # Update the client's provider
+                    self.client.provider = new_provider
+                    
+                    # Update conversation metadata if active
+                    if self.client.conversation_data and "metadata" in self.client.conversation_data:
+                        self.client.conversation_data["metadata"]["provider"] = provider
+                        if model:
+                            self.client.conversation_data["metadata"]["model"] = model
+                    
+                    # Update global config default
+                    if main_config:
+                        main_config.set("default_provider", provider)
+                        if model:
+                            main_config.set("provider_models", {**main_config.get("provider_models", {}), provider: model})
+                        main_config.save_config()
+                    
+                    logger.info(f"Successfully switched to provider '{provider}' with model '{new_provider.config.model}'")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to switch provider: {e}", exc_info=True)
+                    return {'error': f'Failed to switch provider: {str(e)}', 'status_code': 500}
 
             if model is not None and model != self.client.current_model_name:
                 if self.client.provider.validate_model(model):

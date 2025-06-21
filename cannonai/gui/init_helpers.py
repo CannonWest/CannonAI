@@ -88,6 +88,7 @@ class AsyncComponentManager:
             from client_manager import ClientManager
             from command_handler import CommandHandler
             from providers import ProviderError
+            from provider_manager import ProviderManager  # *** ADDED: For seamless provider switching ***
 
             # Prepare effective parameters
             effective_params = app_config.get("generation_params", {}).copy()
@@ -149,6 +150,14 @@ class AsyncComponentManager:
 
             # Create API handlers
             self.api_handlers = APIHandlers(self.chat_client, self.command_handler, self.event_loop)
+
+            # *** ADDED: Create and set provider manager for seamless switching ***
+            print("[Init] Creating provider manager for seamless provider switching...")
+            provider_manager = ProviderManager(app_config)
+            # Set initial provider in manager
+            await provider_manager.switch_provider(self.chat_client.provider.provider_name, self.chat_client.current_model_name)
+            self.api_handlers.set_provider_manager(provider_manager)
+            print("[Init] Provider manager configured successfully")
 
             # Store main config reference in api_handlers module
             import gui.api_handlers as api_handlers_module

@@ -76,6 +76,7 @@ class BaseClientFeatures:
 
     def create_message_structure(self, role: str, text: str,
                                  model: Optional[str] = None,
+                                 provider: Optional[str] = None,  # *** ADDED: Provider tracking per message ***
                                  params: Optional[Dict[str, Any]] = None,
                                  token_usage: Optional[Dict[str, Any]] = None,
                                  message_id: Optional[str] = None,
@@ -89,6 +90,7 @@ class BaseClientFeatures:
             role: "user" or "assistant".
             text: Message content.
             model: Model name used (typically for assistant messages).
+            provider: Provider name used (typically for assistant messages).
             params: Generation parameters used (typically for assistant messages).
             token_usage: Token usage metrics.
             message_id: Unique ID for this message. Auto-generated if None.
@@ -121,6 +123,7 @@ class BaseClientFeatures:
 
         if role == "assistant":
             if model: message_dict["model"] = model
+            if provider: message_dict["provider"] = provider  # *** ADDED: Store provider per message ***
             if params: message_dict["params"] = params.copy()
             if token_usage: message_dict["token_usage"] = token_usage
 
