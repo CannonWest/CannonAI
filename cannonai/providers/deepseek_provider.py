@@ -16,8 +16,6 @@ from .base_provider import BaseAIProvider, ProviderConfig, ProviderError
 
 try:
     from openai import OpenAI, AsyncOpenAI
-    from openai.types import ChatCompletionMessage
-    from openai.types.chat import ChatCompletionChunk
 except ImportError:
     logging.error(
         "Failed to import 'openai'. "
