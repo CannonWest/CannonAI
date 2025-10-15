@@ -486,10 +486,10 @@ class AsyncClient(BaseClientFeatures):
             attachments: Optional list of attachments.
         """
         if not self.conversation_id or not self.conversation_data:
-            print(f"{Colors.FAIL}[Client Error] add_user_message called without an active conversation. Please start or load one.{Colors.ENDC}")
-            # Optionally, could auto-start a new conversation here if desired for GUI robustness
-            # await self.start_new_conversation(is_web_ui=self.is_web_ui)
-            # if not self.conversation_id: return # If still no conversation
+            if self.is_web_ui:
+                raise ValueError("Cannot add a message without an active conversation.")
+            else:
+                print(f"{Colors.FAIL}[Client Error] add_user_message called without an active conversation. Please start or load one.{Colors.ENDC}")
             return
 
         parent_id = self._get_last_message_id(self.conversation_data, self.active_branch)

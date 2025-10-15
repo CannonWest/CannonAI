@@ -39,51 +39,54 @@ class CannonAIApp {
         }
     }
 
-    init() {
+    async init() {
         console.log("[App] DOM ready, initializing application");
-        
+
         // Apply saved settings
         this.settings.applySettings();
-        
+
         // Initialize UI components
         this.ui.initTextareaAutoResize();
-        
+
         // Setup event listeners
         this.setupEventListeners();
-        
-        // Load initial data
-        this.loadInitialData();
-        
+
+        // Load initial data and wait for it to finish
+        await this.loadInitialData();
+
+        // Disable input on startup until a conversation is loaded
+        this.toggleMessageInput(this.conversations.currentConversationId !== null);
+
         // Setup periodic status check
         setInterval(() => this.updateConnectionStatusOnly(), 10000);
-        
+
         // Set initial sidebar state
         const mainContent = document.getElementById('mainContent');
         if (this.ui.rightSidebarOpen && mainContent) {
             mainContent.classList.remove(...this.ui.mainContentDefaultClasses);
             mainContent.classList.add(...this.ui.mainContentRightSidebarOpenClasses);
         }
-        
+
         console.log("[App] Application initialization complete");
     }
 
     setupEventListeners() {
         console.log("[App] Setting up event listeners");
-        
+
         // Message input
         const messageInput = document.getElementById('messageInput');
-        messageInput?.addEventListener('keypress', (e) => {
+        messageInput?.addEventListener('keypress', async (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                this.sendMessage();
+                await this.sendMessage();
             }
         });
 
         // Debounced save for model settings
         const debouncedSaveModelSettings = () => {
             clearTimeout(this.settings.paramChangeTimeout);
-            this.settings.paramChangeTimeout = setTimeout(() => {
-                this.saveModelSettingsFromSidebar();
+            this.settings.paramChangeTimeout = setTimeout(async () => {
+                await this.saveModelSettingsFromSidebar();
             }, 500);
         };
 
@@ -95,7 +98,7 @@ class CannonAIApp {
                 tempInput.value = parseFloat(tempSlider.value).toFixed(2);
                 debouncedSaveModelSettings();
             });
-            tempInput.addEventListener('change', () => {
+            tempInput.addEventListener('change', async () => {
                 let val = parseFloat(tempInput.value);
                 const min = parseFloat(tempSlider.min);
                 const max = parseFloat(tempSlider.max);
@@ -105,7 +108,7 @@ class CannonAIApp {
                 val = parseFloat(val.toFixed(2));
                 tempInput.value = val.toFixed(2);
                 tempSlider.value = val;
-                this.saveModelSettingsFromSidebar();
+                await this.saveModelSettingsFromSidebar();
             });
         }
 
@@ -117,7 +120,7 @@ class CannonAIApp {
                 topPInput.value = parseFloat(topPSlider.value).toFixed(2);
                 debouncedSaveModelSettings();
             });
-            topPInput.addEventListener('change', () => {
+            topPInput.addEventListener('change', async () => {
                 let val = parseFloat(topPInput.value);
                 const min = parseFloat(topPSlider.min);
                 const max = parseFloat(topPSlider.max);
@@ -127,7 +130,7 @@ class CannonAIApp {
                 val = parseFloat(val.toFixed(2));
                 topPInput.value = val.toFixed(2);
                 topPSlider.value = val;
-                this.saveModelSettingsFromSidebar();
+                await this.saveModelSettingsFromSidebar();
             });
         }
 
@@ -140,7 +143,7 @@ class CannonAIApp {
                 maxTokensInput.value = val;
                 debouncedSaveModelSettings();
             });
-            maxTokensInput.addEventListener('change', () => {
+            maxTokensInput.addEventListener('change', async () => {
                 let val = parseInt(maxTokensInput.value);
                 const min = parseInt(maxTokensSlider.min);
                 const max = parseInt(maxTokensSlider.max);
@@ -155,20 +158,20 @@ class CannonAIApp {
                 }
                 maxTokensInput.value = val;
                 maxTokensSlider.value = val;
-                this.saveModelSettingsFromSidebar();
+                await this.saveModelSettingsFromSidebar();
             });
         }
 
         // Top-K control
         const topKInput = document.getElementById('topKInput');
-        topKInput?.addEventListener('change', () => {
-            this.saveModelSettingsFromSidebar();
+        topKInput?.addEventListener('change', async () => {
+            await this.saveModelSettingsFromSidebar();
         });
 
         // Streaming toggle
         const streamingToggle = document.getElementById('streamingToggleRightSidebar');
-        streamingToggle?.addEventListener('change', () => {
-            this.saveModelSettingsFromSidebar();
+        streamingToggle?.addEventListener('change', async () => {
+            await this.saveModelSettingsFromSidebar();
         });
 
         // App settings controls
@@ -203,9 +206,9 @@ class CannonAIApp {
                         if (d !== dropdown) d.classList.remove('show');
                     });
                     document.querySelectorAll('.three-dots-btn.active').forEach(b => {
-                        if (b !== button) { 
-                            b.classList.remove('active'); 
-                            b.setAttribute('aria-expanded', 'false'); 
+                        if (b !== button) {
+                            b.classList.remove('active');
+                            b.setAttribute('aria-expanded', 'false');
                         }
                     });
 
@@ -244,7 +247,7 @@ class CannonAIApp {
             if (data.models && Array.isArray(data.models)) {
                 this.settings.updateModelCapabilities(data.models);
                 this.displayModelsList(data.models);
-                
+
                 // Update provider dropdown to current provider
                 const providerSelect = document.getElementById('providerSelect');
                 if (providerSelect && data.current_provider) {
@@ -269,7 +272,7 @@ class CannonAIApp {
                 this.settings.setCurrentModel(data.model);
                 this.settings.streamingEnabled = data.streaming;
                 this.ui.updateStreamingStatus(data.streaming);
-                
+
                 // Update provider display
                 this.updateProviderDisplay(data.provider_name);
 
@@ -279,11 +282,13 @@ class CannonAIApp {
                 this.settings.updateModelSettingsForm(data.params, data.streaming, this.conversations.currentSystemInstruction);
 
                 // Update conversation data
-                this.conversations.setCurrentConversation(data.conversation_id, data.conversation_name);
-                if (data.conversation_id && data.full_message_tree) {
+                if (data.conversation_id) {
+                    this.conversations.setCurrentConversation(data.conversation_id, data.conversation_name);
                     this.conversations.updateMessageTree(data.full_message_tree);
-                } else if (!data.conversation_id) {
+                    this.toggleMessageInput(true); // Enable input
+                } else {
                     this.conversations.clearConversation();
+                    this.toggleMessageInput(false); // Disable input
                 }
 
                 // Rebuild chat display
@@ -300,6 +305,7 @@ class CannonAIApp {
                 this.settings.updateModelSettingsForm({}, false, this.conversations.currentSystemInstruction);
                 this.ui.updateSystemInstructionDisplay(this.conversations.currentSystemInstruction);
                 this.updateProviderDisplay(null);
+                this.toggleMessageInput(false); // Disable on disconnect
             }
         } catch (error) {
             console.error("[App] Failed to load status:", error);
@@ -308,6 +314,7 @@ class CannonAIApp {
             this.messages.clearChatDisplay();
             this.conversations.clearConversation();
             this.updateProviderDisplay(null);
+            this.toggleMessageInput(false); // Disable on error
         }
     }
 
@@ -333,8 +340,13 @@ class CannonAIApp {
     // ============ Message Handling ============
 
     async sendMessage() {
+        if (!this.conversations.currentConversationId) {
+            this.ui.showAlert("Please start a new conversation or load an existing one first.", "warning");
+            return;
+        }
+
         console.log("[App] Sending message");
-        
+
         const messageInput = document.getElementById('messageInput');
         const messageContent = messageInput.value.trim();
         if (!messageContent) return;
@@ -354,7 +366,7 @@ class CannonAIApp {
         // Create temporary user message
         const tempUserMessageId = `msg-user-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
         const parentId = this.conversations.getLastMessageIdFromActiveBranch();
-        
+
         this.messages.addMessageToDOM('user', messageContent, tempUserMessageId, { parent_id: parentId });
         this.conversations.addMessageToTree(tempUserMessageId, {
             role: 'user',
@@ -382,7 +394,7 @@ class CannonAIApp {
 
     async handleNonStreamingMessage(messageContent, tempUserMessageId) {
         console.log("[App] Handling non-streaming message");
-        
+
         const data = await this.api.sendMessage(messageContent);
         this.ui.showThinking(false);
 
@@ -420,10 +432,10 @@ class CannonAIApp {
 
     async handleStreamingMessage(messageContent, tempUserMessageId) {
         console.log("[App] Handling streaming message");
-        
+
         let fullResponseText = "";
         let tempAssistantMessageId = `msg-assistant-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-        
+
         this.ui.showThinking(false);
         this.messages.addMessageToDOM('assistant', '...', tempAssistantMessageId, {
             parent_id: tempUserMessageId,
@@ -482,7 +494,7 @@ class CannonAIApp {
 
     updateMessageId(oldId, newId) {
         console.log(`[App] Updating message ID from ${oldId} to ${newId}`);
-        
+
         // Update DOM element
         const element = this.messages.messageElements[oldId];
         if (element) {
@@ -508,24 +520,24 @@ class CannonAIApp {
 
     displayConversationsList(conversations) {
         console.log(`[App] Displaying ${conversations.length} conversations`);
-        
+
         const listElement = document.getElementById('conversationsList');
         listElement.innerHTML = '';
-        
+
         if (!Array.isArray(conversations)) return;
 
         conversations.forEach(conv => {
             const li = document.createElement('li');
             li.className = 'nav-item conversation-list-item position-relative';
-            
-            const createdDate = conv.created_at 
-                ? new Date(conv.created_at).toLocaleDateString([], { 
-                    year: '2-digit', 
-                    month: 'numeric', 
-                    day: 'numeric' 
-                  }) 
+
+            const createdDate = conv.created_at
+                ? new Date(conv.created_at).toLocaleDateString([], {
+                    year: '2-digit',
+                    month: 'numeric',
+                    day: 'numeric'
+                  })
                 : 'N/A';
-            
+
             const convIdForActions = conv.conversation_id || conv.filename;
             const convIdForLoading = conv.filename || conv.conversation_id || conv.title;
 
@@ -567,20 +579,20 @@ class CannonAIApp {
                         </button>
                     </div>
                 </div>`;
-            
+
             listElement.appendChild(li);
         });
     }
 
     displayModelsList(models) {
         console.log(`[App] Displaying ${models.length} models`);
-        
+
         const tbody = document.getElementById('modelsList');
         const modelCount = document.getElementById('modelCount');
         const loadingIndicator = document.getElementById('modelsLoadingIndicator');
-        
+
         tbody.innerHTML = '';
-        
+
         if (!Array.isArray(models)) {
             console.log("[App] No models to display");
             if (modelCount) modelCount.textContent = '0 models';
@@ -592,7 +604,7 @@ class CannonAIApp {
             const tr = document.createElement('tr');
             const outputLimit = this.settings.modelCapabilities[model.name]?.output_token_limit || 'N/A';
             const inputLimit = this.settings.modelCapabilities[model.name]?.input_token_limit || 'N/A';
-            
+
             tr.innerHTML = `
                 <td><code>${model.name}</code></td>
                 <td>${model.display_name}</td>
@@ -604,15 +616,15 @@ class CannonAIApp {
                         Select
                     </button>
                 </td>`;
-            
+
             tbody.appendChild(tr);
         });
-        
+
         // Update model count
         if (modelCount) {
             modelCount.textContent = `${models.length} model${models.length !== 1 ? 's' : ''}`;
         }
-        
+
         // Hide loading indicator
         if (loadingIndicator) {
             loadingIndicator.classList.add('d-none');
@@ -621,56 +633,56 @@ class CannonAIApp {
 
     updateAllSiblingIndicators() {
         console.log("[App] Updating all sibling indicators");
-        
+
         const allSiblings = this.conversations.getAllSiblingsForIndicators(this.messages.messageElements);
-        
+
         allSiblings.forEach(({ parentId, siblings }) => {
             this.messages.updateSiblingIndicators(parentId, siblings, this.conversations.messageTree);
         });
     }
 
     // ============ Provider Management ============
-    
+
     async onProviderChange() {
         console.log("[App] Provider selection changed");
         const providerSelect = document.getElementById('providerSelect');
         const selectedProvider = providerSelect?.value;
-        
+
         if (!selectedProvider) {
             console.log("[App] No provider selected");
             return;
         }
-        
+
         console.log(`[App] Selected provider: ${selectedProvider}`);
-        
+
         // Show loading indicator
         const loadingIndicator = document.getElementById('modelsLoadingIndicator');
         const tbody = document.getElementById('modelsList');
         if (loadingIndicator) loadingIndicator.classList.remove('d-none');
         if (tbody) tbody.innerHTML = '';
-        
+
         // Update provider and reload models
         try {
             // Note: Actual provider switching requires backend restart or more complex handling
             // For now, we'll show a message about this limitation
             const currentProvider = await this.getCurrentProvider();
-            
+
             if (currentProvider !== selectedProvider) {
                 this.ui.showAlert(
                     `Provider switching to '${selectedProvider}' requires updating your config file and restarting the application. ` +
                     `Current provider is '${currentProvider}'.`,
                     'warning'
                 );
-                
+
                 // Reset dropdown to current provider
                 if (providerSelect) {
                     providerSelect.value = currentProvider;
                 }
             }
-            
+
             // Reload models for current provider
             await this.loadModels();
-            
+
         } catch (error) {
             console.error("[App] Error handling provider change:", error);
             this.ui.showAlert('Error loading models', 'danger');
@@ -678,7 +690,7 @@ class CannonAIApp {
             if (loadingIndicator) loadingIndicator.classList.add('d-none');
         }
     }
-    
+
     async getCurrentProvider() {
         console.log("[App] Getting current provider");
         try {
@@ -689,21 +701,21 @@ class CannonAIApp {
             return 'unknown';
         }
     }
-    
+
     updateProviderDisplay(providerName) {
         console.log(`[App] Updating provider display: ${providerName}`);
-        
+
         const providerIcon = document.getElementById('providerIcon');
         const providerDisplay = document.getElementById('currentProviderDisplay');
-        
+
         if (providerDisplay) {
             providerDisplay.textContent = providerName || 'N/A';
         }
-        
+
         if (providerIcon) {
             // Remove all provider-specific classes
             providerIcon.className = providerIcon.className.replace(/bi-\S+/g, '').trim();
-            
+
             // Add appropriate icon based on provider
             switch (providerName) {
                 case 'gemini':
@@ -730,6 +742,7 @@ class CannonAIApp {
     async loadConversationByName(name) {
         console.log(`[App] Loading conversation by name: ${name}`);
         await this.commands.loadConversation(name);
+        this.toggleMessageInput(true); // Enable after loading a conversation
     }
 
     async saveConversation() {
@@ -746,7 +759,7 @@ class CannonAIApp {
     async retryMessage(messageId) {
         console.log(`[App] Retrying message: ${messageId}`);
         this.ui.showThinking(true);
-        
+
         try {
             const data = await this.api.retryMessage(messageId);
             if (data.error) {
@@ -756,7 +769,7 @@ class CannonAIApp {
 
             // Update conversation state
             this.conversations.setCurrentConversation(data.conversation_id, data.conversation_name);
-            
+
             if (data.system_instruction !== undefined) {
                 this.conversations.updateSystemInstruction(data.system_instruction);
                 this.ui.updateSystemInstructionDisplay(data.system_instruction);
@@ -788,10 +801,10 @@ class CannonAIApp {
     async navigateSibling(messageId, direction) {
         console.log(`[App] Navigating sibling: ${messageId}, direction: ${direction}`);
         this.ui.showThinking(true);
-        
+
         try {
             const data = await this.api.navigateSibling(messageId, direction);
-            
+
             if (data.error) {
                 this.ui.showAlert(data.error, 'danger');
                 return;
@@ -799,7 +812,7 @@ class CannonAIApp {
 
             // Update conversation state
             this.conversations.setCurrentConversation(data.conversation_id, data.conversation_name);
-            
+
             if (data.system_instruction !== undefined) {
                 this.conversations.updateSystemInstruction(data.system_instruction);
                 this.ui.updateSystemInstructionDisplay(data.system_instruction);
@@ -844,10 +857,11 @@ class CannonAIApp {
     async createNewConversation() {
         console.log("[App] Creating new conversation from modal");
         const title = this.ui.getNewConversationTitle();
-        
+
         try {
             await this.commands.newConversation(title);
             this.ui.hideNewConversationModal();
+            this.toggleMessageInput(true); // Enable after creating a new conversation
         } catch (error) {
             this.ui.showAlert('Failed to create new conversation', 'danger');
         }
@@ -866,7 +880,7 @@ class CannonAIApp {
 
     saveAppSettings() {
         console.log("[App] Saving app settings");
-        
+
         if (this.settings.updateSettingsFromModal()) {
             this.settings.applySettings();
             this.messages.reRenderAllMessagesVisuals(this.settings.appSettings);
@@ -879,7 +893,7 @@ class CannonAIApp {
 
     resetAppSettings() {
         console.log("[App] Resetting app settings");
-        
+
         if (this.ui.confirmAction('Reset all app settings to defaults? This will clear your locally stored preferences.')) {
             this.settings.resetSettings();
             this.messages.reRenderAllMessagesVisuals(this.settings.appSettings);
@@ -890,7 +904,7 @@ class CannonAIApp {
 
     updatePreview() {
         console.log("[App] Updating settings preview");
-        
+
         // Get current form values
         const previewSettings = {
             theme: document.querySelector('input[name="theme"]:checked')?.value || 'light',
@@ -904,7 +918,7 @@ class CannonAIApp {
             codeTheme: document.getElementById('codeTheme')?.value || 'github-dark',
             showLineNumbers: document.getElementById('showLineNumbers')?.checked || false
         };
-        
+
         this.ui.updateSettingsPreview(previewSettings);
     }
 
@@ -915,12 +929,12 @@ class CannonAIApp {
 
     async saveSystemInstructionFromModal() {
         console.log("[App] Saving system instruction from modal");
-        
+
         const newInstruction = this.ui.getSystemInstructionFromModal();
-        
+
         if (!this.conversations.currentConversationId) {
             this.ui.showAlert(
-                "No active conversation to save system instruction to. Will apply to next new conversation if default is not overridden by loaded conversation.", 
+                "No active conversation to save system instruction to. Will apply to next new conversation if default is not overridden by loaded conversation.",
                 "warning"
             );
             this.conversations.updateSystemInstruction(newInstruction);
@@ -931,10 +945,10 @@ class CannonAIApp {
 
         try {
             const data = await this.api.updateSystemInstruction(
-                this.conversations.currentConversationId, 
+                this.conversations.currentConversationId,
                 newInstruction
             );
-            
+
             if (data.success) {
                 this.conversations.updateSystemInstruction(data.system_instruction);
                 this.ui.updateSystemInstructionDisplay(data.system_instruction);
@@ -956,13 +970,13 @@ class CannonAIApp {
 
     async saveModelSettingsFromSidebar() {
         console.log("[App] Saving model settings from sidebar");
-        
+
         const params = this.settings.getCurrentFormParams();
         const streaming = this.settings.getCurrentStreamingPreference();
 
         try {
             const data = await this.api.updateSettings({ params, streaming });
-            
+
             if (data.success) {
                 this.settings.streamingEnabled = data.streaming;
                 this.ui.updateStreamingStatus(data.streaming);
@@ -981,12 +995,12 @@ class CannonAIApp {
 
     async promptDuplicateConversation(conversationId, currentTitle) {
         console.log(`[App] Prompting to duplicate conversation: ${conversationId}`);
-        
+
         const newTitle = this.ui.promptUser(
-            `Enter a title for the duplicated conversation (current: "${currentTitle}"):`, 
+            `Enter a title for the duplicated conversation (current: "${currentTitle}"):`,
             `Copy of ${currentTitle}`
         );
-        
+
         if (newTitle && newTitle.trim() !== '') {
             await this.apiDuplicateConversation(conversationId, newTitle.trim());
         }
@@ -995,10 +1009,10 @@ class CannonAIApp {
     async apiDuplicateConversation(conversationId, newTitle) {
         console.log(`[App] Duplicating conversation: ${conversationId}`);
         this.ui.showThinking(true);
-        
+
         try {
             const data = await this.api.duplicateConversation(conversationId, newTitle);
-            
+
             if (data.success) {
                 this.ui.showAlert(`Conversation duplicated as "${data.new_title}"`, 'success');
                 await this.loadConversations();
@@ -1015,12 +1029,12 @@ class CannonAIApp {
 
     async promptRenameConversation(conversationId, currentTitle) {
         console.log(`[App] Prompting to rename conversation: ${conversationId}`);
-        
+
         const newTitle = this.ui.promptUser(
-            `Enter the new title for "${currentTitle}":`, 
+            `Enter the new title for "${currentTitle}":`,
             currentTitle
         );
-        
+
         if (newTitle !== null && newTitle.trim() !== '' && newTitle.trim() !== currentTitle) {
             await this.apiRenameConversation(conversationId, newTitle.trim());
         }
@@ -1029,18 +1043,18 @@ class CannonAIApp {
     async apiRenameConversation(conversationId, newTitle) {
         console.log(`[App] Renaming conversation: ${conversationId}`);
         this.ui.showThinking(true);
-        
+
         try {
             const data = await this.api.renameConversation(conversationId, newTitle);
-            
+
             if (data.success) {
                 this.ui.showAlert(`Conversation renamed to "${data.new_title}"`, 'success');
                 await this.loadConversations();
-                
+
                 // Update current conversation name if it's the active one
                 if (this.conversations.currentConversationId === data.conversation_id) {
                     this.conversations.setCurrentConversation(data.conversation_id, data.new_title);
-                    
+
                     // Update in message tree
                     if (this.conversations.messageTree?.metadata) {
                         this.conversations.messageTree.metadata.title = data.new_title;
@@ -1059,7 +1073,7 @@ class CannonAIApp {
 
     async confirmDeleteConversation(conversationId, title) {
         console.log(`[App] Confirming deletion of conversation: ${conversationId}`);
-        
+
         if (this.ui.confirmAction(`Are you sure you want to delete the conversation "${title}"? This cannot be undone.`)) {
             await this.apiDeleteConversation(conversationId);
         }
@@ -1068,14 +1082,14 @@ class CannonAIApp {
     async apiDeleteConversation(conversationId) {
         console.log(`[App] Deleting conversation: ${conversationId}`);
         this.ui.showThinking(true);
-        
+
         try {
             const data = await this.api.deleteConversation(conversationId);
-            
+
             if (data.success) {
                 this.ui.showAlert(`Conversation deleted`, 'success');
                 await this.loadConversations();
-                
+
                 // Clear current conversation if it was deleted
                 if (this.conversations.currentConversationId === data.deleted_conversation_id) {
                     this.conversations.clearConversation();
@@ -1087,6 +1101,7 @@ class CannonAIApp {
                         this.settings.streamingEnabled,
                         this.conversations.currentSystemInstruction
                     );
+                    this.toggleMessageInput(false); // Disable input after deleting active conversation
                 }
             } else {
                 this.ui.showAlert(data.error || 'Failed to delete conversation', 'danger');
@@ -1101,19 +1116,19 @@ class CannonAIApp {
 
     showMessageMetadata(messageId) {
         console.log(`[App] Showing metadata for message: ${messageId}`);
-        
+
         const messageData = this.conversations.findMessage(messageId);
         if (!messageData) {
             this.ui.showAlert('Could not find metadata for this message.', 'warning');
             return;
         }
-        
+
         this.ui.showMessageMetadataModal(messageData);
     }
 
     async copyMetadataToClipboard() {
         console.log("[App] Copying metadata to clipboard");
-        
+
         const metadataContentEl = document.getElementById('messageMetadataContent');
         if (metadataContentEl) {
             await this.ui.copyToClipboard(metadataContentEl.textContent);
@@ -1131,8 +1146,23 @@ class CannonAIApp {
         console.log("[App] Showing history");
         this.commands.showHistory();
     }
+
+    // New method to toggle the input's state
+    toggleMessageInput(enabled) {
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = messageInput.nextElementSibling; // The send button
+
+        if (messageInput && sendButton) {
+            messageInput.disabled = !enabled;
+            sendButton.disabled = !enabled;
+            messageInput.placeholder = enabled
+                ? "Type a message or command (e.g., /help)..."
+                : "Start or load a conversation to begin.";
+        }
+    }
 }
 
 // Initialize the application
 console.log("[App] Loading CannonAI Application");
 const app = new CannonAIApp();
+
